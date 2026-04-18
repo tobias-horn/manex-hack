@@ -1,12 +1,15 @@
 "use client";
 
-import { LoaderCircle, Play, Workflow } from "lucide-react";
+import { LoaderCircle, Play, Trash2, Workflow } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import type { TeamCaseRunSummary } from "@/lib/manex-case-clustering-state";
+import type {
+  TeamCaseRunSummary,
+  TeamClusteringResetSummary,
+} from "@/lib/manex-case-clustering-state";
 import { formatUiDateTime } from "@/lib/ui-format";
 
 type BatchStatus = {
@@ -20,9 +23,15 @@ type BatchStatus = {
   errorMessage: string | null;
 };
 
+type ResetStatus = {
+  completedAt: string | null;
+  summary: TeamClusteringResetSummary | null;
+};
+
 type StatusPayload = {
   ok: boolean;
   batch: BatchStatus;
+  reset: ResetStatus;
   activeRuns: TeamCaseRunSummary[];
   runningArticleCount: number;
   stageCounts: Record<string, number>;
@@ -61,6 +70,7 @@ export function GlobalPipelineRunner({
 }: GlobalPipelineRunnerProps) {
   const router = useRouter();
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
   const [feedback, setFeedback] = useState<FeedbackState | null>(null);
   const [activeRuns, setActiveRuns] = useState(initialActiveRuns);
   const [batch, setBatch] = useState<BatchStatus>({
@@ -73,8 +83,13 @@ export function GlobalPipelineRunner({
     errorCount: 0,
     errorMessage: null,
   });
+  const [reset, setReset] = useState<ResetStatus>({
+    completedAt: null,
+    summary: null,
+  });
 
-  const shouldPoll = batch.status === "running" || activeRuns.length > 0 || isSubmitting;
+  const shouldPoll =
+    batch.status === "running" || activeRuns.length > 0 || isSubmitting || isResetting;
 
   async function refreshStatus() {
     const response = await fetch("/api/articles/cluster-all", {
@@ -88,6 +103,7 @@ export function GlobalPipelineRunner({
     }
 
     setBatch(payload.batch);
+    setReset(payload.reset);
     setActiveRuns(payload.activeRuns);
     return payload;
   }
@@ -162,6 +178,60 @@ export function GlobalPipelineRunner({
     }
   }
 
+  async function resetClusteringState() {
+    const confirmed = window.confirm(
+      "Delete all persisted clustering state? This removes generated product dossiers, article dossiers, case runs, and proposed candidates, but leaves source hackathon data untouched.",
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setIsResetting(true);
+    setFeedback(null);
+
+    try {
+      const response = await fetch("/api/articles/cluster-all", {
+        method: "DELETE",
+      });
+
+      const payload = (await response.json()) as StatusPayload & {
+        error?: string;
+      };
+
+      if (!response.ok || !payload.ok) {
+        setFeedback({
+          tone: "error",
+          text: payload.error ?? "Clustering state could not be reset.",
+        });
+        return;
+      }
+
+      setBatch(payload.batch);
+      setReset(payload.reset);
+      setActiveRuns(payload.activeRuns);
+
+      const summary = payload.reset.summary;
+      setFeedback({
+        tone: "success",
+        text: summary
+          ? `Clustering state cleared: ${summary.productDossiers} product dossiers, ${summary.articleDossiers} article dossiers, ${summary.runs} runs, and ${summary.candidates} proposed cases removed.`
+          : "Clustering state cleared.",
+      });
+      router.refresh();
+    } catch (error) {
+      setFeedback({
+        tone: "error",
+        text:
+          error instanceof Error
+            ? error.message
+            : "Clustering state could not be reset.",
+      });
+    } finally {
+      setIsResetting(false);
+    }
+  }
+
   const headline = useMemo(() => {
     if (batch.status === "running" || activeRuns.length > 0) {
       return `${activeRuns.length} active article runs`;
@@ -204,29 +274,51 @@ export function GlobalPipelineRunner({
         ) : null}
       </div>
 
-      <Button
-        size="lg"
-        onClick={runCompletePipeline}
-        disabled={isSubmitting || batch.status === "running" || !hasAi}
-        className="w-full"
-      >
-        {isSubmitting ? (
-          <>
-            <LoaderCircle className="size-4 animate-spin" />
-            Starting complete pipeline
-          </>
-        ) : batch.status === "running" ? (
-          <>
-            <LoaderCircle className="size-4 animate-spin" />
-            Complete pipeline running
-          </>
-        ) : (
-          <>
-            <Play className="size-4" />
-            Run complete pipeline
-          </>
-        )}
-      </Button>
+      <div className="grid gap-3 md:grid-cols-2">
+        <Button
+          size="lg"
+          onClick={runCompletePipeline}
+          disabled={isSubmitting || isResetting || batch.status === "running" || !hasAi}
+          className="w-full"
+        >
+          {isSubmitting ? (
+            <>
+              <LoaderCircle className="size-4 animate-spin" />
+              Starting complete pipeline
+            </>
+          ) : batch.status === "running" ? (
+            <>
+              <LoaderCircle className="size-4 animate-spin" />
+              Complete pipeline running
+            </>
+          ) : (
+            <>
+              <Play className="size-4" />
+              Run complete pipeline
+            </>
+          )}
+        </Button>
+
+        <Button
+          size="lg"
+          variant="destructive"
+          onClick={resetClusteringState}
+          disabled={isSubmitting || isResetting || batch.status === "running" || activeRuns.length > 0}
+          className="w-full"
+        >
+          {isResetting ? (
+            <>
+              <LoaderCircle className="size-4 animate-spin" />
+              Resetting clustering state
+            </>
+          ) : (
+            <>
+              <Trash2 className="size-4" />
+              Reset clustering state
+            </>
+          )}
+        </Button>
+      </div>
 
       <div className="space-y-3">
         {activeRuns.length ? (
@@ -258,6 +350,17 @@ export function GlobalPipelineRunner({
           </div>
         )}
       </div>
+
+      {reset.summary ? (
+        <div className="rounded-[22px] border border-white/10 bg-black/8 px-4 py-4 text-sm leading-6 text-[var(--muted-foreground)]">
+          Reset clustering state last ran{" "}
+          {reset.completedAt ? formatUiDateTime(reset.completedAt) : "recently"}.
+          Removed {reset.summary.productDossiers} product dossiers,{" "}
+          {reset.summary.articleDossiers} article dossiers, {reset.summary.runs} runs,{" "}
+          {reset.summary.candidates} candidates, and{" "}
+          {reset.summary.candidateMembers} candidate links.
+        </div>
+      ) : null}
 
       {feedback ? (
         <div

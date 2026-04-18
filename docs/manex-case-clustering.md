@@ -144,11 +144,23 @@ The UI is intentionally more opinionated now.
 dashboard, with:
 
 - a complete-pipeline button for all articles
+- a destructive reset button for scrubbing generated clustering state
 - live per-article run stages while the pipeline is active
 - validated cases first
 - watchlists second
 - noise buckets third
 - article workspaces in the sidebar
+
+The reset action deletes only clustering-owned state:
+
+- `team_product_dossier`
+- `team_article_dossier`
+- `team_case_run`
+- `team_case_candidate`
+- `team_case_candidate_member`
+
+It does not touch the source hackathon dataset, quality signals, or the
+separate case-state/workflow tables.
 
 `/articles/[articleId]` is the workspace view, with:
 

@@ -271,7 +271,6 @@ export async function DELETE() {
 
   return Response.json({
     ok: true,
-    reset: latestResetStatus,
     ...(await buildStatusPayload()),
   });
 }
