@@ -26,6 +26,7 @@ import {
   type QualitySignal,
   type QualitySignalType,
 } from "@/lib/quality-inbox";
+import { DEFAULT_PRODUCT_DOSSIER_ID } from "@/lib/manex-product-dossier";
 
 export const dynamic = "force-dynamic";
 
@@ -167,6 +168,15 @@ export default async function Home({ searchParams }: HomeProps) {
                 feed without jumping into SQL or root-cause analysis yet.
               </p>
               <div className="flex flex-wrap gap-3">
+                <Button
+                  variant="outline"
+                  size="lg"
+                  render={
+                    <Link href={`/products/${DEFAULT_PRODUCT_DOSSIER_ID}`}>
+                      Open product dossier
+                    </Link>
+                  }
+                />
                 <Button
                   variant="outline"
                   size="lg"
