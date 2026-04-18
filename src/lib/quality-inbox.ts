@@ -28,6 +28,7 @@ export type QualitySignal = {
   articleName: string | null;
   severity: string | null;
   defectCode: string | null;
+  imageUrl: string | null;
   preview: string;
   context: string;
   caseHints: {
@@ -239,6 +240,7 @@ export async function getQualityInbox(
       articleName: defect.articleName,
       severity: defect.severity,
       defectCode: defect.code,
+      imageUrl: defect.imageUrl,
       preview: buildDefectPreview(
         defect.code,
         defect.notes,
@@ -267,6 +269,7 @@ export async function getQualityInbox(
       articleName: claim.articleName,
       severity: claim.mappedDefectSeverity,
       defectCode: claim.mappedDefectCode,
+      imageUrl: claim.imageUrl,
       preview: buildClaimPreview(claim.complaintText, claim.mappedDefectCode),
       context: [
         claim.articleName ?? claim.articleId ?? "Unknown article",
@@ -291,6 +294,7 @@ export async function getQualityInbox(
       articleName: test.articleName,
       severity: test.severity,
       defectCode: null,
+      imageUrl: null,
       preview: buildTestPreview(
         test.testKey,
         test.overallResult,

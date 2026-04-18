@@ -1,4 +1,5 @@
 import { env } from "@/lib/env";
+import { resolveManexImageUrl } from "@/lib/manex-images";
 import { queryPostgres } from "@/lib/postgres";
 
 type SmokeMode = "live" | "missing" | "error";
@@ -93,22 +94,6 @@ const redactConnectionString = (value: string | undefined) => {
   }
 };
 
-const buildAssetUrl = (path: string | null) => {
-  if (!path) {
-    return null;
-  }
-
-  if (!env.MANEX_ASSET_BASE_URL) {
-    return path;
-  }
-
-  try {
-    return new URL(path, env.MANEX_ASSET_BASE_URL).toString();
-  } catch {
-    return path;
-  }
-};
-
 const trimNotes = (value: string | null) => {
   const text = value?.replace(/\s+/g, " ").trim();
 
@@ -133,7 +118,7 @@ const toSampleRow = (row: DefectDetailRow): ManexSampleRow => ({
       : row.reported_part_title ??
         row.reported_part_number ??
         "Unknown reported part",
-  imageUrl: buildAssetUrl(row.image_url),
+  imageUrl: resolveManexImageUrl(row.image_url),
   notes: trimNotes(row.notes),
 });
 

@@ -2,6 +2,7 @@ import type { QueryResultRow } from "pg";
 import { startOfWeek } from "date-fns";
 
 import { env } from "@/lib/env";
+import { resolveManexImageUrl } from "@/lib/manex-images";
 import { queryPostgres } from "@/lib/postgres";
 
 type TransportKind = "rest" | "postgres";
@@ -552,24 +553,6 @@ const normalizeInteger = (value: number | string | null | undefined) => {
 const normalizeWeekStart = (value: string) =>
   startOfWeek(new Date(value), { weekStartsOn: 1 }).toISOString();
 
-const buildAssetUrl = (path: string | null | undefined) => {
-  const normalized = normalizeNullableText(path);
-
-  if (!normalized) {
-    return null;
-  }
-
-  if (!env.MANEX_ASSET_BASE_URL) {
-    return normalized;
-  }
-
-  try {
-    return new URL(normalized, env.MANEX_ASSET_BASE_URL).toString();
-  } catch {
-    return normalized;
-  }
-};
-
 const parseContentRange = (value: string | null) => {
   if (!value) {
     return null;
@@ -825,7 +808,7 @@ const mapDefect = (row: DefectRow): ManexDefect => ({
   detectedTestUnit: normalizeNullableText(row.detected_test_unit),
   detectedTestLower: normalizeNumber(row.detected_test_lower),
   detectedTestUpper: normalizeNumber(row.detected_test_upper),
-  imageUrl: buildAssetUrl(row.image_url),
+  imageUrl: resolveManexImageUrl(row.image_url),
   notes: normalizeText(row.notes),
   defectWeekStart: normalizeWeekStart(row.defect_ts),
 });
@@ -848,7 +831,7 @@ const mapClaim = (row: ClaimRow): ManexFieldClaim => ({
   mappedDefectCode: normalizeNullableText(row.mapped_defect_code),
   mappedDefectSeverity: normalizeNullableText(row.mapped_defect_severity),
   daysFromBuild: normalizeInteger(row.days_from_build),
-  imageUrl: buildAssetUrl(row.image_url),
+  imageUrl: resolveManexImageUrl(row.image_url),
   notes: normalizeText(row.notes),
   claimWeekStart: normalizeWeekStart(row.claim_ts),
 });
@@ -945,7 +928,7 @@ const mapRework = (row: ReworkRow): ManexReworkRecord => ({
   actionText: normalizeText(row.action_text),
   reportedPartNumber: normalizeNullableText(row.reported_part_number),
   userId: normalizeNullableText(row.user_id),
-  imageUrl: buildAssetUrl(row.image_url),
+  imageUrl: resolveManexImageUrl(row.image_url),
   timeMinutes: normalizeNumber(row.time_minutes),
   cost: normalizeNumber(row.cost),
 });

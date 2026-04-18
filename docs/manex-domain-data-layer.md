@@ -53,7 +53,9 @@ Raw table names are now confined to the data layer for workflow write-back and i
 - timestamps are normalized to ISO strings
 - nullable text is normalized consistently
 - numeric fields are converted to `number | null`
-- asset paths are expanded with `MANEX_ASSET_BASE_URL` when available
+- asset paths are resolved centrally through `src/lib/manex-images.ts`
+- known dataset image-path quirks are normalized in that helper before URLs reach the UI
+- unresolved or malformed image paths become `null` so UI consumers can handle them safely
 
 ## Current consumers
 

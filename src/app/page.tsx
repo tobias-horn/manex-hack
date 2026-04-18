@@ -18,6 +18,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { QualitySignalImage } from "@/components/quality-signal-image";
 import {
   getQualityInbox,
   parseQualityInboxFilters,
@@ -96,6 +97,9 @@ function ActiveFilters({ filters }: { filters: QualityInboxFilterState }) {
 }
 
 function SignalCard({ item }: { item: QualitySignal }) {
+  const showsImagePreview =
+    item.type === "defect" || item.type === "field_claim";
+
   return (
     <article className="rounded-[26px] border border-white/8 bg-black/8 p-5">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -123,6 +127,15 @@ function SignalCard({ item }: { item: QualitySignal }) {
             </p>
           </div>
         </div>
+
+        {showsImagePreview ? (
+          <div className="w-full lg:w-[220px] lg:flex-none">
+            <QualitySignalImage
+              alt={`${signalLabel[item.type]} preview for ${item.sourceId}`}
+              src={item.imageUrl}
+            />
+          </div>
+        ) : null}
 
         <div className="rounded-[20px] bg-[color:var(--surface-low)] px-4 py-3 text-right">
           <div className="lab-stamp">{item.sourceLabel}</div>
