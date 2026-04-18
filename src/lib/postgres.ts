@@ -1,4 +1,4 @@
-import { Pool, type QueryResultRow } from "pg";
+import { Pool, type PoolClient, type QueryResultRow } from "pg";
 
 import { env } from "@/lib/env";
 
@@ -29,6 +29,33 @@ const shouldRetryWithoutSsl = (error: unknown) =>
   error instanceof Error &&
   /does not support SSL connections/i.test(error.message);
 
+async function retryWithoutSslIfNeeded(error: unknown) {
+  if (!poolUsesSsl || !shouldRetryWithoutSsl(error) || !pool) {
+    throw error;
+  }
+
+  await pool.end().catch(() => undefined);
+  poolUsesSsl = false;
+  pool = createPool(false);
+
+  return pool;
+}
+
+export async function connectPostgresClient(): Promise<PoolClient | null> {
+  let currentPool = getPostgresPool();
+
+  if (!currentPool) {
+    return null;
+  }
+
+  try {
+    return await currentPool.connect();
+  } catch (error) {
+    currentPool = await retryWithoutSslIfNeeded(error);
+    return currentPool.connect();
+  }
+}
+
 export async function queryPostgres<T extends QueryResultRow>(
   text: string,
   values?: unknown[],
@@ -43,14 +70,7 @@ export async function queryPostgres<T extends QueryResultRow>(
     const result = await client.query<T>(text, values);
     return result.rows;
   } catch (error) {
-    if (!poolUsesSsl || !shouldRetryWithoutSsl(error)) {
-      throw error;
-    }
-
-    await client.end().catch(() => undefined);
-    poolUsesSsl = false;
-    pool = createPool(false);
-    client = pool;
+    client = await retryWithoutSslIfNeeded(error);
 
     const result = await client.query<T>(text, values);
     return result.rows;

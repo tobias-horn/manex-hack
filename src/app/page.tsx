@@ -175,6 +175,11 @@ export default async function Home({ searchParams }: HomeProps) {
                 <Button
                   variant="outline"
                   size="lg"
+                  render={<Link href="/cases">Open case state layer</Link>}
+                />
+                <Button
+                  variant="outline"
+                  size="lg"
                   render={<Link href="/workflow">Open workflow foundation</Link>}
                 />
               </div>

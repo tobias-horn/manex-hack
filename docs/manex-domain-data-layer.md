@@ -69,3 +69,5 @@ If a new feature needs data, extend the domain layer first, then consume it from
 For Prompt 6, the higher-order deterministic helpers that sit on top of this layer are documented in `docs/manex-traceability.md`.
 
 For Prompt 7, the thin workflow write-back layer is documented in `docs/manex-writeback-foundation.md`.
+
+For Prompt 8, app-owned case persistence is intentionally split into `src/lib/manex-case-state.ts` and documented in `docs/manex-case-state.md`. That keeps custom investigation state separate from the shared dataset access layer.
