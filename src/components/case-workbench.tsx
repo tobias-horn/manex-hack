@@ -1,6 +1,5 @@
 "use client";
 
-import { formatDistanceToNowStrict } from "date-fns";
 import {
   BookMarked,
   FolderGit2,
@@ -26,6 +25,7 @@ import type {
   ManexCasePriority,
   ManexCaseSignalType,
 } from "@/lib/manex-case-state";
+import { formatUiRelative } from "@/lib/ui-format";
 
 type CaseWorkbenchProps = {
   initialCases: ManexCase[];
@@ -67,7 +67,7 @@ const signalLabel: Record<ManexCaseSignalType, string> = {
 };
 
 function formatRelative(value: string) {
-  return formatDistanceToNowStrict(new Date(value), { addSuffix: true });
+  return formatUiRelative(value);
 }
 
 function replaceCaseEntry(current: ManexCase[], nextCase: ManexCase) {

@@ -1,7 +1,7 @@
-import { format } from "date-fns";
 import { ArrowLeft, GitBranch, Network, Search } from "lucide-react";
 import Link from "next/link";
 
+import { ScreenState } from "@/components/screen-state";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -11,12 +11,14 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { DEMO_TRACEABILITY_JUMPS } from "@/lib/manex-demo";
 import {
   getTraceabilityWorkbench,
   parseTraceabilityFilters,
   type ProductTraceability,
   type TraceabilityBlastRadius,
 } from "@/lib/manex-traceability";
+import { formatUiDateTime } from "@/lib/ui-format";
 
 export const dynamic = "force-dynamic";
 
@@ -30,10 +32,6 @@ const articleTrackTones = [
   "bg-[color:rgba(45,123,98,0.1)]",
   "bg-[color:rgba(83,91,201,0.08)]",
 ];
-
-function formatDateTime(value: string | null) {
-  return value ? format(new Date(value), "dd MMM yyyy, HH:mm") : "Unknown";
-}
 
 function KeyMetric({
   label,
@@ -109,7 +107,7 @@ function ProductTraceCard({
             <CardDescription className="mt-2 max-w-2xl leading-6">
               {trace.product.articleName ?? trace.product.articleId ?? "Unknown article"} ·{" "}
               {trace.product.orderId ?? "Order unavailable"} · built{" "}
-              {formatDateTime(trace.product.buildTs)}
+              {formatUiDateTime(trace.product.buildTs)}
             </CardDescription>
           </div>
           <Badge variant="outline">{trace.transport}</Badge>
@@ -177,7 +175,7 @@ function ProductTraceCard({
                         </div>
                         <p className="text-sm leading-6 text-[var(--muted-foreground)]">
                           Serial {item.serialNumber ?? "n/a"} · installed{" "}
-                          {formatDateTime(item.installedAt)}
+                          {formatUiDateTime(item.installedAt)}
                         </p>
                       </div>
 
@@ -355,7 +353,7 @@ function BlastRadiusCard({
                       {product.articleName ?? product.articleId ?? "Unknown article"}
                     </div>
                     <p className="text-sm leading-6 text-[var(--muted-foreground)]">
-                      Built {formatDateTime(product.buildTs)} · order{" "}
+                      Built {formatUiDateTime(product.buildTs)} · order{" "}
                       {product.orderId ?? "n/a"} · positions{" "}
                       {product.sharedPositions.join(", ") || product.sharedFindNumbers.join(", ") || "n/a"}
                     </p>
@@ -369,6 +367,13 @@ function BlastRadiusCard({
                     <p className="mt-1 text-sm text-[var(--muted-foreground)]">
                       {product.sharedSuppliers.join(", ") || "Supplier unknown"}
                     </p>
+                    <div className="mt-3">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        render={<Link href={`/products/${product.productId}`}>Open dossier</Link>}
+                      />
+                    </div>
                   </div>
                 </div>
               </article>
@@ -385,7 +390,33 @@ export default async function TraceabilityPage({
 }: TraceabilityPageProps) {
   const params = await searchParams;
   const filters = parseTraceabilityFilters(params);
-  const workbench = await getTraceabilityWorkbench(filters);
+  let workbench;
+
+  try {
+    workbench = await getTraceabilityWorkbench(filters);
+  } catch {
+    return (
+      <ScreenState
+        eyebrow="Trace unavailable"
+        title="The traceability explorer could not be loaded"
+        description="The deterministic product-to-batch helper chain hit a temporary read error. Use one of the seeded live queries to retry with a known-good path."
+        tone="error"
+        actions={
+          <>
+            {DEMO_TRACEABILITY_JUMPS.slice(0, 2).map((jump) => (
+              <Button
+                key={jump.id}
+                size="lg"
+                variant="outline"
+                render={<Link href={jump.href}>{jump.label}</Link>}
+              />
+            ))}
+            <Button size="lg" render={<Link href="/">Back to inbox</Link>} />
+          </>
+        }
+      />
+    );
+  }
   const formDefaults = {
     product: filters.productId ?? workbench.defaults.productId ?? "",
     batch: filters.batchRef ?? workbench.defaults.batchRef ?? "",
@@ -439,6 +470,16 @@ export default async function TraceabilityPage({
               The defaults open on a live shared component path so the screen is useful
               immediately. You can override the product, batch, or part number at any time.
             </CardDescription>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {DEMO_TRACEABILITY_JUMPS.map((jump) => (
+                <Button
+                  key={jump.id}
+                  variant="outline"
+                  size="sm"
+                  render={<Link href={jump.href}>{jump.label}</Link>}
+                />
+              ))}
+            </div>
           </CardHeader>
           <CardContent className="px-5 pb-5">
             <form action="/traceability" className="grid gap-4 lg:grid-cols-[1fr_1fr_1fr_auto]">

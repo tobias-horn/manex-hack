@@ -1,7 +1,10 @@
-import { format } from "date-fns";
-
 import { capabilities, env } from "@/lib/env";
 import { createManexDataAccess } from "@/lib/manex-data-access";
+import {
+  formatUiDateTime,
+  formatUiShortDay,
+  formatUiWeekStamp,
+} from "@/lib/ui-format";
 
 export type DataMode = "live" | "demo";
 
@@ -384,8 +387,8 @@ async function getAnalysisFeed() {
       .sort((left, right) => left.weekStart.localeCompare(right.weekStart))
       .slice(0, 8)
       .map((row) => ({
-        label: format(new Date(row.weekStart), "dd MMM"),
-        stamp: `KW ${format(new Date(row.weekStart), "II")}`,
+        label: formatUiShortDay(row.weekStart),
+        stamp: formatUiWeekStamp(row.weekStart),
         supplierSpike: row.supplierSpike,
         vibrationFailures: row.vibrationFailures,
         thermalClaims: row.thermalClaims,
@@ -417,7 +420,7 @@ async function getAnalysisFeed() {
         id: defect.id,
         code: defect.code,
         severity: defect.severity,
-        timestamp: format(new Date(defect.occurredAt), "dd MMM yyyy, HH:mm"),
+        timestamp: formatUiDateTime(defect.occurredAt),
         productId: defect.productId,
         partNumber: defect.reportedPartNumber ?? "Unknown part",
         notes: trimNotes(defect.notes),
@@ -431,7 +434,7 @@ async function getAnalysisFeed() {
 }
 
 async function getActionFeed() {
-  if (!capabilities.hasSupabase && !capabilities.hasPostgres) {
+  if (!capabilities.hasRest && !capabilities.hasPostgres) {
     return {
       mode: "demo" as const,
       actions: DEMO_ACTIONS,
@@ -452,11 +455,11 @@ async function getActionFeed() {
         actionType: action.actionType,
         status: action.status,
         comments: action.comments,
-        timestamp: format(new Date(action.recordedAt), "dd MMM yyyy, HH:mm"),
+        timestamp: formatUiDateTime(action.recordedAt),
       })),
     };
   } catch (error) {
-    console.error("Supabase action feed unavailable:", error);
+    console.error("Manex action feed unavailable:", error);
 
     return {
       mode: "demo" as const,

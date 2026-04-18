@@ -1,9 +1,9 @@
-import { format } from "date-fns";
 import { z } from "zod";
 
 import { capabilities } from "@/lib/env";
 import { createManexDataAccess } from "@/lib/manex-data-access";
 import type { Initiative } from "@/lib/quality-workspace";
+import { formatUiDateTime, normalizeUiIdentifier } from "@/lib/ui-format";
 
 export const runtime = "nodejs";
 
@@ -38,12 +38,12 @@ const formatAction = (action: {
   ts: string;
 }): Initiative => ({
   id: action.action_id,
-  productId: action.product_id,
-  defectId: action.defect_id,
+  productId: normalizeUiIdentifier(action.product_id) ?? action.product_id,
+  defectId: normalizeUiIdentifier(action.defect_id),
   actionType: action.action_type,
   status: action.status,
   comments: action.comments ?? "No notes attached.",
-  timestamp: format(new Date(action.ts), "dd MMM yyyy, HH:mm"),
+  timestamp: formatUiDateTime(action.ts),
 });
 
 export async function POST(request: Request) {
@@ -82,12 +82,13 @@ export async function POST(request: Request) {
   try {
     const result = await data.workflow.recordAction({
       id: actionId,
-      productId: parsed.data.productId,
+      productId:
+        normalizeUiIdentifier(parsed.data.productId) ?? parsed.data.productId,
       recordedAt: timestamp,
       actionType: parsed.data.actionType,
       status: parsed.data.status,
       userId: "forensic_lens",
-      defectId: parsed.data.defectId || null,
+      defectId: normalizeUiIdentifier(parsed.data.defectId) || null,
       comments: parsed.data.comments,
     });
 
@@ -146,7 +147,7 @@ export async function PATCH(request: Request) {
 
   try {
     const result = await data.workflow.updateAction({
-      id: parsed.data.actionId,
+      id: normalizeUiIdentifier(parsed.data.actionId) ?? parsed.data.actionId,
       recordedAt: timestamp,
       status: parsed.data.status,
       comments: parsed.data.comments?.trim() || undefined,

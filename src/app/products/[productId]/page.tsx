@@ -1,4 +1,3 @@
-import { format } from "date-fns";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -13,6 +12,7 @@ import { notFound } from "next/navigation";
 
 import { ProductActionPanel } from "@/components/product-action-panel";
 import { QualitySignalImage } from "@/components/quality-signal-image";
+import { ScreenState } from "@/components/screen-state";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -22,10 +22,12 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { DEMO_DOSSIER_PRODUCTS } from "@/lib/manex-demo";
 import {
   getProductDossier,
   type ProductDossierEvidenceFrame,
 } from "@/lib/manex-product-dossier";
+import { formatUiDate, formatUiDateTime } from "@/lib/ui-format";
 
 export const dynamic = "force-dynamic";
 
@@ -44,14 +46,6 @@ const statusTone: Record<string, string> = {
   FAIL: "bg-[color:rgba(178,69,63,0.12)] text-[var(--destructive)]",
   MARGINAL: "bg-[color:rgba(208,141,37,0.14)] text-amber-700",
 };
-
-function formatDateTime(value: string | null) {
-  return value ? format(new Date(value), "dd MMM yyyy, HH:mm") : "Unknown";
-}
-
-function formatWeek(value: string) {
-  return format(new Date(value), "dd MMM yyyy");
-}
 
 function KeyMetric({
   label,
@@ -96,7 +90,33 @@ export default async function ProductDossierPage({
   params,
 }: ProductDossierPageProps) {
   const { productId } = await params;
-  const dossier = await getProductDossier(productId);
+  let dossier;
+
+  try {
+    dossier = await getProductDossier(productId);
+  } catch {
+    return (
+      <ScreenState
+        eyebrow="Dossier unavailable"
+        title="The single-product dossier could not be assembled"
+        description="One of the integrated read paths failed while composing the product view. The dataset is still available, and you can jump to one of the seeded demo products below."
+        tone="error"
+        actions={
+          <>
+            {DEMO_DOSSIER_PRODUCTS.slice(0, 2).map((productJump) => (
+              <Button
+                key={productJump.id}
+                size="lg"
+                variant="outline"
+                render={<Link href={productJump.href}>{productJump.label}</Link>}
+              />
+            ))}
+            <Button size="lg" render={<Link href="/">Back to inbox</Link>} />
+          </>
+        }
+      />
+    );
+  }
 
   if (!dossier) {
     notFound();
@@ -133,7 +153,7 @@ export default async function ProductDossierPage({
                   <Badge variant="outline">{product.orderId}</Badge>
                 ) : null}
                 <Badge variant="outline">
-                  Built {formatDateTime(product?.buildTs ?? null)}
+                  Built {formatUiDateTime(product?.buildTs ?? null)}
                 </Badge>
               </div>
             </div>
@@ -278,7 +298,7 @@ export default async function ProductDossierPage({
                         <div className="rounded-[20px] bg-[color:var(--surface-low)] px-4 py-4">
                           <div className="eyebrow">Occurred</div>
                           <div className="mt-2 text-sm font-medium">
-                            {formatDateTime(defect.occurredAt)}
+                            {formatUiDateTime(defect.occurredAt)}
                           </div>
                           <div className="mt-4 eyebrow">Transport</div>
                           <div className="mt-2 text-sm font-medium">
@@ -364,7 +384,7 @@ export default async function ProductDossierPage({
                         <div className="rounded-[20px] bg-[color:var(--surface-low)] px-4 py-4">
                           <div className="eyebrow">Claimed</div>
                           <div className="mt-2 text-sm font-medium">
-                            {formatDateTime(claim.claimedAt)}
+                            {formatUiDateTime(claim.claimedAt)}
                           </div>
                           <div className="mt-4 eyebrow">Transport</div>
                           <div className="mt-2 text-sm font-medium">
@@ -431,7 +451,7 @@ export default async function ProductDossierPage({
                                 </div>
                                 <p className="text-sm leading-6 text-[var(--muted-foreground)]">
                                   Serial {item.serialNumber ?? "n/a"} · installed{" "}
-                                  {formatDateTime(item.installedAt)}
+                                  {formatUiDateTime(item.installedAt)}
                                 </p>
                               </div>
 
@@ -453,7 +473,7 @@ export default async function ProductDossierPage({
                                   {item.supplierName ?? "Unknown supplier"}
                                 </div>
                                 <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-                                  Received {formatDateTime(item.batchReceivedDate)}
+                                  Received {formatUiDateTime(item.batchReceivedDate)}
                                 </p>
                               </div>
 
@@ -482,6 +502,37 @@ export default async function ProductDossierPage({
           </div>
 
           <div className="space-y-6">
+            <Card className="surface-panel rounded-[30px] px-0 py-0">
+              <CardHeader className="px-6 pt-6">
+                <Badge variant="outline">Demo products</Badge>
+                <CardTitle className="section-title mt-3">
+                  Quick switch
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3 px-5 pb-5">
+                {DEMO_DOSSIER_PRODUCTS.map((productJump) => (
+                  <article
+                    key={productJump.id}
+                    className="rounded-[22px] bg-[color:var(--surface-low)] p-4"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold">{productJump.label}</div>
+                        <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
+                          {productJump.description}
+                        </p>
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        render={<Link href={productJump.href}>Open</Link>}
+                      />
+                    </div>
+                  </article>
+                ))}
+              </CardContent>
+            </Card>
+
             <Card className="surface-panel rounded-[30px] px-0 py-0">
               <CardHeader className="px-6 pt-6">
                 <Badge>
@@ -524,7 +575,9 @@ export default async function ProductDossierPage({
                     >
                       <div className="flex items-center justify-between gap-3">
                         <div>
-                          <div className="lab-stamp">{formatWeek(summary.weekStart)}</div>
+                          <div className="lab-stamp">
+                            {formatUiDate(summary.weekStart)}
+                          </div>
                           <div className="mt-1 text-lg font-semibold">
                             {summary.articleName ?? summary.articleId}
                           </div>
@@ -586,7 +639,7 @@ export default async function ProductDossierPage({
                         {signal.testValue
                           ? `${signal.testValue}${signal.unit ? ` ${signal.unit}` : ""}`
                           : "No measurement value attached"}{" "}
-                        · {formatDateTime(signal.occurredAt)}
+                        · {formatUiDateTime(signal.occurredAt)}
                       </p>
                     </article>
                   ))

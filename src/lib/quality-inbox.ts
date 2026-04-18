@@ -1,6 +1,8 @@
 import { subDays } from "date-fns";
 
 import { createManexDataAccess } from "@/lib/manex-data-access";
+import { memoizeWithTtl } from "@/lib/server-cache";
+import { normalizeUiIdentifier } from "@/lib/ui-format";
 
 export type QualitySignalType =
   | "field_claim"
@@ -94,8 +96,7 @@ const normalizeSignalType = (
 
 const normalizeScalarFilter = (value: string | string[] | undefined) => {
   const input = Array.isArray(value) ? value[0] : value;
-  const trimmed = input?.trim();
-  return trimmed ? trimmed : null;
+  return normalizeUiIdentifier(input);
 };
 
 const getWindowStart = (window: QualityInboxWindow) => {
@@ -157,9 +158,11 @@ export function parseQualityInboxFilters(
   };
 }
 
-export async function getQualityInbox(
-  filters: QualityInboxFilterState,
-): Promise<QualityInboxReadModel> {
+const loadQualityInbox = memoizeWithTtl(
+  "quality-inbox",
+  12_000,
+  (filters: QualityInboxFilterState) => JSON.stringify(filters),
+  async (filters: QualityInboxFilterState): Promise<QualityInboxReadModel> => {
   const data = createManexDataAccess();
   const observedAfter = getWindowStart(filters.timeWindow);
 
@@ -358,4 +361,11 @@ export async function getQualityInbox(
     articleOptions,
     defectCodeOptions,
   };
+  },
+);
+
+export async function getQualityInbox(
+  filters: QualityInboxFilterState,
+): Promise<QualityInboxReadModel> {
+  return loadQualityInbox(filters);
 }

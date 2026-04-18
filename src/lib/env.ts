@@ -71,11 +71,5 @@ export const env = {
 export const capabilities = {
   hasPostgres: Boolean(env.DATABASE_URL),
   hasRest: Boolean(env.MANEX_REST_API_URL && env.MANEX_REST_API_KEY),
-  hasSupabase: Boolean(
-    env.MANEX_REST_API_URL &&
-      (env.MANEX_REST_API_KEY ||
-        env.SUPABASE_SERVICE_ROLE_KEY ||
-        env.NEXT_PUBLIC_SUPABASE_ANON_KEY),
-  ),
   hasAi: Boolean(env.OPENAI_API_KEY),
 } as const;

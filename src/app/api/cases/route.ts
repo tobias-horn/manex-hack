@@ -8,6 +8,7 @@ import {
   type ManexCaseStatus,
 } from "@/lib/manex-case-state";
 import { capabilities } from "@/lib/env";
+import { normalizeUiIdentifier } from "@/lib/ui-format";
 
 export const runtime = "nodejs";
 
@@ -67,6 +68,9 @@ const cleanOptional = (value: string | undefined) => {
   const cleaned = value?.trim();
   return cleaned ? cleaned : undefined;
 };
+
+const normalizeOptionalId = (value: string | undefined) =>
+  normalizeUiIdentifier(value) ?? undefined;
 
 const formatCaseError = (error: unknown) => {
   if (error instanceof Error) {
@@ -141,8 +145,8 @@ export async function POST(request: Request) {
       id: createId("CASE"),
       title: input.title,
       summary: cleanOptional(input.summary),
-      productId: cleanOptional(input.productId),
-      articleId: cleanOptional(input.articleId),
+      productId: normalizeOptionalId(input.productId),
+      articleId: normalizeOptionalId(input.articleId),
       status: (input.status as ManexCaseStatus | undefined) ?? "triage",
       priority: (input.priority as ManexCasePriority | undefined) ?? "medium",
       createdBy: "forensic_lens",
@@ -151,9 +155,10 @@ export async function POST(request: Request) {
             {
               id: createId("CSL"),
               signalType: input.initialSignalType as ManexCaseSignalType,
-              signalId: input.initialSignalId,
-              productId: cleanOptional(input.productId),
-              articleId: cleanOptional(input.articleId),
+              signalId:
+                normalizeUiIdentifier(input.initialSignalId) ?? input.initialSignalId,
+              productId: normalizeOptionalId(input.productId) ?? null,
+              articleId: normalizeOptionalId(input.articleId) ?? null,
               note: cleanOptional(input.initialSignalNote) ?? null,
             },
           ]

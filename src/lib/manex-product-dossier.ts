@@ -1,5 +1,3 @@
-import { format } from "date-fns";
-
 import {
   createManexDataAccess,
   type ManexDefect,
@@ -13,6 +11,7 @@ import {
   type ProductTraceability,
 } from "@/lib/manex-traceability";
 import type { Initiative } from "@/lib/quality-workspace";
+import { formatUiDateTime, normalizeUiIdentifier } from "@/lib/ui-format";
 
 export const DEFAULT_PRODUCT_DOSSIER_ID = "PRD-00023";
 
@@ -65,7 +64,7 @@ export type ProductDossierReadModel = {
 };
 
 const normalizeProductId = (value: string) =>
-  value.replace(/\s+/g, "").trim().toUpperCase();
+  normalizeUiIdentifier(value) ?? value.replace(/\s+/g, "").trim().toUpperCase();
 
 const uniqueBy = <T,>(items: T[], keyFn: (item: T) => string | null | undefined) => {
   const seen = new Set<string>();
@@ -126,7 +125,7 @@ const mapActionFeed = (actions: ManexWorkflowAction[]): Initiative[] =>
     actionType: action.actionType,
     status: action.status,
     comments: action.comments || "No notes attached.",
-    timestamp: format(new Date(action.recordedAt), "dd MMM yyyy, HH:mm"),
+    timestamp: formatUiDateTime(action.recordedAt),
   }));
 
 export async function getProductDossier(

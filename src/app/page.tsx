@@ -1,4 +1,3 @@
-import { format } from "date-fns";
 import {
   AlertTriangle,
   FileWarning,
@@ -9,6 +8,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 
+import { ScreenState } from "@/components/screen-state";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -19,6 +19,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { QualitySignalImage } from "@/components/quality-signal-image";
+import { DEMO_INBOX_JUMPS } from "@/lib/manex-demo";
 import {
   getQualityInbox,
   parseQualityInboxFilters,
@@ -27,6 +28,7 @@ import {
   type QualitySignalType,
 } from "@/lib/quality-inbox";
 import { DEFAULT_PRODUCT_DOSSIER_ID } from "@/lib/manex-product-dossier";
+import { formatUiDateTime } from "@/lib/ui-format";
 
 export const dynamic = "force-dynamic";
 
@@ -61,10 +63,6 @@ const windowLabel: Record<QualityInboxFilterState["timeWindow"], string> = {
   "90d": "Last 90 days",
   all: "All time",
 };
-
-function formatSignalTimestamp(value: string) {
-  return format(new Date(value), "dd MMM yyyy, HH:mm");
-}
 
 function renderSignalIcon(type: QualitySignalType) {
   if (type === "field_claim") {
@@ -140,7 +138,16 @@ function SignalCard({ item }: { item: QualitySignal }) {
 
         <div className="rounded-[20px] bg-[color:var(--surface-low)] px-4 py-3 text-right">
           <div className="lab-stamp">{item.sourceLabel}</div>
-          <div className="mt-2 text-sm font-medium">{formatSignalTimestamp(item.occurredAt)}</div>
+          <div className="mt-2 text-sm font-medium">
+            {formatUiDateTime(item.occurredAt)}
+          </div>
+          <div className="mt-4">
+            <Button
+              variant="outline"
+              size="sm"
+              render={<Link href={`/products/${item.productId}`}>Open dossier</Link>}
+            />
+          </div>
         </div>
       </div>
     </article>
@@ -150,7 +157,36 @@ function SignalCard({ item }: { item: QualitySignal }) {
 export default async function Home({ searchParams }: HomeProps) {
   const params = await searchParams;
   const filters = parseQualityInboxFilters(params);
-  const inbox = await getQualityInbox(filters);
+  let inbox;
+
+  try {
+    inbox = await getQualityInbox(filters);
+  } catch {
+    return (
+      <ScreenState
+        eyebrow="Inbox unavailable"
+        title="The quality inbox could not be loaded"
+        description="The main symptom feed hit a temporary read failure. The rest of the demo surface is still available through the seeded jumps below."
+        tone="error"
+        actions={
+          <>
+            {DEMO_INBOX_JUMPS.slice(0, 2).map((jump) => (
+              <Button
+                key={jump.id}
+                size="lg"
+                variant="outline"
+                render={<Link href={jump.href}>{jump.label}</Link>}
+              />
+            ))}
+            <Button
+              size="lg"
+              render={<Link href={`/products/${DEFAULT_PRODUCT_DOSSIER_ID}`}>Open dossier</Link>}
+            />
+          </>
+        }
+      />
+    );
+  }
 
   return (
     <main className="min-h-screen">
@@ -425,6 +461,40 @@ export default async function Home({ searchParams }: HomeProps) {
                     structured quality signals instead of raw schema knowledge.
                   </p>
                 </div>
+              </CardContent>
+            </Card>
+
+            <Card className="surface-panel rounded-[30px] px-0 py-0">
+              <CardHeader className="px-6 pt-6">
+                <Badge variant="outline">Demo jumps</Badge>
+                <CardTitle className="section-title mt-3">
+                  Seeded navigation
+                </CardTitle>
+                <CardDescription className="mt-2 leading-6">
+                  These links jump straight into reliable live views for the demo.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3 px-5 pb-5">
+                {DEMO_INBOX_JUMPS.map((jump) => (
+                  <article
+                    key={jump.id}
+                    className="rounded-[22px] bg-[color:var(--surface-low)] p-4"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold">{jump.label}</div>
+                        <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
+                          {jump.description}
+                        </p>
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        render={<Link href={jump.href}>Open</Link>}
+                      />
+                    </div>
+                  </article>
+                ))}
               </CardContent>
             </Card>
           </div>
