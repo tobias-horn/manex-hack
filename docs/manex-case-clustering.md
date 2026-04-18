@@ -80,6 +80,7 @@ The clustering pass is intentionally constrained:
 
 - it proposes case candidates, not final RCA conclusions
 - it may leave products unassigned
+- it may leave individual faults standalone when they do not support any shared case
 - it keeps cosmetic, service, false-positive, process, supplier, and likely
   functional clusters separate when the evidence supports it
 - it returns strict JSON so the output is persistable and forward-compatible

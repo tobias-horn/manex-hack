@@ -110,6 +110,23 @@ const clusteringProposalSchema = z.object({
       }),
     )
     .max(80),
+  standaloneSignals: z
+    .array(
+      z.object({
+        signalId: z.string().trim().min(1).max(80),
+        productId: z.string().trim().min(1).max(80),
+        signalType: z.enum([
+          "defect",
+          "field_claim",
+          "bad_test",
+          "marginal_test",
+          "rework",
+          "product_action",
+        ]),
+        reason: z.string().trim().min(1).max(280),
+      }),
+    )
+    .max(240),
   ambiguousLinks: z
     .array(
       z.object({
@@ -333,9 +350,27 @@ export type ArticleCaseboardReadModel = {
   dossier: ClusteredArticleDossier | null;
   latestRun: TeamCaseRunSummary | null;
   proposedCases: TeamCaseCandidateRecord[];
+  unassignedProducts: Array<{
+    productId: string;
+    reason: string;
+  }>;
+  standaloneSignals: Array<{
+    signalId: string;
+    productId: string;
+    signalType: ProductSignalTimelineItem["signalType"];
+    reason: string;
+  }>;
+  ambiguousLinks: Array<{
+    productId: string;
+    relatedProposalTempIds: string[];
+    reason: string;
+    confidence: number;
+  }>;
+  globalObservations: string[];
 };
 
 type ProposalOutput = z.infer<typeof clusteringProposalSchema>;
+type ProposalStandaloneSignal = ProposalOutput["standaloneSignals"][number];
 
 const CLAIM_STOP_WORDS = new Set([
   "the",
@@ -1230,6 +1265,8 @@ function buildPassASystemPrompt() {
     "Prefer grouping by likely common mechanism, not just identical labels.",
     "Keep separate service or documentation complaints, cosmetic-only issues, likely functional failures, process drift, supplier-linked issues, and false positives.",
     "A product may remain unassigned if evidence is weak.",
+    "A specific fault signal may remain standalone even if the product has other clusterable evidence.",
+    "Use standaloneSignals when a fault appears real but not meaningfully related to any shared cluster.",
     "Return only structured JSON.",
   ].join("\n");
 }
@@ -1240,6 +1277,7 @@ function buildPassAUserPrompt(payload: unknown) {
     "Use product threads as the main unit of reasoning.",
     "Use the raw appendix only to confirm or sharpen the clusters.",
     "If a cluster is weak or noisy, leave products unassigned instead of forcing a grouping.",
+    "If an individual defect, claim, or test should stay isolated, return it in standaloneSignals instead of forcing it into a cluster.",
     "",
     JSON.stringify(payload),
   ].join("\n");
@@ -1251,6 +1289,7 @@ function buildPassBSystemPrompt() {
     "Refine, merge, split, or reject draft case clusters.",
     "Keep only clusters that are investigation-worthy and supported by shared evidence.",
     "Remove products that do not belong, merge duplicate cases, and keep cosmetic, service, or false-positive groups separate from likely functional or manufacturing cases.",
+    "Preserve standalone signals when a fault appears isolated or not cluster-related.",
     "Return the same structured JSON contract, now representing the final reviewed proposal set.",
   ].join("\n");
 }
@@ -1259,6 +1298,7 @@ function buildPassBUserPrompt(payload: unknown) {
   return [
     "Review and refine these draft case proposals using the same article dossier context.",
     "The final output should be tighter than the draft: fewer duplicates, cleaner case boundaries, clearer evidence, and clearer unassigned products where confidence is weak.",
+    "Keep standalone signals explicit when the evidence suggests they should not be grouped into any proposed case.",
     "",
     JSON.stringify(payload),
   ].join("\n");
@@ -1529,6 +1569,7 @@ async function runProposalPass(
     reviewSummary: "Chunked draft proposals generated before final review.",
     cases: chunkDrafts.flatMap((item) => item.cases),
     unassignedProducts: chunkDrafts.flatMap((item) => item.unassignedProducts),
+    standaloneSignals: chunkDrafts.flatMap((item) => item.standaloneSignals),
     ambiguousLinks: chunkDrafts.flatMap((item) => item.ambiguousLinks),
     globalObservations: uniqueValues(
       chunkDrafts.flatMap((item) => item.globalObservations),
@@ -1618,6 +1659,7 @@ function materializeCaseCandidates(input: {
           contractVersion: CASE_PROPOSAL_SCHEMA_VERSION,
           proposal: candidate,
           unassignedProducts: input.proposal.unassignedProducts,
+          standaloneSignals: input.proposal.standaloneSignals,
           ambiguousLinks: input.proposal.ambiguousLinks,
         },
         members: [
@@ -1643,6 +1685,79 @@ function materializeCaseCandidates(input: {
       };
     })
     .filter((value): value is NonNullable<typeof value> => Boolean(value));
+}
+
+function extractUnclusteredState(input: {
+  dossier: ClusteredArticleDossier | null;
+  latestRun: TeamCaseRunSummary | null;
+  proposedCases: TeamCaseCandidateRecord[];
+}) {
+  const parsed = clusteringProposalSchema.safeParse(input.latestRun?.reviewPayload);
+  const productIdSet = new Set(
+    (input.dossier?.productThreads ?? []).map((thread) => thread.productId),
+  );
+  const signalLookup = new Map<
+    string,
+    {
+      productId: string;
+      signalType: ProductSignalTimelineItem["signalType"];
+    }
+  >();
+
+  for (const thread of input.dossier?.productThreads ?? []) {
+    for (const signal of thread.signals) {
+      signalLookup.set(signal.signalId, {
+        productId: thread.productId,
+        signalType: signal.signalType,
+      });
+    }
+  }
+
+  const assignedProductIds = new Set(
+    input.proposedCases.flatMap((candidate) => candidate.includedProductIds),
+  );
+  const assignedSignalIds = new Set(
+    input.proposedCases.flatMap((candidate) => candidate.includedSignalIds),
+  );
+
+  if (!parsed.success) {
+    return {
+      unassignedProducts: [] as ArticleCaseboardReadModel["unassignedProducts"],
+      standaloneSignals: [] as ArticleCaseboardReadModel["standaloneSignals"],
+      ambiguousLinks: [] as ArticleCaseboardReadModel["ambiguousLinks"],
+      globalObservations: [] as string[],
+    };
+  }
+
+  const standaloneBySignalId = new Map<string, ProposalStandaloneSignal>();
+
+  for (const item of parsed.data.standaloneSignals) {
+    if (!standaloneBySignalId.has(item.signalId)) {
+      standaloneBySignalId.set(item.signalId, item);
+    }
+  }
+
+  return {
+    unassignedProducts: parsed.data.unassignedProducts.filter(
+      (item) =>
+        productIdSet.has(item.productId) &&
+        !assignedProductIds.has(item.productId),
+    ),
+    standaloneSignals: [...standaloneBySignalId.values()].filter((item) => {
+      const signal = signalLookup.get(item.signalId);
+
+      return (
+        Boolean(signal) &&
+        signal?.productId === item.productId &&
+        signal?.signalType === item.signalType &&
+        !assignedSignalIds.has(item.signalId)
+      );
+    }),
+    ambiguousLinks: parsed.data.ambiguousLinks.filter((item) =>
+      productIdSet.has(item.productId),
+    ),
+    globalObservations: parsed.data.globalObservations,
+  };
 }
 
 export async function runArticleCaseClustering(articleId: string) {
@@ -1758,6 +1873,11 @@ export const getArticleCaseboard = memoizeWithTtl(
       latestRun?.status === "completed"
         ? await listTeamCaseCandidatesForRun(latestRun.id)
         : [];
+    const unclusteredState = extractUnclusteredState({
+      dossier: dossierRecord?.payload ?? null,
+      latestRun,
+      proposedCases,
+    });
 
     if (!dashboardCard && !dossierRecord && !latestRun) {
       return null;
@@ -1770,6 +1890,10 @@ export const getArticleCaseboard = memoizeWithTtl(
       dossier: dossierRecord?.payload ?? null,
       latestRun,
       proposedCases,
+      unassignedProducts: unclusteredState.unassignedProducts,
+      standaloneSignals: unclusteredState.standaloneSignals,
+      ambiguousLinks: unclusteredState.ambiguousLinks,
+      globalObservations: unclusteredState.globalObservations,
     };
   },
 );

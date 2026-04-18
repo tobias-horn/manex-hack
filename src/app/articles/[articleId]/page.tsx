@@ -2,6 +2,7 @@ import {
   AlertTriangle,
   ArrowLeft,
   Boxes,
+  CircleOff,
   Link2,
   Sparkles,
 } from "lucide-react";
@@ -81,12 +82,20 @@ export default async function ArticleCaseboardPage({
   const dossier = caseboard.dossier;
   const proposedCases = caseboard.proposedCases;
   const memberships = new Map<string, typeof proposedCases>();
+  const standaloneSignalsByProduct = new Map<string, typeof caseboard.standaloneSignals>();
+  const unassignedReasonByProduct = new Map(
+    caseboard.unassignedProducts.map((item) => [item.productId, item.reason]),
+  );
 
   if (dossier) {
     for (const thread of dossier.productThreads) {
       memberships.set(
         thread.productId,
         proposedCases.filter((candidate) => candidate.includedProductIds.includes(thread.productId)),
+      );
+      standaloneSignalsByProduct.set(
+        thread.productId,
+        caseboard.standaloneSignals.filter((signal) => signal.productId === thread.productId),
       );
     }
   }
@@ -125,6 +134,16 @@ export default async function ArticleCaseboardPage({
                   </Badge>
                 ) : null}
                 <Badge variant="outline">{proposedCases.length} proposed cases</Badge>
+                {caseboard.unassignedProducts.length ? (
+                  <Badge variant="outline">
+                    {caseboard.unassignedProducts.length} unassigned products
+                  </Badge>
+                ) : null}
+                {caseboard.standaloneSignals.length ? (
+                  <Badge variant="outline">
+                    {caseboard.standaloneSignals.length} standalone faults
+                  </Badge>
+                ) : null}
               </div>
             </div>
 
@@ -249,6 +268,88 @@ export default async function ArticleCaseboardPage({
               </CardContent>
             </Card>
 
+            {caseboard.unassignedProducts.length || caseboard.standaloneSignals.length ? (
+              <Card className="surface-sheet rounded-[30px] px-0 py-0">
+                <CardHeader className="px-6 pt-6">
+                  <Badge variant="outline">
+                    <CircleOff className="size-3.5" />
+                    Not cluster-linked
+                  </Badge>
+                  <CardTitle className="section-title mt-3">
+                    Signals and products left outside the proposed cases
+                  </CardTitle>
+                  <CardDescription className="mt-2 max-w-3xl leading-6">
+                    The clustering engine is allowed to say “this is real, but it does
+                    not belong in a shared case yet.” That keeps isolated faults from
+                    being forced into noisy clusters.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="grid gap-4 px-5 pb-5 xl:grid-cols-2">
+                  <div className="rounded-[24px] bg-black/8 p-4">
+                    <div className="eyebrow">Unassigned products</div>
+                    <div className="mt-3 space-y-3">
+                      {caseboard.unassignedProducts.length ? (
+                        caseboard.unassignedProducts.map((item) => (
+                          <article
+                            key={item.productId}
+                            className="rounded-[20px] bg-[color:var(--surface-low)] p-4"
+                          >
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Badge>{item.productId}</Badge>
+                              <Badge variant="outline">No proposed cluster</Badge>
+                            </div>
+                            <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
+                              {item.reason}
+                            </p>
+                          </article>
+                        ))
+                      ) : (
+                        <p className="text-sm leading-6 text-[var(--muted-foreground)]">
+                          Every signaled product was pulled into at least one proposed
+                          case in the latest run.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-[24px] bg-black/8 p-4">
+                    <div className="eyebrow">Standalone faults</div>
+                    <div className="mt-3 space-y-3">
+                      {caseboard.standaloneSignals.length ? (
+                        caseboard.standaloneSignals.map((item) => (
+                          <article
+                            key={item.signalId}
+                            className="rounded-[20px] bg-[color:var(--surface-low)] p-4"
+                          >
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Badge>{item.signalId}</Badge>
+                              <Badge variant="outline">{item.productId}</Badge>
+                              <Badge
+                                className={
+                                  signalTone[item.signalType as keyof typeof signalTone] ??
+                                  "bg-[color:rgba(20,32,42,0.08)] text-foreground"
+                                }
+                              >
+                                {item.signalType}
+                              </Badge>
+                            </div>
+                            <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
+                              {item.reason}
+                            </p>
+                          </article>
+                        ))
+                      ) : (
+                        <p className="text-sm leading-6 text-[var(--muted-foreground)]">
+                          The latest run did not leave any individual faults outside the
+                          proposed case set.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            ) : null}
+
             {dossier ? (
               <Card className="surface-panel rounded-[30px] px-0 py-0">
                 <CardHeader className="px-6 pt-6">
@@ -260,6 +361,10 @@ export default async function ArticleCaseboardPage({
                 <CardContent className="grid gap-4 px-5 pb-5 xl:grid-cols-2">
                   {dossier.productThreads.map((thread) => {
                     const productCases = memberships.get(thread.productId) ?? [];
+                    const standaloneSignals =
+                      standaloneSignalsByProduct.get(thread.productId) ?? [];
+                    const unassignedReason =
+                      unassignedReasonByProduct.get(thread.productId) ?? null;
 
                     return (
                       <article
@@ -351,6 +456,20 @@ export default async function ArticleCaseboardPage({
                               </p>
                             )}
                           </div>
+                          {unassignedReason ? (
+                            <p className="mt-3 text-sm leading-6 text-[var(--muted-foreground)]">
+                              {unassignedReason}
+                            </p>
+                          ) : null}
+                          {standaloneSignals.length ? (
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {standaloneSignals.map((signal) => (
+                                <Badge key={signal.signalId} variant="secondary">
+                                  {signal.signalType}:{signal.signalId}
+                                </Badge>
+                              ))}
+                            </div>
+                          ) : null}
                         </div>
                       </article>
                     );
@@ -415,6 +534,31 @@ export default async function ArticleCaseboardPage({
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3 px-5 pb-5">
+                  {caseboard.globalObservations.length ? (
+                    <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
+                      <div className="eyebrow">Global observations</div>
+                      <div className="mt-2 space-y-2 text-sm leading-6 text-[var(--muted-foreground)]">
+                        {caseboard.globalObservations.map((item) => (
+                          <p key={item}>{item}</p>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                  {caseboard.ambiguousLinks.length ? (
+                    <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
+                      <div className="eyebrow">Ambiguous links</div>
+                      <div className="mt-2 space-y-3 text-sm leading-6 text-[var(--muted-foreground)]">
+                        {caseboard.ambiguousLinks.slice(0, 6).map((item) => (
+                          <article key={`${item.productId}:${item.reason}`}>
+                            <div className="font-medium text-foreground">
+                              {item.productId} · {Math.round(item.confidence * 100)}%
+                            </div>
+                            <p>{item.reason}</p>
+                          </article>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
                   <TopList title="Top defect codes" items={dossier.articleSummary.topDefectCodes} />
                   <TopList title="Top reported parts" items={dossier.articleSummary.topReportedParts} />
                   <TopList title="Top BOM positions" items={dossier.articleSummary.topBomPositions} />

@@ -40,6 +40,10 @@ export type TeamCaseRunSummary = {
   startedAt: string;
   completedAt: string | null;
   errorMessage: string | null;
+  builderPayload?: unknown;
+  requestPayload?: unknown;
+  proposalPayload?: unknown;
+  reviewPayload?: unknown;
 };
 
 export type TeamPersistedProductDossierRecord<TPayload = unknown> = {
@@ -146,6 +150,10 @@ type CaseRunRow = QueryResultRow & {
   started_at: string;
   completed_at: string | null;
   error_message: string | null;
+  builder_payload: unknown;
+  request_payload: unknown;
+  proposal_payload: unknown;
+  review_payload: unknown;
 };
 
 type CaseCandidateRow = QueryResultRow & {
@@ -467,6 +475,10 @@ const mapRunSummary = (row: CaseRunRow): TeamCaseRunSummary => ({
   startedAt: new Date(row.started_at).toISOString(),
   completedAt: normalizeIso(row.completed_at),
   errorMessage: normalizeNullableText(row.error_message),
+  builderPayload: row.builder_payload,
+  requestPayload: row.request_payload,
+  proposalPayload: row.proposal_payload,
+  reviewPayload: row.review_payload,
 });
 
 const mapCandidateMember = (
@@ -626,6 +638,10 @@ export async function listTeamArticleClusterCards() {
           startedAt: normalizeIso(row.started_at) ?? new Date(0).toISOString(),
           completedAt: normalizeIso(row.completed_at),
           errorMessage: normalizeNullableText(row.error_message),
+          builderPayload: undefined,
+          requestPayload: undefined,
+          proposalPayload: undefined,
+          reviewPayload: undefined,
         }
       : null,
   }));
