@@ -51,6 +51,9 @@ export async function POST(_request: Request, { params }: RouteParams) {
       articleId: result.articleId,
       runId: result.latestRun?.id ?? null,
       caseCount: result.proposedCases.length,
+      validatedCount: result.globalInventory?.validatedCases.length ?? 0,
+      watchlistCount: result.globalInventory?.watchlists.length ?? 0,
+      noiseCount: result.globalInventory?.noiseBuckets.length ?? 0,
     });
   } catch (error) {
     return Response.json(

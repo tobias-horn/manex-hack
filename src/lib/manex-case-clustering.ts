@@ -34,14 +34,32 @@ import { queryPostgres } from "@/lib/postgres";
 import { memoizeWithTtl } from "@/lib/server-cache";
 import { normalizeUiIdentifier } from "@/lib/ui-format";
 
-const ARTICLE_DOSSIER_SCHEMA_VERSION = "manex.article_dossier.v1";
-const PRODUCT_DOSSIER_SCHEMA_VERSION = "manex.product_dossier.v1";
-const CASE_PROPOSAL_SCHEMA_VERSION = "manex.case_proposal_set.v1";
-const CASE_PROMPT_VERSION = "2026-04-18.case-clustering.v1";
+const ARTICLE_DOSSIER_SCHEMA_VERSION = "manex.article_dossier.v2";
+const PRODUCT_DOSSIER_SCHEMA_VERSION = "manex.product_dossier.v2";
+const CASE_PROPOSAL_SCHEMA_VERSION = "manex.article_case_set.v2";
+const GLOBAL_RECONCILIATION_SCHEMA_VERSION = "manex.global_case_inventory.v1";
+const CASE_PIPELINE_REVIEW_SCHEMA_VERSION = "manex.case_pipeline_review.v1";
+const CASE_PROMPT_VERSION = "2026-04-18.case-clustering.v3";
 const MAX_RELATION_ROWS = 800;
 const SINGLE_PASS_PRODUCT_LIMIT = 18;
 const PRODUCT_CHUNK_SIZE = 12;
 const MAX_PROMPT_CHARS = 120_000;
+const STAGE1_PRODUCT_SYNTHESIS_CONCURRENCY = 4;
+
+const productThreadSynthesisSchema = z.object({
+  productSummary: z.string().trim().min(20).max(900),
+  timeline: z.array(z.string().trim().min(1).max(240)).max(10),
+  evidenceFeatures: z.object({
+    confirmedFailures: z.array(z.string().trim().min(1).max(180)).max(8),
+    marginalSignals: z.array(z.string().trim().min(1).max(180)).max(8),
+    traceHighlights: z.array(z.string().trim().min(1).max(180)).max(8),
+    serviceSignals: z.array(z.string().trim().min(1).max(180)).max(8),
+    contradictions: z.array(z.string().trim().min(1).max(180)).max(8),
+  }),
+  suspiciousPatterns: z.array(z.string().trim().min(1).max(220)).max(10),
+  possibleNoiseFlags: z.array(z.string().trim().min(1).max(220)).max(10),
+  openQuestions: z.array(z.string().trim().min(1).max(220)).max(10),
+});
 
 const proposalCaseSchema = z.object({
   proposalTempId: z.string().trim().min(1).max(48),
@@ -143,6 +161,45 @@ const clusteringProposalSchema = z.object({
   globalObservations: z.array(z.string().trim().min(1).max(280)).max(12),
 });
 
+const globalInventoryCaseSchema = z.object({
+  inventoryTempId: z.string().trim().min(1).max(48),
+  title: z.string().trim().min(8).max(180),
+  inventoryKind: z.enum(["validated_case", "watchlist", "noise_bucket", "rejected_case"]),
+  caseTypeHint: z.enum([
+    "supplier",
+    "process",
+    "design",
+    "handling",
+    "service",
+    "watchlist",
+    "noise",
+    "mixed",
+    "other",
+  ]),
+  summary: z.string().trim().min(10).max(1200),
+  oneLineExplanation: z.string().trim().min(10).max(240),
+  articleIds: z.array(z.string().trim().min(1).max(80)).max(24),
+  linkedCandidateIds: z.array(z.string().trim().min(1).max(80)).max(48),
+  linkedProductIds: z.array(z.string().trim().min(1).max(80)).max(96),
+  linkedSignalIds: z.array(z.string().trim().min(1).max(80)).max(240),
+  strongestEvidence: z.array(z.string().trim().min(1).max(220)).max(10),
+  conflictingEvidence: z.array(z.string().trim().min(1).max(220)).max(10),
+  recommendedNextTraceChecks: z.array(z.string().trim().min(1).max(220)).max(10),
+  confidence: z.number().min(0).max(1),
+  priority: z.enum(["low", "medium", "high", "critical"]),
+});
+
+const globalReconciliationSchema = z.object({
+  contractVersion: z.literal(GLOBAL_RECONCILIATION_SCHEMA_VERSION),
+  inventorySummary: z.string().trim().min(1).max(1500),
+  validatedCases: z.array(globalInventoryCaseSchema).max(24),
+  watchlists: z.array(globalInventoryCaseSchema).max(24),
+  noiseBuckets: z.array(globalInventoryCaseSchema).max(24),
+  rejectedCases: z.array(globalInventoryCaseSchema).max(24),
+  caseMergeLog: z.array(z.string().trim().min(1).max(280)).max(20),
+  confidenceNotes: z.array(z.string().trim().min(1).max(280)).max(12),
+});
+
 type ArticleRow = {
   article_id: string;
   name: string | null;
@@ -192,6 +249,8 @@ type ProductTraceabilitySnapshot = {
   };
 };
 
+export type ProductThreadSynthesis = z.infer<typeof productThreadSynthesisSchema>;
+
 export type ClusteredProductDossier = {
   contractVersion: typeof PRODUCT_DOSSIER_SCHEMA_VERSION;
   productId: string;
@@ -224,6 +283,7 @@ export type ClusteredProductDossier = {
     title: string;
     caption: string;
   }>;
+  stage1Synthesis: ProductThreadSynthesis;
   traceabilitySnapshot: ProductTraceabilitySnapshot;
   summaryFeatures: {
     signalTypesPresent: string[];
@@ -367,10 +427,25 @@ export type ArticleCaseboardReadModel = {
     confidence: number;
   }>;
   globalObservations: string[];
+  globalInventory: GlobalReconciliationOutput | null;
 };
 
 type ProposalOutput = z.infer<typeof clusteringProposalSchema>;
 type ProposalStandaloneSignal = ProposalOutput["standaloneSignals"][number];
+export type GlobalInventoryItem = z.infer<typeof globalInventoryCaseSchema>;
+export type GlobalReconciliationOutput = z.infer<typeof globalReconciliationSchema>;
+
+export type ProposedCasesDashboardReadModel = {
+  articles: TeamArticleClusterCard[];
+  latestGlobalRun: TeamCaseRunSummary | null;
+  globalInventory: GlobalReconciliationOutput | null;
+};
+
+type CasePipelineReviewPayload = {
+  contractVersion: typeof CASE_PIPELINE_REVIEW_SCHEMA_VERSION;
+  stage2: ProposalOutput;
+  stage3: GlobalReconciliationOutput | null;
+};
 
 const CLAIM_STOP_WORDS = new Set([
   "the",
@@ -520,6 +595,31 @@ const groupBy = <T,>(items: T[], keyFn: (item: T) => string) =>
     },
     new Map<string, T[]>(),
   );
+
+async function mapWithConcurrency<T, TResult>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<TResult>,
+) {
+  const results = new Array<TResult>(items.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, () =>
+      worker(),
+    ),
+  );
+
+  return results;
+}
 
 function extractClaimKeywords(text: string) {
   const tokens = text
@@ -922,6 +1022,172 @@ const buildCrossProductSummary = (
   };
 };
 
+function buildFallbackProductThreadSynthesis(input: {
+  productId: string;
+  articleId: string;
+  signalTimeline: ProductSignalTimelineItem[];
+  summaryFeatures: ClusteredProductDossier["summaryFeatures"];
+}) {
+  const recentSignals = input.signalTimeline.slice(-4);
+
+  return {
+    productSummary: recentSignals.length
+      ? `${input.productId} in ${input.articleId} carries ${input.signalTimeline.length} recorded signals across ${input.summaryFeatures.signalTypesPresent.length} signal families.`
+      : `${input.productId} in ${input.articleId} currently has no recorded quality signals in the dossier scope.`,
+    timeline: recentSignals.map(
+      (signal) => `${signal.occurredAt}: ${signal.headline} (${signal.section ?? "section unknown"})`,
+    ),
+    evidenceFeatures: {
+      confirmedFailures: input.summaryFeatures.defectCodesPresent.slice(0, 6),
+      marginalSignals: input.summaryFeatures.testKeysMarginalFail.slice(0, 6),
+      traceHighlights: [
+        ...input.summaryFeatures.bomFindNumbers.slice(0, 3),
+        ...input.summaryFeatures.supplierBatches.slice(0, 3),
+      ].slice(0, 6),
+      serviceSignals: input.summaryFeatures.fieldClaimWithoutFactoryDefect
+        ? ["Field claim exists without a prior factory defect."]
+        : [],
+      contradictions: [],
+    },
+    suspiciousPatterns: [
+      ...input.summaryFeatures.reportedPartNumbers.slice(0, 3).map(
+        (part) => `Reported part focus around ${part}.`,
+      ),
+      ...input.summaryFeatures.supplierBatches.slice(0, 2).map(
+        (batch) => `Traceability touches supplier batch ${batch}.`,
+      ),
+    ].slice(0, 6),
+    possibleNoiseFlags: input.summaryFeatures.falsePositiveMarkers.slice(0, 6),
+    openQuestions: [
+      input.summaryFeatures.fieldClaimWithoutFactoryDefect
+        ? "Why is there a field claim without a corresponding factory defect trail?"
+        : null,
+      input.summaryFeatures.reworkPresent
+        ? "Did rework change the apparent symptom path for this unit?"
+        : null,
+    ].filter((value): value is string => Boolean(value)),
+  } satisfies ProductThreadSynthesis;
+}
+
+function buildStage1PromptPayload(input: {
+  product: ProductRow;
+  articleName: string | null;
+  sourceCounts: ClusteredProductDossier["sourceCounts"];
+  signalTimeline: ProductSignalTimelineItem[];
+  summaryFeatures: ClusteredProductDossier["summaryFeatures"];
+  defects: ManexDefect[];
+  claims: ManexFieldClaim[];
+  tests: ManexTestSignal[];
+  rework: ManexReworkRecord[];
+  actions: ManexWorkflowAction[];
+  installedParts: ManexInstalledPart[];
+}) {
+  return {
+    product: {
+      productId: input.product.product_id,
+      articleId: input.product.article_id,
+      articleName: input.articleName,
+      buildTs: safeIso(input.product.build_ts),
+      orderId: normalizeNullableText(input.product.order_id),
+    },
+    sourceCounts: input.sourceCounts,
+    timeline: input.signalTimeline.map((signal) => ({
+      signalId: signal.signalId,
+      signalType: signal.signalType,
+      occurredAt: signal.occurredAt,
+      severity: signal.severity,
+      headline: signal.headline,
+      notePreview: signal.notePreview,
+      section: signal.section,
+      sourceContext: signal.sourceContext,
+    })),
+    evidenceFeatures: input.summaryFeatures,
+    defects: input.defects.map((item) => ({
+      id: item.id,
+      occurredAt: item.occurredAt,
+      code: item.code,
+      severity: item.severity,
+      reportedPartNumber: item.reportedPartNumber,
+      section: item.detectedSectionName ?? item.occurrenceSectionName,
+      notes: item.notes,
+    })),
+    claims: input.claims.map((item) => ({
+      id: item.id,
+      claimedAt: item.claimedAt,
+      market: item.market,
+      mappedDefectCode: item.mappedDefectCode,
+      reportedPartNumber: item.reportedPartNumber,
+      complaintText: item.complaintText,
+      notes: item.notes,
+    })),
+    tests: input.tests.map((item) => ({
+      id: item.id,
+      occurredAt: item.occurredAt,
+      overallResult: item.overallResult,
+      testKey: item.testKey,
+      testValue: item.testValue,
+      sectionName: item.sectionName,
+      notes: item.notes,
+    })),
+    installedParts: input.installedParts.slice(0, 40).map((item) => ({
+      findNumber: item.findNumber,
+      positionCode: item.positionCode,
+      partNumber: item.partNumber,
+      batchId: item.batchId,
+      batchNumber: item.batchNumber,
+      supplierName: item.supplierName,
+    })),
+    rework: input.rework.map((item) => ({
+      id: item.id,
+      recordedAt: item.recordedAt,
+      sectionId: item.sectionId,
+      reportedPartNumber: item.reportedPartNumber,
+      actionText: item.actionText,
+      userId: item.userId,
+    })),
+    actions: input.actions.map((item) => ({
+      id: item.id,
+      recordedAt: item.recordedAt,
+      actionType: item.actionType,
+      status: item.status,
+      sectionId: item.sectionId,
+      defectId: item.defectId,
+      comments: item.comments,
+    })),
+  };
+}
+
+function ensureStage1Synthesis(thread: ClusteredProductDossier) {
+  if (
+    thread.stage1Synthesis &&
+    typeof thread.stage1Synthesis === "object" &&
+    typeof thread.stage1Synthesis.productSummary === "string"
+  ) {
+    return thread.stage1Synthesis;
+  }
+
+  return buildFallbackProductThreadSynthesis({
+    productId: thread.productId,
+    articleId: thread.articleId,
+    signalTimeline: thread.signals,
+    summaryFeatures: thread.summaryFeatures,
+  });
+}
+
+function hydrateArticleDossier(dossier: ClusteredArticleDossier | null) {
+  if (!dossier) {
+    return null;
+  }
+
+  return {
+    ...dossier,
+    productThreads: dossier.productThreads.map((thread) => ({
+      ...thread,
+      stage1Synthesis: ensureStage1Synthesis(thread),
+    })),
+  } satisfies ClusteredArticleDossier;
+}
+
 async function loadArticleMeta(articleId: string) {
   const [articleRows, productRows] = await Promise.all([
     queryPostgres<ArticleRow>(
@@ -993,7 +1259,7 @@ async function buildArticleDossier(articleId: string): Promise<ClusteredArticleD
   const claimsByProduct = groupBy(claimResult.items, (item) => item.productId);
   const testsByProduct = groupBy(testResult.items, (item) => item.productId);
 
-  const productThreads = await Promise.all(
+  const productThreadDrafts = await Promise.all(
     products.map(async (product) => {
       const [installedResult, actionResult, reworkResult] = await Promise.all([
         data.traceability.findInstalledPartsForProduct(product.product_id, {
@@ -1033,45 +1299,100 @@ async function buildArticleDossier(articleId: string): Promise<ClusteredArticleD
       const relevantWeeklySummaries = weeklyResult.items
         .filter((item) => item.articleId === normalizedArticleId)
         .slice(0, 6);
+      const sourceCounts = {
+        defects: defects.length,
+        claims: claims.length,
+        badTests: tests.filter((item) => item.overallResult === "FAIL").length,
+        marginalTests: tests.filter((item) => item.overallResult === "MARGINAL").length,
+        rework: reworkResult.items.length,
+        actions: actionResult.items.length,
+        installedParts: installedResult.items.length,
+      };
 
-      const payload = {
-        contractVersion: PRODUCT_DOSSIER_SCHEMA_VERSION,
-        productId: product.product_id,
-        articleId: product.article_id,
-        articleName: article.name,
-        buildTs: safeIso(product.build_ts),
-        orderId: normalizeNullableText(product.order_id),
-        sourceCounts: {
-          defects: defects.length,
-          claims: claims.length,
-          badTests: tests.filter((item) => item.overallResult === "FAIL").length,
-          marginalTests: tests.filter((item) => item.overallResult === "MARGINAL").length,
-          rework: reworkResult.items.length,
-          actions: actionResult.items.length,
-          installedParts: installedResult.items.length,
-        },
-        signals: signalTimeline,
+      return {
+        product,
         defects,
         claims,
         tests,
         rework: reworkResult.items,
         actions: actionResult.items,
         installedParts: installedResult.items,
-        weeklyQualitySnippets: relevantWeeklySummaries,
-        evidenceFrames,
+        signalTimeline,
         traceabilitySnapshot,
+        evidenceFrames,
         summaryFeatures,
+        relevantWeeklySummaries,
+        sourceCounts,
+      };
+    }),
+  );
+
+  const productThreads = await mapWithConcurrency(
+    productThreadDrafts,
+    STAGE1_PRODUCT_SYNTHESIS_CONCURRENCY,
+    async (draft) => {
+      const stage1Synthesis =
+        draft.signalTimeline.length > 0
+          ? await generateProductThreadSynthesis({
+              promptPayload: buildStage1PromptPayload({
+                product: draft.product,
+                articleName: article.name,
+                sourceCounts: draft.sourceCounts,
+                signalTimeline: draft.signalTimeline,
+                summaryFeatures: draft.summaryFeatures,
+                defects: draft.defects,
+                claims: draft.claims,
+                tests: draft.tests,
+                rework: draft.rework,
+                actions: draft.actions,
+                installedParts: draft.installedParts,
+              }),
+            }).catch(() =>
+              buildFallbackProductThreadSynthesis({
+                productId: draft.product.product_id,
+                articleId: draft.product.article_id,
+                signalTimeline: draft.signalTimeline,
+                summaryFeatures: draft.summaryFeatures,
+              }),
+            )
+          : buildFallbackProductThreadSynthesis({
+              productId: draft.product.product_id,
+              articleId: draft.product.article_id,
+              signalTimeline: draft.signalTimeline,
+              summaryFeatures: draft.summaryFeatures,
+            });
+
+      const payload = {
+        contractVersion: PRODUCT_DOSSIER_SCHEMA_VERSION,
+        productId: draft.product.product_id,
+        articleId: draft.product.article_id,
+        articleName: article.name,
+        buildTs: safeIso(draft.product.build_ts),
+        orderId: normalizeNullableText(draft.product.order_id),
+        sourceCounts: draft.sourceCounts,
+        signals: draft.signalTimeline,
+        defects: draft.defects,
+        claims: draft.claims,
+        tests: draft.tests,
+        rework: draft.rework,
+        actions: draft.actions,
+        installedParts: draft.installedParts,
+        weeklyQualitySnippets: draft.relevantWeeklySummaries,
+        evidenceFrames: draft.evidenceFrames,
+        stage1Synthesis,
+        traceabilitySnapshot: draft.traceabilitySnapshot,
+        summaryFeatures: draft.summaryFeatures,
         existingSurfaceContext: {
           dossierSnapshot: {
-            defectCount: defects.length,
-            claimCount: claims.length,
-            installedPartCount: traceabilitySnapshot.installedPartCount,
-            uniqueBatchCount: traceabilitySnapshot.uniqueBatchCount,
-            uniqueSupplierCount: traceabilitySnapshot.uniqueSupplierCount,
-            openActionCount: actionResult.items.filter((item) => item.status !== "done")
+            defectCount: draft.defects.length,
+            claimCount: draft.claims.length,
+            installedPartCount: draft.traceabilitySnapshot.installedPartCount,
+            uniqueBatchCount: draft.traceabilitySnapshot.uniqueBatchCount,
+            uniqueSupplierCount: draft.traceabilitySnapshot.uniqueSupplierCount,
+            openActionCount: draft.actions.filter((item) => item.status !== "done")
               .length,
           },
-          traceviewSnapshot: traceabilitySnapshot,
+          traceviewSnapshot: draft.traceabilitySnapshot,
         },
       } satisfies ClusteredProductDossier;
 
@@ -1083,12 +1404,12 @@ async function buildArticleDossier(articleId: string): Promise<ClusteredArticleD
         orderId: payload.orderId,
         signalCount: payload.signals.length,
         sourceCounts: payload.sourceCounts,
-        summaryFeatures,
+        summaryFeatures: payload.summaryFeatures,
         payload,
       });
 
       return payload;
-    }),
+    },
   );
 
   const allSignals = productThreads.flatMap((thread) => thread.signals);
@@ -1256,11 +1577,34 @@ function chooseRunStrategy(dossier: ClusteredArticleDossier) {
   return "single" as const;
 }
 
+function buildStage1SystemPrompt() {
+  return [
+    "You are building a product-level investigation dossier for one manufactured unit.",
+    "Your job is compression and structuring, not clustering and not final root-cause attribution.",
+    "Preserve all relevant facts while staying compact.",
+    "Highlight suspicious patterns, contradictions, and missing evidence.",
+    "Distinguish confirmed failures, marginal signals, likely false positives, and service or documentation style issues.",
+    "Return strict JSON only.",
+  ].join("\n");
+}
+
+function buildStage1UserPrompt(payload: unknown) {
+  return [
+    "You will receive one complete product thread for a single product.",
+    "Consolidate it into one coherent evidence thread.",
+    "Do not infer an exact root cause.",
+    "",
+    JSON.stringify(payload),
+  ].join("\n");
+}
+
 function buildPassASystemPrompt() {
   return [
-    "You are a manufacturing quality clustering engine.",
-    "You are not identifying exact root cause.",
-    "Your job is to propose case clusters: groups of product threads that may share a common underlying issue and should be investigated together.",
+    "You are clustering product investigation dossiers into article-level case candidates.",
+    "All products belong to the same article.",
+    "A case is a group of products that may share a common underlying issue and should be investigated together.",
+    "You are not required to identify the exact root cause with certainty.",
+    "Your goal is to propose useful investigation cases.",
     "Use all provided information: article summary, product timelines, free text, defect codes, test results, installed parts, BOM positions, supplier batches, sections, rework, actions, images, and raw evidence appendix.",
     "Prefer grouping by likely common mechanism, not just identical labels.",
     "Keep separate service or documentation complaints, cosmetic-only issues, likely functional failures, process drift, supplier-linked issues, and false positives.",
@@ -1285,8 +1629,8 @@ function buildPassAUserPrompt(payload: unknown) {
 
 function buildPassBSystemPrompt() {
   return [
-    "You are the second-pass reviewer for manufacturing quality case clustering.",
-    "Refine, merge, split, or reject draft case clusters.",
+    "You are the article-local reviewer for manufacturing quality case clustering.",
+    "Refine, merge, split, or reject weak draft case clusters within this article.",
     "Keep only clusters that are investigation-worthy and supported by shared evidence.",
     "Remove products that do not belong, merge duplicate cases, and keep cosmetic, service, or false-positive groups separate from likely functional or manufacturing cases.",
     "Preserve standalone signals when a fault appears isolated or not cluster-related.",
@@ -1304,6 +1648,27 @@ function buildPassBUserPrompt(payload: unknown) {
   ].join("\n");
 }
 
+function buildStage3SystemPrompt() {
+  return [
+    "You are reconciling article-level case proposals into a final global investigation inventory.",
+    "Your job is to merge duplicate or overly fragmented cases where justified, down-rank weak cases driven by noise, extract monitoring patterns as watchlists, and separate real investigation cases from noise and distractors.",
+    "Do not collapse distinct mechanisms into one broad case.",
+    "Prefer precision over over-grouping.",
+    "If the only strong commonality is where a defect was detected, treat that as weak evidence.",
+    "Distinguish validated investigation cases, watchlists, noise buckets, and rejected cases.",
+    "Return strict JSON only.",
+  ].join("\n");
+}
+
+function buildStage3UserPrompt(payload: unknown) {
+  return [
+    "Reconcile these article-local case sets into one global inventory.",
+    "Use the article-local proposals plus the provided global summaries to merge, suppress, or watch patterns without forcing a case where the evidence is weak.",
+    "",
+    JSON.stringify(payload),
+  ].join("\n");
+}
+
 function toPromptProductThread(thread: ClusteredProductDossier) {
   return {
     productId: thread.productId,
@@ -1311,6 +1676,12 @@ function toPromptProductThread(thread: ClusteredProductDossier) {
     articleName: thread.articleName,
     buildTs: thread.buildTs,
     orderId: thread.orderId,
+    productSummary: thread.stage1Synthesis.productSummary,
+    timelineSummary: thread.stage1Synthesis.timeline,
+    suspiciousPatterns: thread.stage1Synthesis.suspiciousPatterns,
+    possibleNoiseFlags: thread.stage1Synthesis.possibleNoiseFlags,
+    openQuestions: thread.stage1Synthesis.openQuestions,
+    structuredEvidenceFeatures: thread.stage1Synthesis.evidenceFeatures,
     sourceCounts: thread.sourceCounts,
     summaryFeatures: thread.summaryFeatures,
     signals: thread.signals,
@@ -1481,24 +1852,30 @@ function toPromptArticlePayload(dossier: ClusteredArticleDossier, productIds?: S
   };
 }
 
-async function generateProposalObject(input: {
-  system: string;
-  prompt: string;
-}) {
+function getOpenAiClient() {
   if (!env.OPENAI_API_KEY) {
     throw new Error("OPENAI_API_KEY is required for case clustering.");
   }
 
-  const openai = createOpenAI({
+  return createOpenAI({
     apiKey: env.OPENAI_API_KEY,
   });
+}
+
+async function generateStructuredObject<TSchema extends z.ZodTypeAny>(input: {
+  schema: TSchema;
+  schemaName: string;
+  schemaDescription: string;
+  system: string;
+  prompt: string;
+}) {
+  const openai = getOpenAiClient();
 
   const result = await generateObject({
     model: openai.responses(env.OPENAI_MODEL),
-    schema: clusteringProposalSchema,
-    schemaName: "manex_case_proposal_set",
-    schemaDescription:
-      "Reviewed case cluster proposals for one article dossier in the Manex hackathon dataset.",
+    schema: input.schema,
+    schemaName: input.schemaName,
+    schemaDescription: input.schemaDescription,
     system: input.system,
     prompt: input.prompt,
     providerOptions: {
@@ -1510,7 +1887,47 @@ async function generateProposalObject(input: {
     },
   });
 
-  return result.object;
+  return result.object as z.infer<TSchema>;
+}
+
+async function generateProductThreadSynthesis(input: {
+  promptPayload: unknown;
+}) {
+  return generateStructuredObject({
+    schema: productThreadSynthesisSchema,
+    schemaName: "manex_product_thread_synthesis",
+    schemaDescription:
+      "Compressed product-level investigation dossier for one manufactured unit in the Manex hackathon dataset.",
+    system: buildStage1SystemPrompt(),
+    prompt: buildStage1UserPrompt(input.promptPayload),
+  });
+}
+
+async function generateProposalObject(input: {
+  system: string;
+  prompt: string;
+}) {
+  return generateStructuredObject({
+    schema: clusteringProposalSchema,
+    schemaName: "manex_article_case_set",
+    schemaDescription:
+      "Article-local proposed case set for one article dossier in the Manex hackathon dataset.",
+    system: input.system,
+    prompt: input.prompt,
+  });
+}
+
+async function generateGlobalReconciliationObject(input: {
+  payload: unknown;
+}) {
+  return generateStructuredObject({
+    schema: globalReconciliationSchema,
+    schemaName: "manex_global_case_inventory",
+    schemaDescription:
+      "Global reconciliation inventory of validated cases, watchlists, noise buckets, and rejected cases for the Manex hackathon dataset.",
+    system: buildStage3SystemPrompt(),
+    prompt: buildStage3UserPrompt(input.payload),
+  });
 }
 
 function chunkProductThreads(productThreads: ClusteredProductDossier[]) {
@@ -1692,7 +2109,7 @@ function extractUnclusteredState(input: {
   latestRun: TeamCaseRunSummary | null;
   proposedCases: TeamCaseCandidateRecord[];
 }) {
-  const parsed = clusteringProposalSchema.safeParse(input.latestRun?.reviewPayload);
+  const parsed = parseStage2FromReviewPayload(input.latestRun?.reviewPayload);
   const productIdSet = new Set(
     (input.dossier?.productThreads ?? []).map((thread) => thread.productId),
   );
@@ -1720,7 +2137,7 @@ function extractUnclusteredState(input: {
     input.proposedCases.flatMap((candidate) => candidate.includedSignalIds),
   );
 
-  if (!parsed.success) {
+  if (!parsed) {
     return {
       unassignedProducts: [] as ArticleCaseboardReadModel["unassignedProducts"],
       standaloneSignals: [] as ArticleCaseboardReadModel["standaloneSignals"],
@@ -1731,14 +2148,14 @@ function extractUnclusteredState(input: {
 
   const standaloneBySignalId = new Map<string, ProposalStandaloneSignal>();
 
-  for (const item of parsed.data.standaloneSignals) {
+  for (const item of parsed.standaloneSignals) {
     if (!standaloneBySignalId.has(item.signalId)) {
       standaloneBySignalId.set(item.signalId, item);
     }
   }
 
   return {
-    unassignedProducts: parsed.data.unassignedProducts.filter(
+    unassignedProducts: parsed.unassignedProducts.filter(
       (item) =>
         productIdSet.has(item.productId) &&
         !assignedProductIds.has(item.productId),
@@ -1753,10 +2170,390 @@ function extractUnclusteredState(input: {
         !assignedSignalIds.has(item.signalId)
       );
     }),
-    ambiguousLinks: parsed.data.ambiguousLinks.filter((item) =>
+    ambiguousLinks: parsed.ambiguousLinks.filter((item) =>
       productIdSet.has(item.productId),
     ),
-    globalObservations: parsed.data.globalObservations,
+    globalObservations: parsed.globalObservations,
+  };
+}
+
+function parseStage2FromReviewPayload(payload: unknown) {
+  const direct = clusteringProposalSchema.safeParse(payload);
+
+  if (direct.success) {
+    return direct.data;
+  }
+
+  if (payload && typeof payload === "object" && "stage2" in payload) {
+    const nested = clusteringProposalSchema.safeParse(
+      (payload as { stage2?: unknown }).stage2,
+    );
+
+    if (nested.success) {
+      return nested.data;
+    }
+  }
+
+  return null;
+}
+
+function parseStage3FromReviewPayload(payload: unknown) {
+  if (payload && typeof payload === "object" && "stage3" in payload) {
+    const nested = globalReconciliationSchema.safeParse(
+      (payload as { stage3?: unknown }).stage3,
+    );
+
+    if (nested.success) {
+      return nested.data;
+    }
+  }
+
+  return null;
+}
+
+function buildArticleCaseSetSummary(input: {
+  articleId: string;
+  articleName: string | null;
+  dossier: ClusteredArticleDossier;
+  stage2: ProposalOutput;
+  candidates: TeamCaseCandidateRecord[];
+}) {
+  return {
+    articleId: input.articleId,
+    articleName: input.articleName,
+    productCount: input.dossier.article.productCount,
+    signalCount: input.dossier.article.totalSignals,
+    clusteringNotes: input.stage2.reviewSummary,
+    articleSummary: {
+      topDefectCodes: input.dossier.articleSummary.topDefectCodes.slice(0, 5),
+      topReportedParts: input.dossier.articleSummary.topReportedParts.slice(0, 5),
+      topBomPositions: input.dossier.articleSummary.topBomPositions.slice(0, 5),
+      topSupplierBatches: input.dossier.articleSummary.topSupplierBatches.slice(0, 5),
+      topSections: input.dossier.articleSummary.topSections.slice(0, 5),
+      fieldClaimOnlyPatterns: input.dossier.articleSummary.fieldClaimOnlyPatterns.slice(0, 5),
+    },
+    proposedCases: input.candidates.map((candidate) => {
+      const proposal =
+        candidate.payload &&
+        typeof candidate.payload === "object" &&
+        "proposal" in candidate.payload
+          ? (candidate.payload as { proposal?: Record<string, unknown> }).proposal
+          : null;
+
+      return {
+        candidateId: candidate.id,
+        title: candidate.title,
+        caseKind: candidate.caseKind,
+        summary: candidate.summary,
+        suspectedCommonRootCause: candidate.suspectedCommonRootCause,
+        confidence: candidate.confidence,
+        priority: candidate.priority,
+        includedProductIds: candidate.includedProductIds,
+        includedSignalIds: candidate.includedSignalIds,
+        strongestEvidence: candidate.strongestEvidence,
+        conflictingEvidence: candidate.conflictingEvidence,
+        recommendedNextTraceChecks: candidate.recommendedNextTraceChecks,
+        sharedEvidence: candidate.sharedEvidence,
+        bomFindNumbers: Array.isArray(proposal?.bomFindNumbers)
+          ? (proposal.bomFindNumbers as string[])
+          : [],
+        supplierBatches: Array.isArray(proposal?.supplierBatches)
+          ? (proposal.supplierBatches as string[])
+          : [],
+        reportedPartNumbers: Array.isArray(proposal?.reportedPartNumbers)
+          ? (proposal.reportedPartNumbers as string[])
+          : [],
+        signalTypesPresent: Array.isArray(proposal?.signalTypesPresent)
+          ? (proposal.signalTypesPresent as string[])
+          : [],
+      };
+    }),
+    unassignedProducts: input.stage2.unassignedProducts,
+    standaloneSignals: input.stage2.standaloneSignals,
+    ambiguousProducts: input.stage2.ambiguousLinks,
+  };
+}
+
+function buildGlobalReconciliationContext(input: {
+  articleCaseSets: Array<ReturnType<typeof buildArticleCaseSetSummary>>;
+  dossiers: ClusteredArticleDossier[];
+}) {
+  const productThreads = input.dossiers.flatMap((dossier) => dossier.productThreads);
+  const defects = productThreads.flatMap((thread) => thread.defects);
+  const claims = productThreads.flatMap((thread) => thread.claims);
+  const tests = productThreads.flatMap((thread) => thread.tests);
+  const weeklySummaryByWeek = new Map<
+    string,
+    { defectCount: number; claimCount: number; reworkCount: number }
+  >();
+
+  for (const summary of input.dossiers.flatMap((dossier) => dossier.weeklyQualitySummaries)) {
+    const current = weeklySummaryByWeek.get(summary.weekStart) ?? {
+      defectCount: 0,
+      claimCount: 0,
+      reworkCount: 0,
+    };
+    current.defectCount += summary.defectCount;
+    current.claimCount += summary.claimCount;
+    current.reworkCount += summary.reworkCount;
+    weeklySummaryByWeek.set(summary.weekStart, current);
+  }
+
+  const detectionSectionDistribution = topEntries(
+    bucketCounts(
+      [
+        ...defects.map((item) => ({
+          section: item.detectedSectionName,
+          productId: item.productId,
+        })),
+        ...tests.map((item) => ({
+          section: item.sectionName,
+          productId: item.productId,
+        })),
+      ],
+      (item) => item.section,
+      (item) => item.productId,
+    ),
+    10,
+  );
+
+  const occurrenceSectionDistribution = topEntries(
+    bucketCounts(
+      defects.map((item) => ({
+        section: item.occurrenceSectionName,
+        productId: item.productId,
+      })),
+      (item) => item.section,
+      (item) => item.productId,
+    ),
+    10,
+  );
+
+  const falsePositivePool = productThreads
+    .filter((thread) => thread.summaryFeatures.falsePositiveMarkers.length > 0)
+    .map((thread) => ({
+      productId: thread.productId,
+      markers: thread.summaryFeatures.falsePositiveMarkers.slice(0, 3),
+    }))
+    .slice(0, 20);
+
+  const marginalOnlyPool = productThreads
+    .filter(
+      (thread) =>
+        thread.sourceCounts.marginalTests > 0 &&
+        thread.sourceCounts.badTests === 0 &&
+        thread.sourceCounts.defects === 0 &&
+        thread.sourceCounts.claims === 0,
+    )
+    .map((thread) => ({
+      productId: thread.productId,
+      articleId: thread.articleId,
+      testKeys: thread.summaryFeatures.testKeysMarginalFail.slice(0, 4),
+      noiseFlags: thread.stage1Synthesis.possibleNoiseFlags.slice(0, 3),
+    }))
+    .slice(0, 24);
+
+  const testResultBandSummaries = topEntries(
+    bucketCounts(
+      tests,
+      (item) => `${item.testKey}:${item.overallResult}`,
+      (item) => item.productId,
+      (item) => item.id,
+    ),
+    12,
+  );
+
+  const claimLags = claims
+    .map((item) => item.daysFromBuild)
+    .filter((value): value is number => value !== null)
+    .sort((left, right) => left - right);
+
+  const fieldClaimLagSummaries = claimLags.length
+    ? {
+        count: claimLags.length,
+        minDays: claimLags[0],
+        medianDays: claimLags[Math.floor(claimLags.length / 2)],
+        maxDays: claimLags[claimLags.length - 1],
+      }
+    : {
+        count: 0,
+        minDays: null,
+        medianDays: null,
+        maxDays: null,
+      };
+
+  return {
+    articleCaseSets: input.articleCaseSets,
+    globalDistributions: {
+      detectionSectionDistribution,
+      occurrenceSectionDistribution,
+      globalFalsePositivePool: falsePositivePool,
+      marginalOnlyPool,
+      volumeByWeek: [...weeklySummaryByWeek.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .slice(-16)
+        .map(([weekStart, value]) => ({
+          weekStart,
+          ...value,
+        })),
+      testResultBandSummaries,
+      fieldClaimLagSummaries,
+    },
+  };
+}
+
+type LatestCompletedCaseRunRow = {
+  run_id: string;
+  article_id: string;
+  article_name: string | null;
+  review_payload: unknown;
+  completed_at: string | null;
+};
+
+async function loadLatestCompletedArticleRuns() {
+  const rows =
+    (await queryPostgres<LatestCompletedCaseRunRow>(
+      `
+        SELECT DISTINCT ON (article_id)
+          run_id,
+          article_id,
+          article_name,
+          review_payload,
+          completed_at
+        FROM team_case_run
+        WHERE status = 'completed'
+        ORDER BY article_id, completed_at DESC NULLS LAST, started_at DESC
+      `,
+    )) ?? [];
+
+  return rows;
+}
+
+async function runGlobalReconciliation(input: {
+  currentArticleId: string;
+  currentArticleName: string | null;
+  currentDossier: ClusteredArticleDossier;
+  currentStage2: ProposalOutput;
+  currentCandidates: TeamCaseCandidateRecord[];
+}) {
+  const latestCompletedRuns = await loadLatestCompletedArticleRuns();
+  const persistedEntries = await Promise.all(
+    latestCompletedRuns
+      .filter((row) => row.article_id !== input.currentArticleId)
+      .map(async (row) => {
+        const stage2 = parseStage2FromReviewPayload(row.review_payload);
+
+        if (!stage2) {
+          return null;
+        }
+
+        const [dossierRecord, candidates] = await Promise.all([
+          getTeamArticleDossierRecord<ClusteredArticleDossier>(row.article_id),
+          listTeamCaseCandidatesForRun(row.run_id),
+        ]);
+
+        const hydratedDossier = hydrateArticleDossier(dossierRecord?.payload ?? null);
+
+        if (!hydratedDossier) {
+          return null;
+        }
+
+        return {
+          dossier: hydratedDossier,
+          caseSet: buildArticleCaseSetSummary({
+            articleId: row.article_id,
+            articleName: dossierRecord?.articleName ?? row.article_name,
+            dossier: hydratedDossier,
+            stage2,
+            candidates,
+          }),
+        };
+      }),
+  );
+
+  const currentCaseSet = buildArticleCaseSetSummary({
+    articleId: input.currentArticleId,
+    articleName: input.currentArticleName,
+    dossier: input.currentDossier,
+    stage2: input.currentStage2,
+    candidates: input.currentCandidates,
+  });
+
+  const allEntries = [
+    ...persistedEntries.filter((value): value is NonNullable<typeof value> => Boolean(value)),
+    {
+      dossier: input.currentDossier,
+      caseSet: currentCaseSet,
+    },
+  ];
+
+  const context = buildGlobalReconciliationContext({
+    articleCaseSets: allEntries.map((entry) => entry.caseSet),
+    dossiers: allEntries.map((entry) => entry.dossier),
+  });
+
+  return generateGlobalReconciliationObject({
+    payload: context,
+  });
+}
+
+async function getLatestGlobalRunWithInventory() {
+  const rows =
+    (await queryPostgres<LatestCompletedCaseRunRow>(
+      `
+        SELECT
+          run_id,
+          article_id,
+          article_name,
+          review_payload,
+          completed_at
+        FROM team_case_run
+        WHERE status = 'completed'
+        ORDER BY completed_at DESC NULLS LAST, started_at DESC
+        LIMIT 12
+      `,
+    )) ?? [];
+
+  for (const row of rows) {
+    const globalInventory = parseStage3FromReviewPayload(row.review_payload);
+
+    if (!globalInventory) {
+      continue;
+    }
+
+    const run = await getLatestTeamCaseRun(row.article_id);
+
+    if (!run || run.id !== row.run_id) {
+      return {
+        latestGlobalRun: {
+          id: row.run_id,
+          articleId: row.article_id,
+          articleName: row.article_name,
+          model: env.OPENAI_MODEL,
+          status: "completed" as const,
+          strategy: "single" as const,
+          schemaVersion: CASE_PROPOSAL_SCHEMA_VERSION,
+          promptVersion: CASE_PROMPT_VERSION,
+          productCount: 0,
+          signalCount: 0,
+          candidateCount: 0,
+          startedAt: row.completed_at ?? new Date().toISOString(),
+          completedAt: row.completed_at,
+          errorMessage: null,
+        },
+        globalInventory,
+      };
+    }
+
+    return {
+      latestGlobalRun: run,
+      globalInventory,
+    };
+  }
+
+  return {
+    latestGlobalRun: null,
+    globalInventory: null,
   };
 }
 
@@ -1808,23 +2605,39 @@ export async function runArticleCaseClustering(articleId: string) {
       candidates,
     });
 
+    const persistedCandidates = await listTeamCaseCandidatesForRun(runId);
+
+    const globalReconciliation = await runGlobalReconciliation({
+      currentArticleId: dossier.article.articleId,
+      currentArticleName: dossier.article.articleName,
+      currentDossier: dossier,
+      currentStage2: proposalPass.review,
+      currentCandidates: persistedCandidates,
+    });
+
+    const reviewPayload: CasePipelineReviewPayload = {
+      contractVersion: CASE_PIPELINE_REVIEW_SCHEMA_VERSION,
+      stage2: proposalPass.review,
+      stage3: globalReconciliation,
+    };
+
     await completeTeamCaseRun({
       id: runId,
       candidateCount: candidates.length,
       proposalPayload: proposalPass.draft,
-      reviewPayload: proposalPass.review,
+      reviewPayload,
     });
 
-    const [latestRun, proposedCases] = await Promise.all([
+    const [latestRun] = await Promise.all([
       getLatestTeamCaseRun(dossier.article.articleId),
-      listTeamCaseCandidatesForRun(runId),
     ]);
 
     return {
       articleId: dossier.article.articleId,
       dossier,
       latestRun,
-      proposedCases,
+      proposedCases: persistedCandidates,
+      globalInventory: globalReconciliation,
     };
   } catch (error) {
     await failTeamCaseRun({
@@ -1849,6 +2662,32 @@ export const listArticleClusteringDashboard = memoizeWithTtl(
   },
 );
 
+export const getProposedCasesDashboard = memoizeWithTtl(
+  "proposed-cases-dashboard",
+  15_000,
+  () => "dashboard",
+  async (): Promise<ProposedCasesDashboardReadModel> => {
+    if (!capabilities.hasPostgres) {
+      return {
+        articles: [],
+        latestGlobalRun: null,
+        globalInventory: null,
+      };
+    }
+
+    const [articles, globalSnapshot] = await Promise.all([
+      listTeamArticleClusterCards(),
+      getLatestGlobalRunWithInventory(),
+    ]);
+
+    return {
+      articles,
+      latestGlobalRun: globalSnapshot.latestGlobalRun,
+      globalInventory: globalSnapshot.globalInventory,
+    };
+  },
+);
+
 export const getArticleCaseboard = memoizeWithTtl(
   "article-caseboard",
   15_000,
@@ -1869,12 +2708,13 @@ export const getArticleCaseboard = memoizeWithTtl(
 
     const dashboardCard =
       dashboardCards.find((item) => item.articleId === normalizedArticleId) ?? null;
+    const hydratedDossier = hydrateArticleDossier(dossierRecord?.payload ?? null);
     const proposedCases =
       latestRun?.status === "completed"
         ? await listTeamCaseCandidatesForRun(latestRun.id)
         : [];
     const unclusteredState = extractUnclusteredState({
-      dossier: dossierRecord?.payload ?? null,
+      dossier: hydratedDossier,
       latestRun,
       proposedCases,
     });
@@ -1887,13 +2727,14 @@ export const getArticleCaseboard = memoizeWithTtl(
       articleId: normalizedArticleId,
       articleName: dossierRecord?.articleName ?? dashboardCard?.articleName ?? null,
       dashboardCard,
-      dossier: dossierRecord?.payload ?? null,
+      dossier: hydratedDossier,
       latestRun,
       proposedCases,
       unassignedProducts: unclusteredState.unassignedProducts,
       standaloneSignals: unclusteredState.standaloneSignals,
       ambiguousLinks: unclusteredState.ambiguousLinks,
       globalObservations: unclusteredState.globalObservations,
+      globalInventory: parseStage3FromReviewPayload(latestRun?.reviewPayload) ?? null,
     };
   },
 );

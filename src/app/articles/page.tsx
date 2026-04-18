@@ -1,4 +1,11 @@
-import { ArrowLeft, CircuitBoard, Sparkles } from "lucide-react";
+import {
+  ArrowLeft,
+  CircuitBoard,
+  EyeOff,
+  Radar,
+  ShieldAlert,
+  Sparkles,
+} from "lucide-react";
 import Link from "next/link";
 
 import { Badge } from "@/components/ui/badge";
@@ -11,7 +18,10 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { capabilities } from "@/lib/env";
-import { listArticleClusteringDashboard } from "@/lib/manex-case-clustering";
+import {
+  getProposedCasesDashboard,
+  type GlobalInventoryItem,
+} from "@/lib/manex-case-clustering";
 import { formatUiDateTime } from "@/lib/ui-format";
 
 export const dynamic = "force-dynamic";
@@ -34,29 +44,139 @@ function Metric({
   );
 }
 
+const toneStyles: Record<string, string> = {
+  validated_case: "bg-[color:rgba(0,92,151,0.08)] text-[var(--primary)]",
+  watchlist: "bg-[color:rgba(208,141,37,0.14)] text-amber-700",
+  noise_bucket: "bg-[color:rgba(20,32,42,0.08)] text-foreground",
+  rejected_case: "bg-[color:rgba(178,69,63,0.1)] text-[var(--destructive)]",
+};
+
+function inventoryHref(item: GlobalInventoryItem) {
+  const articleId = item.articleIds[0];
+
+  if (!articleId) {
+    return "/articles";
+  }
+
+  const candidateId = item.linkedCandidateIds[0];
+  return candidateId ? `/articles/${articleId}?case=${candidateId}` : `/articles/${articleId}`;
+}
+
+function InventorySection({
+  title,
+  description,
+  items,
+  emptyText,
+}: {
+  title: string;
+  description: string;
+  items: GlobalInventoryItem[];
+  emptyText: string;
+}) {
+  return (
+    <Card className="surface-sheet rounded-[30px] px-0 py-0">
+      <CardHeader className="px-6 pt-6">
+        <CardTitle className="section-title">{title}</CardTitle>
+        <CardDescription className="mt-2 max-w-3xl leading-6">
+          {description}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4 px-5 pb-5">
+        {items.length ? (
+          items.map((item) => (
+            <article
+              key={item.inventoryTempId}
+              className="rounded-[26px] border border-white/10 bg-black/8 p-5"
+            >
+              <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                <div className="space-y-3">
+                  <div className="flex flex-wrap gap-2">
+                    <Badge className={toneStyles[item.inventoryKind]}>
+                      {item.caseTypeHint}
+                    </Badge>
+                    <Badge variant="outline">
+                      {item.priority} · {Math.round(item.confidence * 100)}%
+                    </Badge>
+                    {item.articleIds.map((articleId) => (
+                      <Badge key={articleId} variant="outline">
+                        {articleId}
+                      </Badge>
+                    ))}
+                  </div>
+                  <div>
+                    <div className="text-lg font-semibold">{item.title}</div>
+                    <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
+                      {item.oneLineExplanation}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {item.strongestEvidence.slice(0, 5).map((evidence) => (
+                      <Badge key={evidence} variant="secondary">
+                        {evidence}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex w-full flex-col gap-3 xl:w-[260px] xl:flex-none">
+                  <div className="rounded-[22px] bg-[color:var(--surface-low)] px-4 py-4 text-sm leading-6 text-[var(--muted-foreground)]">
+                    {item.summary}
+                  </div>
+                  <Button
+                    size="lg"
+                    variant="outline"
+                    render={
+                      <Link href={inventoryHref(item)}>
+                        <CircuitBoard className="size-4" />
+                        Open workspace
+                      </Link>
+                    }
+                  />
+                </div>
+              </div>
+            </article>
+          ))
+        ) : (
+          <div className="rounded-[24px] border border-dashed border-white/10 bg-black/8 px-4 py-5 text-sm leading-6 text-[var(--muted-foreground)]">
+            {emptyText}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default async function ArticlesPage() {
-  const articles = await listArticleClusteringDashboard();
+  const dashboard = await getProposedCasesDashboard();
+  const validatedCases = dashboard.globalInventory?.validatedCases ?? [];
+  const watchlists = dashboard.globalInventory?.watchlists ?? [];
+  const noiseBuckets = dashboard.globalInventory?.noiseBuckets ?? [];
+  const rejectedCases = dashboard.globalInventory?.rejectedCases ?? [];
 
   return (
     <main className="min-h-screen">
-      <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-6 px-4 py-4 sm:px-6 lg:px-10 lg:py-8">
+      <div className="mx-auto flex w-full max-w-[1680px] flex-col gap-6 px-4 py-4 sm:px-6 lg:px-10 lg:py-8">
         <header className="glass-panel ghost-border rounded-[30px] px-5 py-5 sm:px-6">
           <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
             <div className="space-y-3">
               <Badge variant="outline">
                 <Sparkles className="size-3.5" />
-                Prompt 11 clustering spine
+                Three-stage case formation
               </Badge>
               <h1 className="font-heading text-3xl leading-none font-semibold tracking-[-0.03em] sm:text-4xl">
-                Article clustering dashboard
+                Proposed cases
               </h1>
               <p className="max-w-3xl text-sm leading-6 text-[var(--muted-foreground)] sm:text-base">
-                Start with one article family, build a complete article dossier, and
-                then persist LLM-reviewed proposed cases on top of those product threads.
+                The pipeline now runs in three steps: product thread synthesis,
+                article-local clustering, and global reconciliation into validated
+                cases, watchlists, and visible noise buckets.
               </p>
               <div className="flex flex-wrap gap-2">
-                <Badge>{capabilities.hasAi ? "GPT clustering live" : "OpenAI key missing"}</Badge>
-                <Badge variant="outline">{articles.length} article families</Badge>
+                <Badge>{capabilities.hasAi ? "LLM pipeline live" : "OpenAI key missing"}</Badge>
+                <Badge variant="outline">{dashboard.articles.length} article families</Badge>
+                <Badge variant="outline">{validatedCases.length} validated cases</Badge>
+                <Badge variant="outline">{watchlists.length} watchlists</Badge>
+                <Badge variant="outline">{noiseBuckets.length} noise buckets</Badge>
               </div>
             </div>
 
@@ -73,137 +193,159 @@ export default async function ArticlesPage() {
           </div>
         </header>
 
-        <section className="grid gap-6 xl:grid-cols-[minmax(0,1.35fr)_360px]">
-          <div className="space-y-4">
-            {articles.map((article) => (
-              <Card
-                key={article.articleId}
-                className="surface-sheet overflow-hidden rounded-[30px] px-0 py-0"
-              >
-                <CardHeader className="spec-grid px-6 pt-6">
-                  <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
-                    <div>
-                      <Badge>{article.articleId}</Badge>
-                      <CardTitle className="section-title mt-3">
-                        {article.articleName ?? "Unnamed article"}
-                      </CardTitle>
-                      <CardDescription className="mt-2 max-w-3xl leading-6">
-                        Static article filtering is the intake boundary for dossier
-                        building, trace summaries, and proposed case clusters.
-                      </CardDescription>
-                    </div>
+        <section className="grid gap-6 xl:grid-cols-[minmax(0,1.35fr)_380px]">
+          <div className="space-y-6">
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <Metric
+                label="Validated"
+                value={validatedCases.length}
+                caption="Active investigation candidates after global review."
+              />
+              <Metric
+                label="Watchlists"
+                value={watchlists.length}
+                caption="Patterns worth monitoring but not escalating yet."
+              />
+              <Metric
+                label="Noise"
+                value={noiseBuckets.length}
+                caption="Distractors, weak patterns, or detection bias buckets."
+              />
+              <Metric
+                label="Rejected"
+                value={rejectedCases.length}
+                caption="Cases the global pass actively down-ranked."
+              />
+            </div>
 
-                    <div className="flex flex-wrap gap-2">
-                      {article.latestRun ? (
-                        <Badge variant="outline">
-                          Last run {article.latestRun.status}
-                        </Badge>
-                      ) : (
-                        <Badge variant="outline">No clustering run yet</Badge>
-                      )}
-                      <Badge variant="outline">
-                        {article.proposedCaseCount} proposed cases
-                      </Badge>
-                    </div>
-                  </div>
-                </CardHeader>
+            <InventorySection
+              title="Validated Cases"
+              description="These are the strongest cross-checked investigation groups after article-local clustering and global reconciliation."
+              items={validatedCases}
+              emptyText="Run the pipeline on at least one article to produce the first validated investigation inventory."
+            />
 
-                <CardContent className="space-y-5 px-5 pb-5">
-                  <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-6">
-                    <Metric
-                      label="Products"
-                      value={article.productCount}
-                      caption="Built units in this article family."
-                    />
-                    <Metric
-                      label="Signals"
-                      value={article.totalSignals}
-                      caption="Unified inbox rows across this family."
-                    />
-                    <Metric
-                      label="Defects"
-                      value={article.defectCount}
-                      caption="Factory defects in scope."
-                    />
-                    <Metric
-                      label="Claims"
-                      value={article.claimCount}
-                      caption="Field claims in scope."
-                    />
-                    <Metric
-                      label="Bad tests"
-                      value={article.badTestCount}
-                      caption="Failing test evidence."
-                    />
-                    <Metric
-                      label="Marginal tests"
-                      value={article.marginalTestCount}
-                      caption="Near-miss test evidence."
-                    />
-                  </div>
+            <InventorySection
+              title="Watchlists"
+              description="These are leading indicators and near-miss patterns that should stay visible without being treated like active defect cases."
+              items={watchlists}
+              emptyText="No watchlists were emitted in the latest global pass."
+            />
 
-                  <div className="flex flex-col gap-4 rounded-[24px] border border-white/10 bg-black/8 p-4 lg:flex-row lg:items-center lg:justify-between">
-                    <div className="space-y-1">
-                      <div className="eyebrow">Latest activity</div>
-                      <p className="text-sm leading-6 text-[var(--muted-foreground)]">
-                        {article.latestSignalAt
-                          ? `Most recent signal: ${formatUiDateTime(article.latestSignalAt)}`
-                          : "No signal timestamp available yet."}
-                      </p>
-                      {article.latestRun ? (
-                        <p className="text-sm leading-6 text-[var(--muted-foreground)]">
-                          Latest run {article.latestRun.status} on{" "}
-                          {formatUiDateTime(article.latestRun.startedAt)} with{" "}
-                          {article.latestRun.candidateCount} proposed cases.
-                        </p>
-                      ) : null}
-                    </div>
-
-                    <Button
-                      size="lg"
-                      render={
-                        <Link href={`/articles/${article.articleId}`}>
-                          <CircuitBoard className="size-4" />
-                          Open article caseboard
-                        </Link>
-                      }
-                    />
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+            <InventorySection
+              title="Noise And Distractors"
+              description="The system surfaces its own bad leads instead of hiding them. That includes likely false positives, detection hotspots, and weak marginal-only patterns."
+              items={noiseBuckets}
+              emptyText="No explicit noise buckets were emitted in the latest global pass."
+            />
           </div>
 
           <div className="space-y-6">
             <Card className="surface-panel rounded-[30px] px-0 py-0">
               <CardHeader className="px-6 pt-6">
-                <Badge variant="outline">Architecture</Badge>
+                <Badge variant="outline">
+                  <ShieldAlert className="size-3.5" />
+                  Latest global pass
+                </Badge>
                 <CardTitle className="section-title mt-3">
-                  What gets persisted
+                  Reconciliation state
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-3 px-5 pb-5">
                 <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                  <div className="eyebrow">Dossiers first</div>
+                  <div className="eyebrow">Run</div>
                   <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                    Each article run stores deterministic product and article dossiers
-                    before the model proposes any cases.
+                    {dashboard.latestGlobalRun
+                      ? `${dashboard.latestGlobalRun.articleId} · ${dashboard.latestGlobalRun.model}`
+                      : "No completed pipeline run has persisted a global inventory yet."}
                   </p>
                 </div>
                 <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                  <div className="eyebrow">Two-pass review</div>
+                  <div className="eyebrow">Completed</div>
                   <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                    The model proposes case candidates first, then a second pass merges,
-                    trims, and tightens the case boundaries.
+                    {dashboard.latestGlobalRun?.completedAt
+                      ? formatUiDateTime(dashboard.latestGlobalRun.completedAt)
+                      : "Not completed yet"}
                   </p>
                 </div>
                 <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                  <div className="eyebrow">Proposed only</div>
+                  <div className="eyebrow">Summary</div>
                   <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                    These are stored as proposed clusters so the team can review them
-                    before turning them into investigation cases.
+                    {dashboard.globalInventory?.inventorySummary ??
+                      "Once a run completes, this panel will summarize how the global pass separated real cases from watchlists and noise."}
                   </p>
                 </div>
+                {dashboard.globalInventory?.confidenceNotes.length ? (
+                  <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
+                    <div className="eyebrow">Confidence notes</div>
+                    <div className="mt-2 space-y-2 text-sm leading-6 text-[var(--muted-foreground)]">
+                      {dashboard.globalInventory.confidenceNotes.map((item) => (
+                        <p key={item}>{item}</p>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </CardContent>
+            </Card>
+
+            <Card className="surface-sheet rounded-[30px] px-0 py-0">
+              <CardHeader className="px-6 pt-6">
+                <Badge variant="outline">
+                  <Radar className="size-3.5" />
+                  Article families
+                </Badge>
+                <CardTitle className="section-title mt-3">
+                  Local workspaces
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3 px-5 pb-5">
+                {dashboard.articles.map((article) => (
+                  <article
+                    key={article.articleId}
+                    className="rounded-[22px] border border-white/10 bg-black/8 p-4"
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge>{article.articleId}</Badge>
+                      <Badge variant="outline">{article.productCount} products</Badge>
+                      <Badge variant="outline">{article.totalSignals} signals</Badge>
+                    </div>
+                    <div className="mt-3 font-medium">
+                      {article.articleName ?? "Unnamed article"}
+                    </div>
+                    <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
+                      {article.proposedCaseCount} proposed cases · latest run{" "}
+                      {article.latestRun?.status ?? "not started"}
+                    </p>
+                    <div className="mt-3">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        render={<Link href={`/articles/${article.articleId}`}>Open workspace</Link>}
+                      />
+                    </div>
+                  </article>
+                ))}
+              </CardContent>
+            </Card>
+
+            <Card className="surface-sheet rounded-[30px] px-0 py-0">
+              <CardHeader className="px-6 pt-6">
+                <Badge variant="outline">
+                  <EyeOff className="size-3.5" />
+                  Merge log
+                </Badge>
+                <CardTitle className="section-title mt-3">
+                  What got suppressed or merged
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2 px-5 pb-5 text-sm leading-6 text-[var(--muted-foreground)]">
+                {dashboard.globalInventory?.caseMergeLog.length ? (
+                  dashboard.globalInventory.caseMergeLog.map((item) => (
+                    <p key={item}>{item}</p>
+                  ))
+                ) : (
+                  <p>No merge or suppression notes are available yet.</p>
+                )}
               </CardContent>
             </Card>
           </div>

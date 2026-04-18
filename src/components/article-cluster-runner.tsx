@@ -43,6 +43,9 @@ export function ArticleClusterRunner({
         error?: string;
         caseCount?: number;
         runId?: string;
+        validatedCount?: number;
+        watchlistCount?: number;
+        noiseCount?: number;
       };
 
       if (!response.ok || !payload.ok) {
@@ -55,7 +58,7 @@ export function ArticleClusterRunner({
 
       setFeedback({
         tone: "success",
-        text: `Clustering run finished with ${payload.caseCount ?? 0} proposed cases.`,
+        text: `Pipeline finished with ${payload.caseCount ?? 0} proposed cases, ${payload.validatedCount ?? 0} validated cases, ${payload.watchlistCount ?? 0} watchlists, and ${payload.noiseCount ?? 0} noise buckets.`,
       });
       router.refresh();
     } catch (error) {

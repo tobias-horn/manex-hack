@@ -199,9 +199,9 @@ export default async function Home({ searchParams }: HomeProps) {
                 Incoming quality signals
               </h1>
               <p className="max-w-3xl text-sm leading-6 text-[var(--muted-foreground)] sm:text-base">
-                This is the intake surface for future caseboards. It merges field
+                This is the intake surface before case formation. It merges field
                 claims, factory defects, and outlier test results into one browsable
-                feed without jumping into SQL or root-cause analysis yet.
+                feed, then hands off into proposed cases and the investigation workspace.
               </p>
               <div className="flex flex-wrap gap-3">
                 <Button
@@ -221,7 +221,7 @@ export default async function Home({ searchParams }: HomeProps) {
                 <Button
                   variant="outline"
                   size="lg"
-                  render={<Link href="/articles">Open article dashboard</Link>}
+                  render={<Link href="/articles">Open proposed cases</Link>}
                 />
                 <Button
                   variant="outline"

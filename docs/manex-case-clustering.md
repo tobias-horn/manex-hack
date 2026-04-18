@@ -1,109 +1,138 @@
 # Manex Case Clustering
 
-Prompt 11 adds the first article-level clustering engine on top of the existing
-signal inbox, traceability helpers, dossier view, and case-state layer.
+The clustering layer now follows a 3-stage pipeline that matches the hackathon
+investigation flow more closely:
 
-## What this adds
+1. product thread construction
+2. article-local case clustering
+3. global reconciliation and noise extraction
 
-- an article dashboard at `src/app/articles/page.tsx`
-- an article caseboard at `src/app/articles/[articleId]/page.tsx`
-- a clustering trigger route at `src/app/api/articles/[articleId]/cluster/route.ts`
-- a deterministic dossier builder and LLM orchestration layer in
-  `src/lib/manex-case-clustering.ts`
-- persisted clustering state in `src/lib/manex-case-clustering-state.ts`
+The result is a simpler UI shape:
 
-## High-level flow
+- `/` stays the symptom inbox
+- `/articles` becomes the proposed-cases dashboard
+- `/articles/[articleId]` becomes the investigation workspace
 
-1. static article filter
-2. deterministic product-thread dossier build
-3. deterministic article dossier build
-4. GPT case proposal pass
-5. GPT review/refinement pass
-6. persist proposed candidates for human review
+## What changed
 
-The model is not asked to inspect raw SQL rows directly.
-Instead, it receives a structured dossier:
+- `src/lib/manex-case-clustering.ts`
+  Owns the full 3-stage orchestration.
+- `src/lib/manex-case-clustering-state.ts`
+  Persists dossiers, runs, and article-local proposed cases.
+- `src/app/articles/page.tsx`
+  Shows validated cases, watchlists, and noise buckets first.
+- `src/app/articles/[articleId]/page.tsx`
+  Opens one article workspace with case selection, evidence spine, and action lane.
+- `src/app/api/articles/[articleId]/cluster/route.ts`
+  Triggers the end-to-end pipeline and returns article plus global counts.
 
-- article overview and summary metrics
-- product threads with ordered signals, parts, tests, rework, and actions
+## Stage 1
+
+Stage 1 still starts with deterministic joins, but it now adds an LLM synthesis
+layer on top of each product thread.
+
+Each persisted `team_product_dossier` now includes:
+
+- the full deterministic timeline
+- installed parts, supplier batches, and BOM positions
+- tests, claims, defects, rework, and actions
+- summary features for later clustering
+- `stage1Synthesis`
+  - `productSummary`
+  - `timeline`
+  - `evidenceFeatures`
+  - `suspiciousPatterns`
+  - `possibleNoiseFlags`
+  - `openQuestions`
+
+This gives Stage 2 a compact “story of this unit” without losing the raw evidence.
+
+Current schema version:
+
+- product dossier: `manex.product_dossier.v2`
+
+## Stage 2
+
+Stage 2 clusters product threads inside one article.
+
+The article dossier still contains:
+
+- article summary metrics
 - cross-product trace summaries
-- compact raw evidence appendix
+- enriched product threads
+- raw evidence appendix
 
-## Persisted schema
+The article-local output is stored as an article case set and materialized into
+`team_case_candidate` plus `team_case_candidate_member`.
 
-The clustering layer owns these app-specific objects:
+Important behaviors:
 
-- `team_signal_inbox`
-  Unified read view for defects, field claims, bad tests, and marginal tests.
-- `team_product_dossier`
-  One deterministic dossier payload per product.
-- `team_article_dossier`
-  One deterministic dossier payload per article.
-- `team_case_run`
-  Audit log for clustering runs, prompt/schema versions, and run status.
-- `team_case_candidate`
-  Persisted proposed case clusters.
-- `team_case_candidate_member`
-  Links proposed candidates back to products and signal IDs.
-
-## Dossier contract
+- products may remain unassigned
+- signals may remain standalone
+- cases are still only proposed at this stage
 
 Current schema versions:
 
-- article dossier: `manex.article_dossier.v1`
-- product dossier: `manex.product_dossier.v1`
-- case proposal set: `manex.case_proposal_set.v1`
+- article dossier: `manex.article_dossier.v2`
+- article case set: `manex.article_case_set.v2`
 
-The article dossier includes:
+## Stage 3
 
-- article metadata and counts
-- top defect codes, parts, BOM positions, sections, batches, and orders
-- field-claim-only and test-hotspot summaries
-- cross-product link summaries
-- full product threads
-- raw evidence appendix
+Stage 3 reconciles the latest article-local case sets into one global inventory.
 
-Each product dossier includes:
+It uses:
 
-- metadata like product, article, build, and order
-- ordered signal timeline
-- defects, claims, tests, rework, and actions
-- installed parts with batch and supplier context
-- weekly quality snippets
-- evidence frames
-- traceability snapshot
-- summary features for later clustering and RCA
+- article-local case sets from completed runs
+- global section distributions
+- false-positive pool
+- marginal-only pool
+- weekly volume summaries
+- test result band summaries
+- field-claim lag summaries
 
-## LLM behavior
+The global output separates:
 
-The clustering pass is intentionally constrained:
+- `validatedCases`
+- `watchlists`
+- `noiseBuckets`
+- `rejectedCases`
+- `caseMergeLog`
+- `confidenceNotes`
 
-- it proposes case candidates, not final RCA conclusions
-- it may leave products unassigned
-- it may leave individual faults standalone when they do not support any shared case
-- it keeps cosmetic, service, false-positive, process, supplier, and likely
-  functional clusters separate when the evidence supports it
-- it returns strict JSON so the output is persistable and forward-compatible
+This global inventory is persisted inside the run review payload, so the app can
+render the latest validated/watchlist/noise view without introducing another
+storage layer.
 
-The default model is `gpt-5.4-mini` so article clustering stays responsive while
-still using the GPT-5.4 family for structured reasoning.
+Current schema version:
 
-Chunking is built in for larger article families:
+- global reconciliation: `manex.global_case_inventory.v1`
 
-- pass A proposes cases per chunk of product threads
-- pass B reviews and refines the combined draft proposals
+## UI notes
 
-## UI expectations
+The UI is intentionally more opinionated now.
 
-- `/articles` is the dashboard entry point
-- `/articles/[articleId]` shows the current dossier-backed proposed cases
-- `/products/[productId]` now surfaces proposed case membership for that product
+`/articles` is no longer just an article list. It is the main proposed-cases
+dashboard, with:
 
-## Notes for later stages
+- validated cases first
+- watchlists second
+- noise buckets third
+- article workspaces in the sidebar
 
-- promotion from `team_case_candidate` into the human-owned `cases` workflow can
-  be added later without changing the clustering contract
-- the persisted run and dossier tables are meant to support later reviewer flows,
-  LLM explanations, and case acceptance/rejection state
-- the prompt payload is intentionally more compact than the persisted dossier so
-  the demo remains responsive while the stored evidence stays complete
+`/articles/[articleId]` is the workspace view, with:
+
+- left: proposed case selection and unresolved leftovers
+- center: evidence spine for the selected case
+- right: strongest evidence, caution signals, and `product_action` write-back
+
+## Compatibility
+
+Older persisted article dossiers may still exist in the database without
+`stage1Synthesis`. The read layer hydrates those payloads with a deterministic
+fallback so the new workspace can render older runs safely.
+
+## Performance notes
+
+- The default model is `gpt-5.4-mini`.
+- Stage 1 product synthesis runs with bounded concurrency.
+- Prompt payloads stay more compact than the persisted dossier payloads.
