@@ -7,26 +7,16 @@ import {
   buildCopilotContext,
   getWorkspaceSnapshot,
 } from "@/lib/quality-workspace";
+import {
+  buildManexCopilotUserPrompt,
+  MANEX_COPILOT_SYSTEM_PROMPT,
+} from "@/prompts/manex-copilot";
 
 export const runtime = "nodejs";
 
 const promptSchema = z.object({
   prompt: z.string().trim().min(1).max(4000),
 });
-
-const systemPrompt = `
-You are the Manex Forensic Lens copilot.
-
-Write for manufacturing engineers and quality managers.
-Stay evidence-led, concise, and technically calm.
-Never invent facts. If certainty is limited, say so directly.
-
-Preferred structure:
-1. Likely signal cluster
-2. Evidence
-3. Recommended next moves
-4. Draft language the team can paste into an 8D or corrective-action note
-`.trim();
 
 function buildFallbackResponse(prompt: string, context: string) {
   return [
@@ -71,8 +61,11 @@ export async function POST(request: Request) {
 
     const result = await generateText({
       model: openai(env.OPENAI_MODEL),
-      system: systemPrompt,
-      prompt: `Workspace snapshot:\n${context}\n\nUser request:\n${parsed.data.prompt}`,
+      system: MANEX_COPILOT_SYSTEM_PROMPT,
+      prompt: buildManexCopilotUserPrompt({
+        context,
+        prompt: parsed.data.prompt,
+      }),
       temperature: 0.2,
     });
 
