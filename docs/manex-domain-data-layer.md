@@ -25,6 +25,7 @@ The exported API is investigation-oriented:
 - `workflow.findActions(...)`
 - `workflow.findActionsForProduct(productId, ...)`
 - `workflow.recordAction(...)`
+- `workflow.updateAction(...)`
 - `workflow.findRework(...)`
 - `workflow.findReworkForDefect(defectId, ...)`
 - `workflow.recordRework(...)`
@@ -66,3 +67,5 @@ Raw table names are now confined to the data layer for workflow write-back and i
 If a new feature needs data, extend the domain layer first, then consume it from the feature.
 
 For Prompt 6, the higher-order deterministic helpers that sit on top of this layer are documented in `docs/manex-traceability.md`.
+
+For Prompt 7, the thin workflow write-back layer is documented in `docs/manex-writeback-foundation.md`.

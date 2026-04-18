@@ -27,6 +27,11 @@ type QueryFilter = {
   value: Primitive | Primitive[];
 };
 
+type UpdateFilter = {
+  field: string;
+  value: Primitive;
+};
+
 type QuerySpec = {
   select?: string[];
   filters?: QueryFilter[];
@@ -376,6 +381,15 @@ export type ManexCreateActionInput = {
   comments: string;
 };
 
+export type ManexUpdateActionInput = {
+  id: string;
+  recordedAt: string;
+  status: string;
+  comments?: string;
+  userId?: string | null;
+  sectionId?: string | null;
+};
+
 export type ManexCreateReworkInput = {
   id: string;
   defectId: string;
@@ -509,6 +523,9 @@ export type ManexDataAccess = {
     recordAction(
       input: ManexCreateActionInput,
     ): Promise<WriteResult<ManexWorkflowAction>>;
+    updateAction(
+      input: ManexUpdateActionInput,
+    ): Promise<WriteResult<ManexWorkflowAction>>;
     findRework(
       query?: ManexReworkQuery,
     ): Promise<ManexSearchResult<ManexReworkRecord>>;
@@ -530,6 +547,12 @@ type InternalTransport = {
   ): Promise<Omit<ReadResult<T>, "transport">>;
   insert<T extends QueryResultRow>(
     relation: "product_action" | "rework",
+    values: Record<string, Primitive>,
+    returning: string[],
+  ): Promise<T>;
+  update<T extends QueryResultRow>(
+    relation: "product_action" | "rework",
+    filters: UpdateFilter[],
     values: Record<string, Primitive>,
     returning: string[],
   ): Promise<T>;
@@ -634,6 +657,11 @@ const createFilter = (
   value,
 });
 
+const createUpdateFilter = (field: string, value: Primitive): UpdateFilter => ({
+  field,
+  value,
+});
+
 const isPresent = <T>(value: T | null): value is T => value !== null;
 
 function createRestTransport(): InternalTransport | null {
@@ -733,6 +761,51 @@ function createRestTransport(): InternalTransport | null {
 
       return row;
     },
+    async update<T extends QueryResultRow>(
+      relation: "product_action" | "rework",
+      filters: UpdateFilter[],
+      values: Record<string, Primitive>,
+      returning: string[],
+    ) {
+      if (!filters.length) {
+        throw new Error(`Refusing to update ${relation} without a filter.`);
+      }
+
+      const url = new URL(relation, env.MANEX_REST_API_URL);
+      url.searchParams.set("select", returning.join(","));
+
+      for (const filter of filters) {
+        url.searchParams.append(filter.field, `eq.${filter.value}`);
+      }
+
+      const response = await fetch(url, {
+        method: "PATCH",
+        headers: {
+          ...baseHeaders,
+          "Content-Type": "application/json",
+          Prefer: "return=representation",
+        },
+        body: JSON.stringify(values),
+        cache: "no-store",
+      });
+
+      const responseText = await response.text();
+
+      if (!response.ok) {
+        throw new Error(
+          `HTTP ${response.status} ${response.statusText}: ${responseText.slice(0, 300)}`,
+        );
+      }
+
+      const rows = JSON.parse(responseText) as T[];
+      const row = Array.isArray(rows) ? rows[0] : rows;
+
+      if (!row) {
+        throw new Error(`No row returned from ${relation} update.`);
+      }
+
+      return row;
+    },
   };
 }
 
@@ -793,6 +866,48 @@ function createPostgresTransport(): InternalTransport | null {
 
       if (!rows[0]) {
         throw new Error(`No row returned from ${relation} insert.`);
+      }
+
+      return rows[0];
+    },
+    async update<T extends QueryResultRow>(
+      relation: "product_action" | "rework",
+      filters: UpdateFilter[],
+      values: Record<string, Primitive>,
+      returning: string[],
+    ) {
+      const columns = Object.keys(values);
+
+      if (!columns.length) {
+        throw new Error(`Refusing to update ${relation} without changed values.`);
+      }
+
+      if (!filters.length) {
+        throw new Error(`Refusing to update ${relation} without a filter.`);
+      }
+
+      const params: Primitive[] = [];
+      const setClause = columns
+        .map((column) => {
+          params.push(values[column] ?? null);
+          return `${assertIdentifier(column)} = $${params.length}`;
+        })
+        .join(", ");
+      const whereClause = filters
+        .map((filter) => {
+          params.push(filter.value);
+          return `${assertIdentifier(filter.field)} = $${params.length}`;
+        })
+        .join(" AND ");
+      const returningClause = returning.map(assertIdentifier).join(", ");
+      const rows =
+        (await queryPostgres<T>(
+          `UPDATE ${relation} SET ${setClause} WHERE ${whereClause} RETURNING ${returningClause}`,
+          params,
+        )) ?? [];
+
+      if (!rows[0]) {
+        throw new Error(`No row returned from ${relation} update.`);
       }
 
       return rows[0];
@@ -1262,6 +1377,32 @@ async function insertWithFallback<T extends QueryResultRow>(
     } catch (error) {
       lastError = error;
       console.error(`Manex write failed via ${transport.kind} for ${relation}`, {
+        error: formatError(error),
+      });
+    }
+  }
+
+  throw lastError ?? new Error(`No configured write transport for ${relation}.`);
+}
+
+async function updateWithFallback<T extends QueryResultRow>(
+  relation: "product_action" | "rework",
+  filters: UpdateFilter[],
+  values: Record<string, Primitive>,
+  returning: string[],
+): Promise<WriteResult<T>> {
+  let lastError: unknown;
+
+  for (const transport of writeTransports()) {
+    try {
+      const row = await transport.update<T>(relation, filters, values, returning);
+      return {
+        row,
+        transport: transport.kind,
+      };
+    } catch (error) {
+      lastError = error;
+      console.error(`Manex update failed via ${transport.kind} for ${relation}`, {
         error: formatError(error),
       });
     }
@@ -1754,6 +1895,36 @@ export function createManexDataAccess(): ManexDataAccess {
             section_id: input.sectionId ?? null,
             comments: input.comments,
           },
+          defaultActionSelect,
+        );
+
+        return {
+          row: mapAction(result.row),
+          transport: result.transport,
+        };
+      },
+      async updateAction(input) {
+        const values: Record<string, Primitive> = {
+          ts: input.recordedAt,
+          status: input.status,
+        };
+
+        if (typeof input.comments === "string") {
+          values.comments = input.comments;
+        }
+
+        if (input.userId !== undefined) {
+          values.user_id = input.userId;
+        }
+
+        if (input.sectionId !== undefined) {
+          values.section_id = input.sectionId;
+        }
+
+        const result = await updateWithFallback<ActionRow>(
+          "product_action",
+          [createUpdateFilter("action_id", input.id)],
+          values,
           defaultActionSelect,
         );
 

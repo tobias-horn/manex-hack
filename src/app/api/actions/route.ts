@@ -7,12 +7,20 @@ import type { Initiative } from "@/lib/quality-workspace";
 
 export const runtime = "nodejs";
 
+const actionStatusSchema = z.enum(["open", "in_progress", "blocked", "done"]);
+
 const actionSchema = z.object({
   productId: z.string().trim().min(1),
   defectId: z.string().trim().optional(),
   actionType: z.string().trim().min(1),
-  status: z.string().trim().min(1),
+  status: actionStatusSchema,
   comments: z.string().trim().min(1).max(1000),
+});
+
+const actionUpdateSchema = z.object({
+  actionId: z.string().trim().min(1),
+  status: actionStatusSchema,
+  comments: z.string().trim().max(1000).optional(),
 });
 
 const nextActionId = () =>
@@ -44,6 +52,7 @@ export async function POST(request: Request) {
   if (!parsed.success) {
     return Response.json(
       {
+        ok: false,
         error: "Please provide productId, actionType, status, and comments.",
       },
       { status: 400 },
@@ -56,6 +65,7 @@ export async function POST(request: Request) {
 
   if (!capabilities.hasRest && !capabilities.hasPostgres) {
     return Response.json({
+      ok: true,
       mode: "demo",
       action: formatAction({
         action_id: actionId,
@@ -82,6 +92,7 @@ export async function POST(request: Request) {
     });
 
     return Response.json({
+      ok: true,
       mode: "live",
       action: formatAction({
         action_id: result.row.id,
@@ -96,10 +107,73 @@ export async function POST(request: Request) {
   } catch (error) {
     return Response.json(
       {
+        ok: false,
         error:
           error instanceof Error
             ? error.message
             : "Workflow write failed. Check your REST or Postgres credentials.",
+      },
+      { status: 500 },
+    );
+  }
+}
+
+export async function PATCH(request: Request) {
+  const parsed = actionUpdateSchema.safeParse(await request.json());
+
+  if (!parsed.success) {
+    return Response.json(
+      {
+        ok: false,
+        error: "Please provide actionId and a valid status.",
+      },
+      { status: 400 },
+    );
+  }
+
+  const data = createManexDataAccess();
+  const timestamp = new Date().toISOString();
+
+  if (!capabilities.hasRest && !capabilities.hasPostgres) {
+    return Response.json(
+      {
+        ok: false,
+        error: "Workflow writes are not configured in this environment.",
+      },
+      { status: 503 },
+    );
+  }
+
+  try {
+    const result = await data.workflow.updateAction({
+      id: parsed.data.actionId,
+      recordedAt: timestamp,
+      status: parsed.data.status,
+      comments: parsed.data.comments?.trim() || undefined,
+      userId: "forensic_lens",
+    });
+
+    return Response.json({
+      ok: true,
+      mode: "live",
+      action: formatAction({
+        action_id: result.row.id,
+        product_id: result.row.productId,
+        defect_id: result.row.defectId,
+        action_type: result.row.actionType,
+        status: result.row.status,
+        comments: result.row.comments,
+        ts: result.row.recordedAt,
+      }),
+    });
+  } catch (error) {
+    return Response.json(
+      {
+        ok: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Workflow update failed. Check your REST or Postgres credentials.",
       },
       { status: 500 },
     );

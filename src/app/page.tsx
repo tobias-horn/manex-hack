@@ -172,6 +172,11 @@ export default async function Home({ searchParams }: HomeProps) {
                   size="lg"
                   render={<Link href="/traceability">Open traceability explorer</Link>}
                 />
+                <Button
+                  variant="outline"
+                  size="lg"
+                  render={<Link href="/workflow">Open workflow foundation</Link>}
+                />
               </div>
               <ActiveFilters filters={inbox.filters} />
             </div>
