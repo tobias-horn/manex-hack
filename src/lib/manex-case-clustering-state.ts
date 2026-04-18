@@ -67,6 +67,40 @@ export type TeamClusteringResetSummary = {
   candidateMembers: number;
 };
 
+export type TeamClusteringStopSummary = {
+  stoppedRuns: number;
+  stoppedBatches: number;
+  runIds: string[];
+  batchIds: string[];
+};
+
+export type TeamCaseBatchArticleResult = {
+  articleId: string;
+  ok: boolean;
+  runId: string | null;
+  caseCount: number;
+  validatedCount: number;
+  watchlistCount: number;
+  noiseCount: number;
+  error: string | null;
+  completedAt: string;
+};
+
+export type TeamCaseBatchSummary = {
+  id: string;
+  status: "idle" | "running" | "completed" | "failed";
+  requestedArticleIds: string[];
+  totalArticleCount: number;
+  startedAt: string | null;
+  completedAt: string | null;
+  lastUpdatedAt: string | null;
+  concurrency: number | null;
+  okCount: number;
+  errorCount: number;
+  errorMessage: string | null;
+  articleResults: TeamCaseBatchArticleResult[];
+};
+
 export type TeamPersistedProductDossierRecord<TPayload = unknown> = {
   productId: string;
   articleId: string;
@@ -246,6 +280,21 @@ type ArticleClusterCardRow = QueryResultRow & {
   stage_updated_at: string | null;
 };
 
+type CaseBatchRow = QueryResultRow & {
+  batch_id: string;
+  status: TeamCaseBatchSummary["status"];
+  requested_article_ids: string[] | null;
+  total_article_count: number | string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  last_updated_at: string | null;
+  concurrency: number | string | null;
+  ok_count: number | string | null;
+  error_count: number | string | null;
+  error_message: string | null;
+  article_results: unknown;
+};
+
 const CLUSTERING_SCHEMA_SQL = `
 CREATE OR REPLACE VIEW team_signal_inbox AS
   SELECT
@@ -365,6 +414,25 @@ ALTER TABLE team_case_run
 
 ALTER TABLE team_case_run
   ADD COLUMN IF NOT EXISTS stage_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+CREATE TABLE IF NOT EXISTS team_case_batch (
+  batch_id TEXT PRIMARY KEY,
+  status TEXT NOT NULL
+    CHECK (status IN ('idle', 'running', 'completed', 'failed')),
+  requested_article_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+  total_article_count INTEGER NOT NULL DEFAULT 0,
+  started_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
+  last_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  concurrency INTEGER,
+  ok_count INTEGER NOT NULL DEFAULT 0,
+  error_count INTEGER NOT NULL DEFAULT 0,
+  error_message TEXT,
+  article_results JSONB NOT NULL DEFAULT '[]'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS idx_team_case_batch_started_at
+  ON team_case_batch (started_at DESC NULLS LAST, last_updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS team_case_candidate (
   candidate_id TEXT PRIMARY KEY,
@@ -528,6 +596,7 @@ export async function resetTeamCaseClusteringState() {
       await client.query("DELETE FROM team_case_candidate_member");
       await client.query("DELETE FROM team_case_candidate");
       await client.query("DELETE FROM team_case_run");
+      await client.query("DELETE FROM team_case_batch");
       await client.query("DELETE FROM team_article_dossier");
       await client.query("DELETE FROM team_product_dossier");
 
@@ -545,6 +614,153 @@ export async function resetTeamCaseClusteringState() {
       throw error;
     }
   });
+}
+
+export async function stopActiveTeamCaseClustering(reason = "Pipeline stopped by user.") {
+  await ensureTeamCaseClusteringState();
+
+  return withClient<TeamClusteringStopSummary>(async (client) => {
+    await client.query("BEGIN");
+
+    try {
+      const activeRunsRows = await client.query<
+        QueryResultRow & {
+          run_id: string;
+        }
+      >(
+        `
+          SELECT run_id
+          FROM team_case_run
+          WHERE status = 'building'
+          ORDER BY started_at ASC
+        `,
+      );
+
+      const activeBatchRows = await client.query<
+        QueryResultRow & {
+          batch_id: string;
+        }
+      >(
+        `
+          SELECT batch_id
+          FROM team_case_batch
+          WHERE status = 'running'
+          ORDER BY started_at DESC NULLS LAST, last_updated_at DESC
+        `,
+      );
+
+      await client.query(
+        `
+          UPDATE team_case_run
+          SET
+            status = 'failed',
+            current_stage = 'failed',
+            stage_detail = $1,
+            stage_updated_at = NOW(),
+            completed_at = NOW(),
+            error_message = $2,
+            proposal_payload = COALESCE(proposal_payload, '{}'::jsonb),
+            review_payload = COALESCE(review_payload, '{}'::jsonb)
+          WHERE status = 'building'
+        `,
+        [reason, reason],
+      );
+
+      await client.query(
+        `
+          UPDATE team_case_batch
+          SET
+            status = 'failed',
+            completed_at = NOW(),
+            last_updated_at = NOW(),
+            error_message = $1
+          WHERE status = 'running'
+        `,
+        [reason],
+      );
+
+      await client.query("COMMIT");
+
+      return {
+        stoppedRuns: activeRunsRows.rows.length,
+        stoppedBatches: activeBatchRows.rows.length,
+        runIds: activeRunsRows.rows.map((row) => row.run_id),
+        batchIds: activeBatchRows.rows.map((row) => row.batch_id),
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    }
+  });
+}
+
+export async function getLatestTeamCaseBatch() {
+  await ensureTeamCaseClusteringState();
+
+  const rows =
+    (await queryPostgres<CaseBatchRow>(
+      `
+      SELECT *
+      FROM team_case_batch
+      ORDER BY started_at DESC NULLS LAST, last_updated_at DESC
+      LIMIT 1
+    `,
+    )) ?? [];
+
+  return rows[0] ? mapBatchSummary(rows[0]) : null;
+}
+
+export async function upsertTeamCaseBatch(input: TeamCaseBatchSummary) {
+  await ensureTeamCaseClusteringState();
+
+  await queryPostgres(
+    `
+      INSERT INTO team_case_batch (
+        batch_id,
+        status,
+        requested_article_ids,
+        total_article_count,
+        started_at,
+        completed_at,
+        last_updated_at,
+        concurrency,
+        ok_count,
+        error_count,
+        error_message,
+        article_results
+      )
+      VALUES (
+        $1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb
+      )
+      ON CONFLICT (batch_id)
+      DO UPDATE SET
+        status = EXCLUDED.status,
+        requested_article_ids = EXCLUDED.requested_article_ids,
+        total_article_count = EXCLUDED.total_article_count,
+        started_at = EXCLUDED.started_at,
+        completed_at = EXCLUDED.completed_at,
+        last_updated_at = EXCLUDED.last_updated_at,
+        concurrency = EXCLUDED.concurrency,
+        ok_count = EXCLUDED.ok_count,
+        error_count = EXCLUDED.error_count,
+        error_message = EXCLUDED.error_message,
+        article_results = EXCLUDED.article_results
+    `,
+    [
+      input.id,
+      input.status,
+      JSON.stringify(input.requestedArticleIds),
+      input.totalArticleCount,
+      input.startedAt ?? null,
+      input.completedAt ?? null,
+      input.lastUpdatedAt ?? null,
+      input.concurrency ?? null,
+      input.okCount,
+      input.errorCount,
+      input.errorMessage ?? null,
+      JSON.stringify(input.articleResults),
+    ],
+  );
 }
 
 const mapRunSummary = (row: CaseRunRow): TeamCaseRunSummary => ({
@@ -569,6 +785,23 @@ const mapRunSummary = (row: CaseRunRow): TeamCaseRunSummary => ({
   requestPayload: row.request_payload,
   proposalPayload: row.proposal_payload,
   reviewPayload: row.review_payload,
+});
+
+const mapBatchSummary = (row: CaseBatchRow): TeamCaseBatchSummary => ({
+  id: row.batch_id,
+  status: row.status,
+  requestedArticleIds: toStringArray(row.requested_article_ids),
+  totalArticleCount: normalizeInteger(row.total_article_count),
+  startedAt: normalizeIso(row.started_at),
+  completedAt: normalizeIso(row.completed_at),
+  lastUpdatedAt: normalizeIso(row.last_updated_at),
+  concurrency: normalizeNullableNumber(row.concurrency),
+  okCount: normalizeInteger(row.ok_count),
+  errorCount: normalizeInteger(row.error_count),
+  errorMessage: normalizeNullableText(row.error_message),
+  articleResults: Array.isArray(row.article_results)
+    ? (row.article_results as TeamCaseBatchArticleResult[])
+    : [],
 });
 
 const mapCandidateMember = (

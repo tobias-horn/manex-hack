@@ -1,10 +1,20 @@
 import { capabilities } from "@/lib/env";
 import { runArticleCaseClusteringBatch } from "@/lib/manex-case-clustering";
 import {
+  getLatestTeamCaseBatch,
   listActiveTeamCaseRuns,
   resetTeamCaseClusteringState,
+  stopActiveTeamCaseClustering,
+  upsertTeamCaseBatch,
   type TeamClusteringResetSummary,
+  type TeamCaseBatchSummary,
 } from "@/lib/manex-case-clustering-state";
+import {
+  clearBatchExecution,
+  getBatchExecutionState,
+  registerBatchExecution,
+  stopAllClusteringExecutions,
+} from "@/lib/manex-case-clustering-runtime";
 import { normalizeUiIdentifier } from "@/lib/ui-format";
 
 export const runtime = "nodejs";
@@ -13,39 +23,32 @@ type BatchRequestBody = {
   articleIds?: string[];
 };
 
-type BatchLifecycleStatus = "idle" | "running" | "completed" | "failed";
-
-type BatchStatus = {
-  status: BatchLifecycleStatus;
-  requestedArticleIds: string[];
-  startedAt: string | null;
-  completedAt: string | null;
-  concurrency: number | null;
-  okCount: number;
-  errorCount: number;
-  errorMessage: string | null;
-};
+type BatchStatus = TeamCaseBatchSummary;
 
 type ResetStatus = {
   completedAt: string | null;
   summary: TeamClusteringResetSummary | null;
 };
 
-let activeBatchPromise: Promise<void> | null = null;
-let latestBatchStatus: BatchStatus = {
+const idleBatchStatus = (): BatchStatus => ({
+  id: "idle",
   status: "idle",
   requestedArticleIds: [],
+  totalArticleCount: 0,
   startedAt: null,
   completedAt: null,
+  lastUpdatedAt: null,
   concurrency: null,
   okCount: 0,
   errorCount: 0,
   errorMessage: null,
-};
+  articleResults: [],
+});
 let latestResetStatus: ResetStatus = {
   completedAt: null,
   summary: null,
 };
+const STOPPED_PIPELINE_MESSAGE = "Pipeline stopped by user.";
 
 function validateCapabilities() {
   if (!capabilities.hasPostgres) {
@@ -81,6 +84,25 @@ function validatePostgresCapability() {
 
 async function buildStatusPayload() {
   const activeRuns = await listActiveTeamCaseRuns();
+  const persistedBatchStatus = await getLatestTeamCaseBatch();
+  const latestBatchStatus =
+    persistedBatchStatus ??
+    (activeRuns.length
+      ? {
+          id: "recovered",
+          status: "running" as const,
+          requestedArticleIds: activeRuns.map((run) => run.articleId),
+          totalArticleCount: activeRuns.length,
+          startedAt: activeRuns[activeRuns.length - 1]?.startedAt ?? null,
+          completedAt: null,
+          lastUpdatedAt: activeRuns[0]?.stageUpdatedAt ?? activeRuns[0]?.startedAt ?? null,
+          concurrency: null,
+          okCount: 0,
+          errorCount: 0,
+          errorMessage: null,
+          articleResults: [],
+        }
+      : idleBatchStatus());
 
   return {
     batch: latestBatchStatus,
@@ -126,7 +148,7 @@ export async function POST(request: Request) {
     );
   }
 
-  if (activeBatchPromise) {
+  if (getBatchExecutionState().promise) {
     const statusPayload = await buildStatusPayload();
     return Response.json(
       {
@@ -163,55 +185,152 @@ export async function POST(request: Request) {
     body.articleIds
       ?.map((articleId) => normalizeUiIdentifier(articleId))
       .filter((articleId): articleId is string => Boolean(articleId)) ?? [];
-
-  latestBatchStatus = {
+  const batchId = `TCBATCH-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+  let latestBatchStatus: BatchStatus = {
+    id: batchId,
     status: "running",
     requestedArticleIds: normalizedArticleIds,
+    totalArticleCount: normalizedArticleIds.length,
     startedAt: new Date().toISOString(),
     completedAt: null,
+    lastUpdatedAt: new Date().toISOString(),
     concurrency: null,
     okCount: 0,
     errorCount: 0,
     errorMessage: null,
+    articleResults: [],
   };
+  await upsertTeamCaseBatch(latestBatchStatus);
 
-  activeBatchPromise = (async () => {
+  const abortController = new AbortController();
+  const activeBatchPromise = (async () => {
     try {
-      const result = await runArticleCaseClusteringBatch(
-        normalizedArticleIds.length ? normalizedArticleIds : undefined,
-      );
+      const result = await runArticleCaseClusteringBatch({
+        articleIds: normalizedArticleIds.length ? normalizedArticleIds : undefined,
+        abortSignal: abortController.signal,
+        onStart: ({ requestedArticleIds, concurrency, totalArticleCount }) => {
+          latestBatchStatus = {
+            ...latestBatchStatus,
+            requestedArticleIds,
+            totalArticleCount,
+            concurrency,
+            lastUpdatedAt: new Date().toISOString(),
+          };
+          return upsertTeamCaseBatch(latestBatchStatus);
+        },
+        onArticleComplete: ({ result: articleResult, okCount, errorCount, totalArticleCount }) => {
+          latestBatchStatus = {
+            ...latestBatchStatus,
+            totalArticleCount,
+            okCount,
+            errorCount,
+            lastUpdatedAt: articleResult.completedAt,
+            articleResults: [
+              articleResult,
+              ...latestBatchStatus.articleResults.filter(
+                (item) => item.articleId !== articleResult.articleId,
+              ),
+            ].slice(0, 24),
+          };
+          return upsertTeamCaseBatch(latestBatchStatus);
+        },
+      });
 
       latestBatchStatus = {
-        status: result.errorCount > 0 ? "failed" : "completed",
+        status:
+          abortController.signal.aborted || latestBatchStatus.errorMessage === STOPPED_PIPELINE_MESSAGE
+            ? "failed"
+            : result.errorCount > 0
+              ? "failed"
+              : "completed",
+        id: latestBatchStatus.id,
         requestedArticleIds: result.requestedArticleIds,
+        totalArticleCount: result.requestedArticleIds.length,
         startedAt: latestBatchStatus.startedAt,
         completedAt: new Date().toISOString(),
+        lastUpdatedAt: new Date().toISOString(),
         concurrency: result.concurrency,
         okCount: result.okCount,
         errorCount: result.errorCount,
         errorMessage:
-          result.errorCount > 0
+          abortController.signal.aborted || latestBatchStatus.errorMessage === STOPPED_PIPELINE_MESSAGE
+            ? STOPPED_PIPELINE_MESSAGE
+            : result.errorCount > 0
             ? `${result.errorCount} article runs failed during the complete pipeline batch.`
             : null,
+        articleResults: [...result.results]
+          .sort((left, right) => right.completedAt.localeCompare(left.completedAt))
+          .slice(0, 24),
       };
+      await upsertTeamCaseBatch(latestBatchStatus);
     } catch (error) {
       latestBatchStatus = {
         ...latestBatchStatus,
         status: "failed",
         completedAt: new Date().toISOString(),
+        lastUpdatedAt: new Date().toISOString(),
         errorMessage:
-          error instanceof Error
+          abortController.signal.aborted
+            ? STOPPED_PIPELINE_MESSAGE
+            : error instanceof Error
             ? error.message
             : "The batch clustering engine failed unexpectedly.",
       };
+      await upsertTeamCaseBatch(latestBatchStatus);
     } finally {
-      activeBatchPromise = null;
+      clearBatchExecution(abortController);
     }
   })();
+  registerBatchExecution({
+    batchId,
+    abortController,
+    promise: activeBatchPromise,
+  });
 
   return Response.json({
     ok: true,
     accepted: true,
+    ...(await buildStatusPayload()),
+  });
+}
+
+export async function PATCH() {
+  const capabilityError = validatePostgresCapability();
+
+  if (capabilityError) {
+    return Response.json(
+      {
+        ok: false,
+        error: capabilityError.error,
+      },
+      { status: capabilityError.status },
+    );
+  }
+
+  const runtimeBatch = getBatchExecutionState();
+  const existingStatus = await buildStatusPayload();
+
+  if (!runtimeBatch.promise && existingStatus.activeRuns.length === 0) {
+    return Response.json(
+      {
+        ok: false,
+        error: "There is no active pipeline to stop.",
+        ...existingStatus,
+      },
+      { status: 409 },
+    );
+  }
+
+  stopAllClusteringExecutions(STOPPED_PIPELINE_MESSAGE);
+  await stopActiveTeamCaseClustering(STOPPED_PIPELINE_MESSAGE);
+
+  if (runtimeBatch.abortController?.signal.aborted) {
+    // Keep the current request-visible status until the aborted batch promise settles.
+  }
+
+  return Response.json({
+    ok: true,
+    message: STOPPED_PIPELINE_MESSAGE,
     ...(await buildStatusPayload()),
   });
 }
@@ -229,11 +348,11 @@ export async function DELETE() {
     );
   }
 
-  if (activeBatchPromise) {
+  if (getBatchExecutionState().promise) {
     return Response.json(
       {
         ok: false,
-        error: "A complete pipeline batch is still running. Wait for it to finish before resetting clustering state.",
+        error: "A complete pipeline batch is still running. Stop it before resetting clustering state.",
         ...(await buildStatusPayload()),
       },
       { status: 409 },
@@ -254,16 +373,6 @@ export async function DELETE() {
   }
 
   const resetSummary = await resetTeamCaseClusteringState();
-  latestBatchStatus = {
-    status: "idle",
-    requestedArticleIds: [],
-    startedAt: null,
-    completedAt: null,
-    concurrency: null,
-    okCount: 0,
-    errorCount: 0,
-    errorMessage: null,
-  };
   latestResetStatus = {
     completedAt: new Date().toISOString(),
     summary: resetSummary,

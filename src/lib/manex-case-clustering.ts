@@ -62,22 +62,34 @@ const CASE_PIPELINE_REVIEW_SCHEMA_VERSION = "manex.case_pipeline_review.v1";
 const CASE_PROMPT_VERSION = MANEX_CASE_CLUSTERING_PROMPT_VERSION;
 const MAX_RELATION_ROWS = 800;
 const SINGLE_PASS_PRODUCT_LIMIT = 18;
-const PRODUCT_CHUNK_SIZE = 12;
 const MAX_PROMPT_CHARS = 120_000;
+const CHUNKED_STAGE2_PROMPT_CHARS = 90_000;
 
 const readPositiveInt = (value: string | undefined, fallback: number) => {
   const parsed = Number.parseInt(value ?? "", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+const PRODUCT_CHUNK_SIZE = readPositiveInt(
+  process.env.MANEX_STAGE2_PRODUCT_CHUNK_SIZE,
+  5,
+);
+const STAGE2_SINGLE_PASS_PROMPT_CHAR_BUDGET = readPositiveInt(
+  process.env.MANEX_STAGE2_SINGLE_PASS_PROMPT_CHAR_BUDGET,
+  MAX_PROMPT_CHARS,
+);
+const STAGE2_CHUNK_PROMPT_CHAR_BUDGET = readPositiveInt(
+  process.env.MANEX_STAGE2_CHUNK_PROMPT_CHAR_BUDGET,
+  CHUNKED_STAGE2_PROMPT_CHARS,
+);
 const MINI_MODEL_CONCURRENCY_MULTIPLIER = /mini/i.test(env.OPENAI_MODEL) ? 1 : 0;
 const STAGE1_PRODUCT_SYNTHESIS_CONCURRENCY = readPositiveInt(
   process.env.MANEX_STAGE1_PRODUCT_SYNTHESIS_CONCURRENCY,
-  8 + MINI_MODEL_CONCURRENCY_MULTIPLIER * 4,
+  4 + MINI_MODEL_CONCURRENCY_MULTIPLIER,
 );
 const STAGE2_CHUNK_PROPOSAL_CONCURRENCY = readPositiveInt(
   process.env.MANEX_STAGE2_CHUNK_PROPOSAL_CONCURRENCY,
-  4 + MINI_MODEL_CONCURRENCY_MULTIPLIER * 2,
+  3,
 );
 const STAGE3_ARTICLE_LOAD_CONCURRENCY = readPositiveInt(
   process.env.MANEX_STAGE3_ARTICLE_LOAD_CONCURRENCY,
@@ -85,8 +97,79 @@ const STAGE3_ARTICLE_LOAD_CONCURRENCY = readPositiveInt(
 );
 const ARTICLE_PIPELINE_CONCURRENCY = readPositiveInt(
   process.env.MANEX_ARTICLE_PIPELINE_CONCURRENCY,
-  3,
+  2,
 );
+const MODEL_CALL_MAX_ATTEMPTS = readPositiveInt(
+  process.env.MANEX_MODEL_CALL_MAX_ATTEMPTS,
+  6,
+);
+const MAX_CHUNK_REVIEW_CASE_DIGESTS = readPositiveInt(
+  process.env.MANEX_STAGE2_REVIEW_CASE_DIGEST_LIMIT,
+  120,
+);
+const MAX_CHUNK_REVIEW_STANDALONE_SIGNAL_DIGESTS = readPositiveInt(
+  process.env.MANEX_STAGE2_REVIEW_SIGNAL_DIGEST_LIMIT,
+  80,
+);
+const MAX_STAGE2_DIAGNOSTIC_TIMELINE_EVENTS = readPositiveInt(
+  process.env.MANEX_STAGE2_DIAGNOSTIC_TIMELINE_LIMIT,
+  5,
+);
+const MAX_STAGE2_RAW_SNIPPETS = readPositiveInt(
+  process.env.MANEX_STAGE2_RAW_SNIPPET_LIMIT,
+  2,
+);
+const MAX_STAGE2_REVIEW_EVIDENCE_PRODUCTS = readPositiveInt(
+  process.env.MANEX_STAGE2_REVIEW_EVIDENCE_PRODUCT_LIMIT,
+  10,
+);
+const MAX_STAGE2_REVIEW_RAW_EVENTS = readPositiveInt(
+  process.env.MANEX_STAGE2_REVIEW_RAW_EVENT_LIMIT,
+  6,
+);
+const STAGE1_MAX_OUTPUT_TOKENS = readPositiveInt(
+  process.env.MANEX_STAGE1_MAX_OUTPUT_TOKENS,
+  1800,
+);
+const STAGE2_DRAFT_MAX_OUTPUT_TOKENS = readPositiveInt(
+  process.env.MANEX_STAGE2_DRAFT_MAX_OUTPUT_TOKENS,
+  3200,
+);
+const STAGE2_REVIEW_MAX_OUTPUT_TOKENS = readPositiveInt(
+  process.env.MANEX_STAGE2_REVIEW_MAX_OUTPUT_TOKENS,
+  3600,
+);
+const STAGE2_REVIEW_PROMPT_CHAR_BUDGET = readPositiveInt(
+  process.env.MANEX_STAGE2_REVIEW_PROMPT_CHAR_BUDGET,
+  MAX_PROMPT_CHARS,
+);
+const STAGE3_MAX_OUTPUT_TOKENS = readPositiveInt(
+  process.env.MANEX_STAGE3_MAX_OUTPUT_TOKENS,
+  4800,
+);
+const STAGE1_REASONING_EFFORT =
+  (process.env.MANEX_STAGE1_REASONING_EFFORT as "none" | "low" | "medium" | "high" | "xhigh" | undefined) ??
+  "low";
+const STAGE2_DRAFT_REASONING_EFFORT =
+  (process.env.MANEX_STAGE2_DRAFT_REASONING_EFFORT as
+    | "none"
+    | "low"
+    | "medium"
+    | "high"
+    | "xhigh"
+    | undefined) ?? "low";
+const STAGE2_REVIEW_REASONING_EFFORT =
+  (process.env.MANEX_STAGE2_REVIEW_REASONING_EFFORT as
+    | "none"
+    | "low"
+    | "medium"
+    | "high"
+    | "xhigh"
+    | undefined) ?? "low";
+const STAGE3_REASONING_EFFORT =
+  (process.env.MANEX_STAGE3_REASONING_EFFORT as "none" | "low" | "medium" | "high" | "xhigh" | undefined) ??
+  "low";
+const STOPPED_PIPELINE_MESSAGE = "Pipeline stopped by user.";
 
 const productThreadSynthesisSchema = z.object({
   productSummary: z.string().trim().min(20).max(900),
@@ -103,25 +186,36 @@ const productThreadSynthesisSchema = z.object({
   openQuestions: z.array(z.string().trim().min(1).max(220)).max(10),
 });
 
+const proposalPrioritySchema = z.enum(["low", "medium", "high", "critical"]);
+const proposalCaseKindSchema = z.enum([
+  "functional_failure",
+  "process_drift",
+  "supplier_batch",
+  "design_weakness",
+  "service_issue",
+  "cosmetic_issue",
+  "false_positive",
+  "mixed",
+  "other",
+]);
+const proposalSignalTypeSchema = z.enum([
+  "defect",
+  "field_claim",
+  "bad_test",
+  "marginal_test",
+  "rework",
+  "product_action",
+]);
+
 const proposalCaseSchema = z.object({
   proposalTempId: z.string().trim().min(1).max(48),
   title: z.string().trim().min(8).max(160),
-  caseKind: z.enum([
-    "functional_failure",
-    "process_drift",
-    "supplier_batch",
-    "design_weakness",
-    "service_issue",
-    "cosmetic_issue",
-    "false_positive",
-    "mixed",
-    "other",
-  ]),
+  caseKind: proposalCaseKindSchema,
   summary: z.string().trim().min(20).max(1500),
   suspectedCommonRootCause: z.string().trim().min(10).max(1500),
   suspectedRootCauseFamily: z.string().trim().min(1).max(200).nullable(),
   confidence: z.number().min(0).max(1),
-  priority: z.enum(["low", "medium", "high", "critical"]),
+  priority: proposalPrioritySchema,
   includedProductIds: z.array(z.string().trim().min(1).max(80)).min(1).max(64),
   includedSignalIds: z.array(z.string().trim().min(1).max(80)).max(400),
   sharedEvidence: z.array(z.string().trim().min(1).max(280)).min(1).max(12),
@@ -158,10 +252,80 @@ const proposalCaseSchema = z.object({
     .max(32),
 });
 
+const proposalIncidentSchema = z.object({
+  incidentTempId: z.string().trim().min(1).max(48),
+  title: z.string().trim().min(8).max(160),
+  incidentKind: proposalCaseKindSchema,
+  summary: z.string().trim().min(20).max(1200),
+  suspectedPrimaryCause: z.string().trim().min(10).max(1200),
+  confidence: z.number().min(0).max(1),
+  priority: proposalPrioritySchema,
+  productId: z.string().trim().min(1).max(80),
+  includedSignalIds: z.array(z.string().trim().min(1).max(80)).max(120),
+  strongestEvidence: z.array(z.string().trim().min(1).max(280)).min(1).max(8),
+  conflictingEvidence: z.array(z.string().trim().min(1).max(280)).max(8),
+  recommendedNextTraceChecks: z.array(z.string().trim().min(1).max(280)).max(8),
+  reasonNotCase: z.string().trim().min(1).max(280),
+  signalTypesPresent: z.array(z.string().trim().min(1).max(40)).max(8),
+  defectCodesPresent: z.array(z.string().trim().min(1).max(80)).max(24),
+  testKeysPresent: z.array(z.string().trim().min(1).max(80)).max(24),
+  reportedPartNumbers: z.array(z.string().trim().min(1).max(80)).max(24),
+  bomFindNumbers: z.array(z.string().trim().min(1).max(80)).max(24),
+  supplierBatches: z.array(z.string().trim().min(1).max(80)).max(24),
+  sections: z.array(z.string().trim().min(1).max(80)).max(24),
+  orders: z.array(z.string().trim().min(1).max(80)).max(24),
+});
+
+const proposalWatchlistSchema = z.object({
+  watchlistTempId: z.string().trim().min(1).max(48),
+  title: z.string().trim().min(8).max(160),
+  watchlistKind: z.enum([
+    "weak_recurring_pattern",
+    "marginal_screening",
+    "service_documentation",
+    "cosmetic_handling",
+    "detection_hotspot",
+    "seasonal_volume",
+    "other",
+  ]),
+  summary: z.string().trim().min(20).max(1200),
+  rationale: z.string().trim().min(10).max(1200),
+  confidence: z.number().min(0).max(1),
+  priority: proposalPrioritySchema,
+  linkedProductIds: z.array(z.string().trim().min(1).max(80)).min(1).max(64),
+  linkedSignalIds: z.array(z.string().trim().min(1).max(80)).max(240),
+  strongestEvidence: z.array(z.string().trim().min(1).max(280)).min(1).max(8),
+  confounders: z.array(z.string().trim().min(1).max(280)).max(8),
+  recommendedNextTraceChecks: z.array(z.string().trim().min(1).max(280)).max(8),
+});
+
+const proposalNoiseSchema = z.object({
+  noiseTempId: z.string().trim().min(1).max(48),
+  title: z.string().trim().min(8).max(160),
+  noiseKind: z.enum([
+    "false_positive",
+    "marginal_only",
+    "detection_bias",
+    "service_documentation",
+    "cosmetic_only",
+    "low_volume",
+    "mixed",
+    "other",
+  ]),
+  summary: z.string().trim().min(10).max(900),
+  dismissalReason: z.string().trim().min(10).max(900),
+  linkedProductIds: z.array(z.string().trim().min(1).max(80)).max(64),
+  linkedSignalIds: z.array(z.string().trim().min(1).max(80)).max(240),
+  strongestEvidence: z.array(z.string().trim().min(1).max(280)).max(8),
+});
+
 const clusteringProposalSchema = z.object({
   contractVersion: z.literal(CASE_PROPOSAL_SCHEMA_VERSION),
   reviewSummary: z.string().trim().min(1).max(1500),
   cases: z.array(proposalCaseSchema).max(20),
+  incidents: z.array(proposalIncidentSchema).max(40),
+  watchlists: z.array(proposalWatchlistSchema).max(24),
+  noise: z.array(proposalNoiseSchema).max(24),
   unassignedProducts: z
     .array(
       z.object({
@@ -175,14 +339,7 @@ const clusteringProposalSchema = z.object({
       z.object({
         signalId: z.string().trim().min(1).max(80),
         productId: z.string().trim().min(1).max(80),
-        signalType: z.enum([
-          "defect",
-          "field_claim",
-          "bad_test",
-          "marginal_test",
-          "rework",
-          "product_action",
-        ]),
+        signalType: proposalSignalTypeSchema,
         reason: z.string().trim().min(1).max(280),
       }),
     )
@@ -359,13 +516,30 @@ type ProductMechanismEvidence = {
     | "batchConcentrationHints"
     | "productAnchorCandidates"
     | "blastRadiusHints"
-  >;
+  > & {
+    dominantTraceAnchors: Array<{
+      anchorType: "supplier_batch" | "part_number" | "bom_position" | "supplier";
+      anchorValue: string;
+      count: number;
+      ratio: number;
+      relatedProductCount: number;
+      concentrationHint: string | null;
+    }>;
+    traceabilityConcentrationHints: string[];
+  };
   temporalProcessEvidence: {
     buildWeek: string | null;
+    firstFactorySignalWeek: string | null;
+    lastFactorySignalWeek: string | null;
     defectWeeks: string[];
     testWeeks: string[];
     dominantOccurrenceSections: ValueCountHint[];
     dominantDetectedSections: ValueCountHint[];
+    dominantTestResults: Array<{
+      result: "FAIL" | "MARGINAL";
+      count: number;
+      testKeys: string[];
+    }>;
     occurrenceDetectedMismatch: {
       present: boolean;
       mismatchCount: number;
@@ -373,12 +547,20 @@ type ProductMechanismEvidence = {
     };
     temporalBurstHints: string[];
     postWindowQuietHints: string[];
+    temporalContainmentHints: string[];
+    marginalVsFailHints: string[];
   };
   fieldLeakEvidence: {
     claimOnlyThread: boolean;
     hasPriorFactoryDefect: boolean;
     buildToClaimDays: number[];
     claimLagBucket: "none" | "same_week" | "short" | "medium" | "long";
+    claimLagStats: {
+      count: number;
+      minDays: number | null;
+      medianDays: number | null;
+      maxDays: number | null;
+    };
     dominantClaimReportedParts: ValueCountHint[];
     dominantClaimBomPositions: ValueCountHint[];
     latentFailureHints: string[];
@@ -389,6 +571,8 @@ type ProductMechanismEvidence = {
       userId: string;
       count: number;
     }>;
+    orderClusterHints: string[];
+    userConcentrationHints: string[];
     cosmeticOnlySignals: boolean;
     lowSeverityOnly: boolean;
     fieldImpactPresent: boolean;
@@ -400,6 +584,7 @@ type ProductMechanismEvidence = {
     detectionBiasRisk: string[];
     lowVolumePeriodRisk: string[];
     mixedServiceDocumentationSignals: string[];
+    nearLimitTestSignals: string[];
   };
 };
 
@@ -538,6 +723,8 @@ export type ClusteredArticleDossier = {
       count: number;
     }>;
     sharedOrders: Array<{ orderId: string; productIds: string[]; count: number }>;
+    sharedReworkUsers: Array<{ userId: string; productIds: string[]; count: number }>;
+    sharedOccurrenceSections: Array<{ section: string; productIds: string[]; count: number }>;
     sharedSections: Array<{ section: string; productIds: string[]; count: number }>;
     sharedTestHotspots: Array<{
       testKey: string;
@@ -565,6 +752,9 @@ export type ArticleCaseboardReadModel = {
   dossier: ClusteredArticleDossier | null;
   latestRun: TeamCaseRunSummary | null;
   proposedCases: TeamCaseCandidateRecord[];
+  incidents: z.infer<typeof proposalIncidentSchema>[];
+  watchlists: z.infer<typeof proposalWatchlistSchema>[];
+  noise: z.infer<typeof proposalNoiseSchema>[];
   unassignedProducts: Array<{
     productId: string;
     reason: string;
@@ -587,6 +777,9 @@ export type ArticleCaseboardReadModel = {
 
 type ProposalOutput = z.infer<typeof clusteringProposalSchema>;
 type ProposalStandaloneSignal = ProposalOutput["standaloneSignals"][number];
+type ProposalIncident = ProposalOutput["incidents"][number];
+type ProposalWatchlist = ProposalOutput["watchlists"][number];
+type ProposalNoise = ProposalOutput["noise"][number];
 export type GlobalInventoryItem = z.infer<typeof globalInventoryCaseSchema>;
 export type GlobalReconciliationOutput = z.infer<typeof globalReconciliationSchema>;
 
@@ -612,6 +805,16 @@ type CasePipelineReviewPayload = {
   contractVersion: typeof CASE_PIPELINE_REVIEW_SCHEMA_VERSION;
   stage2: ProposalOutput;
   stage3: GlobalReconciliationOutput | null;
+};
+
+type ModelCallStageName =
+  | "stage1_product_synthesis"
+  | "stage2_draft"
+  | "stage2_review"
+  | "stage3_reconciliation";
+
+type PipelineExecutionOptions = {
+  abortSignal?: AbortSignal;
 };
 
 const CLAIM_STOP_WORDS = new Set([
@@ -689,6 +892,62 @@ const trimPreview = (value: string | null | undefined, max = 220) => {
   const text = normalizeText(value);
   return text.length > max ? `${text.slice(0, max - 3)}...` : text;
 };
+
+const estimateTokensFromChars = (chars: number) => Math.ceil(chars / 4);
+
+function summarizeTopLevelPayloadSections(payload: unknown) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return null;
+  }
+
+  return Object.entries(payload as Record<string, unknown>).map(([key, value]) => {
+    const serialized = JSON.stringify(value);
+    const chars = serialized.length;
+
+    return {
+      key,
+      chars,
+      approxTokens: estimateTokensFromChars(chars),
+      itemCount: Array.isArray(value)
+        ? value.length
+        : value && typeof value === "object"
+          ? Object.keys(value as Record<string, unknown>).length
+          : null,
+    };
+  });
+}
+
+function logModelCallMetrics(input: {
+  stageName: ModelCallStageName;
+  articleId: string;
+  model: string;
+  system: string;
+  prompt: string;
+  payload: unknown;
+  chunkId?: string | null;
+  selectedProductCount?: number | null;
+  maxOutputTokens?: number | null;
+}) {
+  const systemChars = input.system.length;
+  const promptChars = input.prompt.length;
+  const inputChars = systemChars + promptChars;
+
+  console.info(
+    `[manex-clustering:model-call] ${JSON.stringify({
+      stageName: input.stageName,
+      articleId: input.articleId,
+      model: input.model,
+      chunkId: input.chunkId ?? null,
+      selectedProductCount: input.selectedProductCount ?? null,
+      systemChars,
+      promptChars,
+      totalInputChars: inputChars,
+      approxInputTokens: estimateTokensFromChars(inputChars),
+      maxOutputTokens: input.maxOutputTokens ?? null,
+      payloadSections: summarizeTopLevelPayloadSections(input.payload),
+    })}`,
+  );
+}
 
 const byOccurredAtAsc = <T extends { occurredAt: string }>(left: T, right: T) =>
   left.occurredAt.localeCompare(right.occurredAt);
@@ -772,12 +1031,14 @@ async function mapWithConcurrency<T, TResult>(
   items: T[],
   concurrency: number,
   mapper: (item: T, index: number) => Promise<TResult>,
+  options?: PipelineExecutionOptions,
 ) {
   const results = new Array<TResult>(items.length);
   let nextIndex = 0;
 
   async function worker() {
     while (nextIndex < items.length) {
+      throwIfPipelineAborted(options?.abortSignal);
       const currentIndex = nextIndex;
       nextIndex += 1;
       results[currentIndex] = await mapper(items[currentIndex], currentIndex);
@@ -791,6 +1052,87 @@ async function mapWithConcurrency<T, TResult>(
   );
 
   return results;
+}
+
+function createPipelineStopError(reason = STOPPED_PIPELINE_MESSAGE) {
+  const error = new Error(reason);
+  error.name = "AbortError";
+  return error;
+}
+
+function isPipelineStopError(error: unknown) {
+  return (
+    (error instanceof Error && error.name === "AbortError") ||
+    (error instanceof Error && /stopped by user|aborted/i.test(error.message))
+  );
+}
+
+function throwIfPipelineAborted(abortSignal?: AbortSignal) {
+  if (abortSignal?.aborted) {
+    throw createPipelineStopError(
+      typeof abortSignal.reason === "string" && abortSignal.reason
+        ? abortSignal.reason
+        : STOPPED_PIPELINE_MESSAGE,
+    );
+  }
+}
+
+function sleep(ms: number, abortSignal?: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (abortSignal?.aborted) {
+      reject(
+        createPipelineStopError(
+          typeof abortSignal.reason === "string" && abortSignal.reason
+            ? abortSignal.reason
+            : STOPPED_PIPELINE_MESSAGE,
+        ),
+      );
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      abortSignal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+
+    const onAbort = () => {
+      clearTimeout(timer);
+      abortSignal?.removeEventListener("abort", onAbort);
+      reject(
+        createPipelineStopError(
+          typeof abortSignal?.reason === "string" && abortSignal.reason
+            ? abortSignal.reason
+            : STOPPED_PIPELINE_MESSAGE,
+        ),
+      );
+    };
+
+    abortSignal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function extractRetryDelayMs(message: string) {
+  const match = message.match(/try again in\s+([0-9.]+)\s*(ms|s|sec|secs|second|seconds)/i);
+
+  if (!match) {
+    return null;
+  }
+
+  const value = Number.parseFloat(match[1] ?? "");
+
+  if (!Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+
+  return /^ms$/i.test(match[2] ?? "") ? Math.ceil(value) : Math.ceil(value * 1000);
+}
+
+function isRetryableModelError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+
+  return /rate limit|429|overloaded|temporarily unavailable|timeout|timed out/i.test(
+    message,
+  );
 }
 
 function extractClaimKeywords(text: string) {
@@ -1099,19 +1441,15 @@ function buildMechanismEvidence(input: {
     [
       ...input.defects.map((item) => ({
         weekStart: item.defectWeekStart,
-        signalType: "defect",
       })),
       ...input.tests.map((item) => ({
         weekStart: normalizeWeekStart(item.occurredAt),
-        signalType: item.overallResult.toLowerCase(),
       })),
       ...input.rework.map((item) => ({
         weekStart: normalizeWeekStart(item.recordedAt),
-        signalType: "rework",
       })),
       ...input.actions.map((item) => ({
         weekStart: normalizeWeekStart(item.recordedAt),
-        signalType: "action",
       })),
     ],
     (item) => item.weekStart,
@@ -1120,11 +1458,37 @@ function buildMechanismEvidence(input: {
     .filter((entry) => entry.count >= 2)
     .slice(0, 4)
     .map((entry) => `${entry.value}: ${entry.count} factory-side signals clustered.`);
-
   const allFactorySignalWeeks = uniqueValues(
     weekCounts.map((entry) => entry.value).filter((value): value is string => Boolean(value)),
   );
+  const firstFactorySignalWeek = allFactorySignalWeeks[0] ?? null;
   const latestFactorySignalWeek = allFactorySignalWeeks.at(-1) ?? null;
+  const failTests = input.tests.filter((item) => item.overallResult === "FAIL");
+  const marginalTests = input.tests.filter((item) => item.overallResult === "MARGINAL");
+  const dominantTestResults = [
+    failTests.length > 0
+      ? {
+          result: "FAIL" as const,
+          count: failTests.length,
+          testKeys: uniqueValues(failTests.map((item) => item.testKey)).slice(0, 6),
+        }
+      : null,
+    marginalTests.length > 0
+      ? {
+          result: "MARGINAL" as const,
+          count: marginalTests.length,
+          testKeys: uniqueValues(marginalTests.map((item) => item.testKey)).slice(0, 6),
+        }
+      : null,
+  ].filter(
+    (
+      value,
+    ): value is {
+      result: "FAIL" | "MARGINAL";
+      count: number;
+      testKeys: string[];
+    } => Boolean(value),
+  );
   const articleWeeks = uniqueValues(input.weeklyQualitySnippets.map((item) => item.weekStart));
   const laterArticleWeeks = latestFactorySignalWeek
     ? articleWeeks.filter((week) => week > latestFactorySignalWeek)
@@ -1135,6 +1499,28 @@ function buildMechanismEvidence(input: {
           `Factory-side signals stop after ${latestFactorySignalWeek} while the article continues for ${laterArticleWeeks.length} later weeks.`,
         ]
       : [];
+  const temporalContainmentHints = [
+    firstFactorySignalWeek && latestFactorySignalWeek
+      ? `Factory evidence spans ${firstFactorySignalWeek} through ${latestFactorySignalWeek}.`
+      : null,
+    buildWeek && firstFactorySignalWeek && buildWeek === firstFactorySignalWeek
+      ? "Factory-side evidence starts in the build week."
+      : null,
+    dominantOccurrenceSections[0] && dominantDetectedSections[0]
+      ? `Occurrence is led by ${dominantOccurrenceSections[0].value}, while detection is led by ${dominantDetectedSections[0].value}.`
+      : null,
+  ].filter((value): value is string => Boolean(value));
+  const marginalVsFailHints = [
+    failTests.length > 0 && marginalTests.length > 0
+      ? `Thread mixes ${failTests.length} FAIL and ${marginalTests.length} MARGINAL test signals.`
+      : null,
+    failTests.length === 0 && marginalTests.length > 0
+      ? `Only MARGINAL test signals are present (${marginalTests.length}); no FAIL test is recorded.`
+      : null,
+    failTests.length > 0 && marginalTests.length === 0
+      ? `Test evidence is FAIL-driven (${failTests.length} FAIL rows) rather than marginal-only.`
+      : null,
+  ].filter((value): value is string => Boolean(value));
 
   const claimOnlyThread = input.claims.length > 0 && input.defects.length === 0;
   const claimLagBucket = classifyClaimLag(input.summaryFeatures.daysFromBuildToClaim);
@@ -1164,6 +1550,15 @@ function buildMechanismEvidence(input: {
           .join(", ")}.`
       : null,
   ].filter((value): value is string => Boolean(value));
+  const claimLagStats = {
+    count: input.summaryFeatures.daysFromBuildToClaim.length,
+    minDays: input.summaryFeatures.daysFromBuildToClaim[0] ?? null,
+    medianDays: getMedian(input.summaryFeatures.daysFromBuildToClaim),
+    maxDays:
+      input.summaryFeatures.daysFromBuildToClaim[
+        input.summaryFeatures.daysFromBuildToClaim.length - 1
+      ] ?? null,
+  };
 
   const dominantReworkUsers = buildValueCountHints(
     input.rework.map((item) => item.userId),
@@ -1190,8 +1585,30 @@ function buildMechanismEvidence(input: {
     ].filter((value) => COSMETIC_PATTERN.test(value ?? "")),
   );
   const cosmeticOnlySignals =
-    lowSeverityOnly && cosmeticTextSignals.length > 0 && input.tests.every((item) => item.overallResult !== "FAIL");
+    lowSeverityOnly &&
+    cosmeticTextSignals.length > 0 &&
+    input.tests.every((item) => item.overallResult !== "FAIL");
   const fieldImpactPresent = input.claims.length > 0;
+  const orderClusterHints = [
+    input.product.order_id
+      ? `All factory-side events for this product sit under order ${input.product.order_id}.`
+      : null,
+    input.product.order_id && dominantReworkUsers.length > 0
+      ? `Order ${input.product.order_id} also carries repeated rework ownership by ${dominantReworkUsers
+          .slice(0, 2)
+          .map((item) => item.userId)
+          .join(", ")}.`
+      : null,
+  ].filter((value): value is string => Boolean(value));
+  const userConcentrationHints = [
+    dominantReworkUsers[0] && dominantReworkUsers[0].count >= 2
+      ? `Rework ownership is concentrated on ${dominantReworkUsers[0].userId} (${dominantReworkUsers[0].count} rows).`
+      : null,
+    dominantReworkUsers.length > 1 &&
+    dominantReworkUsers[0].count >= dominantReworkUsers[1].count * 2
+      ? `${dominantReworkUsers[0].userId} dominates rework activity relative to other users.`
+      : null,
+  ].filter((value): value is string => Boolean(value));
   const handlingPatternHints = [
     cosmeticOnlySignals
       ? "Low-severity, cosmetic-style evidence dominates this thread."
@@ -1203,6 +1620,72 @@ function buildMechanismEvidence(input: {
       ? "Handling or late-stage correction may explain the visible signals better than field failure."
       : null,
   ].filter((value): value is string => Boolean(value));
+
+  const dominantTraceAnchors = [
+    ...input.traceabilityEvidence.dominantSupplierBatches.slice(0, 2).map((item) => ({
+      anchorType: "supplier_batch" as const,
+      anchorValue: item.value,
+      count: item.count,
+      ratio: item.ratio,
+      relatedProductCount: item.relatedProductCount,
+      concentrationHint:
+        item.ratio >= 0.4
+          ? `${item.value} accounts for ${Math.round(item.ratio * 100)}% of surfaced installs.`
+          : null,
+    })),
+    ...input.traceabilityEvidence.dominantInstalledParts.slice(0, 2).map((item) => ({
+      anchorType: "part_number" as const,
+      anchorValue: item.value,
+      count: item.count,
+      ratio: item.ratio,
+      relatedProductCount: item.relatedProductCount,
+      concentrationHint:
+        item.ratio >= 0.4
+          ? `${item.value} is over-represented in the installed-part slice.`
+          : null,
+    })),
+    ...input.traceabilityEvidence.dominantBomPositions.slice(0, 2).map((item) => ({
+      anchorType: "bom_position" as const,
+      anchorValue: item.value,
+      count: item.count,
+      ratio: item.ratio,
+      relatedProductCount: item.relatedProductCount,
+      concentrationHint:
+        item.ratio >= 0.4
+          ? `${item.value} recurs unusually often in the installed BOM positions.`
+          : null,
+    })),
+    ...input.traceabilityEvidence.dominantSuppliers.slice(0, 1).map((item) => ({
+      anchorType: "supplier" as const,
+      anchorValue: item.value,
+      count: item.count,
+      ratio: item.ratio,
+      relatedProductCount: item.relatedProductCount,
+      concentrationHint:
+        item.ratio >= 0.5
+          ? `${item.value} dominates the surfaced supplier footprint.`
+          : null,
+    })),
+  ]
+    .sort(
+      (left, right) =>
+        right.relatedProductCount - left.relatedProductCount ||
+        right.count - left.count ||
+        left.anchorValue.localeCompare(right.anchorValue),
+    )
+    .slice(0, 6);
+  const traceabilityConcentrationHints = uniqueValues([
+    ...input.traceabilityEvidence.batchConcentrationHints
+      .filter((item) => item.ratio >= 0.35 || item.productIds.length >= 3)
+      .slice(0, 3)
+      .map(
+        (item) =>
+          `${item.batchRef} appears concentrated (${item.count} installs across ${item.productIds.length} scoped products).`,
+      ),
+    ...dominantTraceAnchors
+      .map((item) => item.concentrationHint)
+      .filter((value): value is string => Boolean(value)),
+  ]).slice(0, 6);
 
   const marginalOnlySignals =
     input.tests.some((item) => item.overallResult === "MARGINAL") &&
@@ -1217,7 +1700,6 @@ function buildMechanismEvidence(input: {
       ? "Signals are concentrated in detected sections without a matching occurrence-section trail."
       : null,
   ].filter((value): value is string => Boolean(value));
-
   const builtOrTriggeredWeeks = uniqueValues(
     [buildWeek, ...defectWeeks, ...testWeeks].filter((value): value is string => Boolean(value)),
   );
@@ -1249,6 +1731,11 @@ function buildMechanismEvidence(input: {
       ...input.actions.map((item) => item.comments),
     ].filter((value) => SERVICE_DOCUMENTATION_PATTERN.test(value ?? "")),
   ).slice(0, 6);
+  const nearLimitTestSignals = uniqueValues(
+    input.tests
+      .filter((item) => item.overallResult === "MARGINAL")
+      .map((item) => `${item.testKey}${item.sectionName ? ` @ ${item.sectionName}` : ""}`),
+  ).slice(0, 6);
 
   return {
     traceabilityEvidence: {
@@ -1259,13 +1746,18 @@ function buildMechanismEvidence(input: {
       batchConcentrationHints: input.traceabilityEvidence.batchConcentrationHints,
       productAnchorCandidates: input.traceabilityEvidence.productAnchorCandidates,
       blastRadiusHints: input.traceabilityEvidence.blastRadiusHints,
+      dominantTraceAnchors,
+      traceabilityConcentrationHints,
     },
     temporalProcessEvidence: {
       buildWeek,
+      firstFactorySignalWeek,
+      lastFactorySignalWeek: latestFactorySignalWeek,
       defectWeeks,
       testWeeks,
       dominantOccurrenceSections,
       dominantDetectedSections,
+      dominantTestResults,
       occurrenceDetectedMismatch: {
         present: occurrenceDetectedMismatches.length > 0,
         mismatchCount: occurrenceDetectedMismatches.length,
@@ -1273,12 +1765,15 @@ function buildMechanismEvidence(input: {
       },
       temporalBurstHints,
       postWindowQuietHints,
+      temporalContainmentHints,
+      marginalVsFailHints,
     },
     fieldLeakEvidence: {
       claimOnlyThread,
       hasPriorFactoryDefect: input.defects.length > 0,
       buildToClaimDays: input.summaryFeatures.daysFromBuildToClaim,
       claimLagBucket,
+      claimLagStats,
       dominantClaimReportedParts,
       dominantClaimBomPositions,
       latentFailureHints,
@@ -1286,6 +1781,8 @@ function buildMechanismEvidence(input: {
     operatorHandlingEvidence: {
       orderId: normalizeNullableText(input.product.order_id),
       dominantReworkUsers,
+      orderClusterHints,
+      userConcentrationHints,
       cosmeticOnlySignals,
       lowSeverityOnly,
       fieldImpactPresent,
@@ -1299,6 +1796,7 @@ function buildMechanismEvidence(input: {
       detectionBiasRisk,
       lowVolumePeriodRisk,
       mixedServiceDocumentationSignals,
+      nearLimitTestSignals,
     },
   };
 }
@@ -1429,6 +1927,44 @@ const buildCrossProductSummary = (
     8,
   );
 
+  const sharedReworkUsers = topEntries(
+    bucketCounts(
+      productThreads.flatMap((thread) =>
+        thread.rework.map((item) => ({
+          userId: item.userId,
+          productId: thread.productId,
+        })),
+      ),
+      (item) => item.userId,
+      (item) => item.productId,
+    )
+      .filter((entry) => entry.productIds.length > 1)
+      .map((entry) => ({
+        userId: entry.value,
+        productIds: entry.productIds,
+        count: entry.count,
+      })),
+    8,
+  );
+
+  const sharedOccurrenceSections = topEntries(
+    bucketCounts(
+      defects.map((item) => ({
+        section: item.occurrenceSectionName,
+        productId: item.productId,
+      })),
+      (item) => item.section,
+      (item) => item.productId,
+    )
+      .filter((entry) => entry.productIds.length > 1)
+      .map((entry) => ({
+        section: entry.value,
+        productIds: entry.productIds,
+        count: entry.count,
+      })),
+    8,
+  );
+
   const sharedSections = topEntries(
     bucketCounts(
       productThreads.flatMap((thread) =>
@@ -1472,6 +2008,8 @@ const buildCrossProductSummary = (
     sharedBomFindNumbers,
     similarClaimThemes,
     sharedOrders,
+    sharedReworkUsers,
+    sharedOccurrenceSections,
     sharedSections,
     sharedTestHotspots,
   };
@@ -1560,6 +2098,14 @@ function buildStage1PromptPayload(input: {
   actions: ManexWorkflowAction[];
   installedParts: ManexInstalledPart[];
 }) {
+  const recentTimeline = input.signalTimeline.slice(-16);
+  const recentDefects = input.defects.slice(-10);
+  const recentClaims = input.claims.slice(-8);
+  const recentTests = input.tests.slice(-10);
+  const recentRework = input.rework.slice(-8);
+  const recentActions = input.actions.slice(-8);
+  const installedPartSample = input.installedParts.slice(0, 20);
+
   return {
     product: {
       productId: input.product.product_id,
@@ -1569,7 +2115,37 @@ function buildStage1PromptPayload(input: {
       orderId: normalizeNullableText(input.product.order_id),
     },
     sourceCounts: input.sourceCounts,
-    timeline: input.signalTimeline.map((signal) => ({
+    truncationSummary: {
+      timeline: {
+        surfaced: recentTimeline.length,
+        total: input.signalTimeline.length,
+      },
+      defects: {
+        surfaced: recentDefects.length,
+        total: input.defects.length,
+      },
+      claims: {
+        surfaced: recentClaims.length,
+        total: input.claims.length,
+      },
+      tests: {
+        surfaced: recentTests.length,
+        total: input.tests.length,
+      },
+      rework: {
+        surfaced: recentRework.length,
+        total: input.rework.length,
+      },
+      actions: {
+        surfaced: recentActions.length,
+        total: input.actions.length,
+      },
+      installedParts: {
+        surfaced: installedPartSample.length,
+        total: input.installedParts.length,
+      },
+    },
+    timeline: recentTimeline.map((signal) => ({
       signalId: signal.signalId,
       signalType: signal.signalType,
       occurredAt: signal.occurredAt,
@@ -1580,8 +2156,98 @@ function buildStage1PromptPayload(input: {
       sourceContext: signal.sourceContext,
     })),
     evidenceFeatures: input.summaryFeatures,
-    mechanismEvidence: input.mechanismEvidence,
-    defects: input.defects.map((item) => ({
+    mechanismEvidence: {
+      traceabilityEvidence: {
+        productAnchorCandidates:
+          input.mechanismEvidence.traceabilityEvidence.productAnchorCandidates.slice(0, 4),
+        dominantTraceAnchors:
+          input.mechanismEvidence.traceabilityEvidence.dominantTraceAnchors.slice(0, 4),
+        blastRadiusHints: input.mechanismEvidence.traceabilityEvidence.blastRadiusHints
+          .slice(0, 2)
+          .map((item) => ({
+            anchorType: item.anchorType,
+            anchorValue: item.anchorValue,
+            relatedProductCount: item.relatedProductCount,
+            sharedPartNumbers: item.sharedPartNumbers.slice(0, 6),
+            sharedBomPositions: item.sharedBomPositions.slice(0, 6),
+            sharedSupplierBatches: item.sharedSupplierBatches.slice(0, 6),
+          })),
+        batchConcentrationHints:
+          input.mechanismEvidence.traceabilityEvidence.batchConcentrationHints.slice(0, 4),
+        traceabilityConcentrationHints:
+          input.mechanismEvidence.traceabilityEvidence.traceabilityConcentrationHints.slice(0, 4),
+      },
+      temporalProcessEvidence: {
+        buildWeek: input.mechanismEvidence.temporalProcessEvidence.buildWeek,
+        firstFactorySignalWeek:
+          input.mechanismEvidence.temporalProcessEvidence.firstFactorySignalWeek,
+        lastFactorySignalWeek:
+          input.mechanismEvidence.temporalProcessEvidence.lastFactorySignalWeek,
+        defectWeeks: input.mechanismEvidence.temporalProcessEvidence.defectWeeks.slice(-6),
+        testWeeks: input.mechanismEvidence.temporalProcessEvidence.testWeeks.slice(-6),
+        dominantOccurrenceSections:
+          input.mechanismEvidence.temporalProcessEvidence.dominantOccurrenceSections.slice(0, 4),
+        dominantDetectedSections:
+          input.mechanismEvidence.temporalProcessEvidence.dominantDetectedSections.slice(0, 4),
+        dominantTestResults:
+          input.mechanismEvidence.temporalProcessEvidence.dominantTestResults.slice(0, 2),
+        occurrenceDetectedMismatch:
+          input.mechanismEvidence.temporalProcessEvidence.occurrenceDetectedMismatch,
+        temporalBurstHints:
+          input.mechanismEvidence.temporalProcessEvidence.temporalBurstHints.slice(0, 4),
+        postWindowQuietHints:
+          input.mechanismEvidence.temporalProcessEvidence.postWindowQuietHints.slice(0, 3),
+        temporalContainmentHints:
+          input.mechanismEvidence.temporalProcessEvidence.temporalContainmentHints.slice(0, 4),
+        marginalVsFailHints:
+          input.mechanismEvidence.temporalProcessEvidence.marginalVsFailHints.slice(0, 4),
+      },
+      fieldLeakEvidence: {
+        claimOnlyThread: input.mechanismEvidence.fieldLeakEvidence.claimOnlyThread,
+        hasPriorFactoryDefect:
+          input.mechanismEvidence.fieldLeakEvidence.hasPriorFactoryDefect,
+        buildToClaimDays: input.mechanismEvidence.fieldLeakEvidence.buildToClaimDays.slice(0, 8),
+        claimLagBucket: input.mechanismEvidence.fieldLeakEvidence.claimLagBucket,
+        claimLagStats: input.mechanismEvidence.fieldLeakEvidence.claimLagStats,
+        dominantClaimReportedParts:
+          input.mechanismEvidence.fieldLeakEvidence.dominantClaimReportedParts.slice(0, 4),
+        dominantClaimBomPositions:
+          input.mechanismEvidence.fieldLeakEvidence.dominantClaimBomPositions.slice(0, 4),
+        latentFailureHints:
+          input.mechanismEvidence.fieldLeakEvidence.latentFailureHints.slice(0, 4),
+      },
+      operatorHandlingEvidence: {
+        orderId: input.mechanismEvidence.operatorHandlingEvidence.orderId,
+        dominantReworkUsers:
+          input.mechanismEvidence.operatorHandlingEvidence.dominantReworkUsers.slice(0, 4),
+        orderClusterHints:
+          input.mechanismEvidence.operatorHandlingEvidence.orderClusterHints.slice(0, 4),
+        userConcentrationHints:
+          input.mechanismEvidence.operatorHandlingEvidence.userConcentrationHints.slice(0, 4),
+        cosmeticOnlySignals:
+          input.mechanismEvidence.operatorHandlingEvidence.cosmeticOnlySignals,
+        lowSeverityOnly: input.mechanismEvidence.operatorHandlingEvidence.lowSeverityOnly,
+        fieldImpactPresent:
+          input.mechanismEvidence.operatorHandlingEvidence.fieldImpactPresent,
+        handlingPatternHints:
+          input.mechanismEvidence.operatorHandlingEvidence.handlingPatternHints.slice(0, 4),
+      },
+      confounderEvidence: {
+        falsePositiveMarkers:
+          input.mechanismEvidence.confounderEvidence.falsePositiveMarkers.slice(0, 4),
+        marginalOnlySignals:
+          input.mechanismEvidence.confounderEvidence.marginalOnlySignals,
+        detectionBiasRisk:
+          input.mechanismEvidence.confounderEvidence.detectionBiasRisk.slice(0, 4),
+        lowVolumePeriodRisk:
+          input.mechanismEvidence.confounderEvidence.lowVolumePeriodRisk.slice(0, 4),
+        mixedServiceDocumentationSignals:
+          input.mechanismEvidence.confounderEvidence.mixedServiceDocumentationSignals.slice(0, 4),
+        nearLimitTestSignals:
+          input.mechanismEvidence.confounderEvidence.nearLimitTestSignals.slice(0, 4),
+      },
+    },
+    defects: recentDefects.map((item) => ({
       id: item.id,
       occurredAt: item.occurredAt,
       code: item.code,
@@ -1593,7 +2259,7 @@ function buildStage1PromptPayload(input: {
       detectedTestOverall: item.detectedTestOverall,
       notes: item.notes,
     })),
-    claims: input.claims.map((item) => ({
+    claims: recentClaims.map((item) => ({
       id: item.id,
       claimedAt: item.claimedAt,
       market: item.market,
@@ -1604,7 +2270,7 @@ function buildStage1PromptPayload(input: {
       complaintText: item.complaintText,
       notes: item.notes,
     })),
-    tests: input.tests.map((item) => ({
+    tests: recentTests.map((item) => ({
       id: item.id,
       occurredAt: item.occurredAt,
       overallResult: item.overallResult,
@@ -1614,7 +2280,7 @@ function buildStage1PromptPayload(input: {
       sectionName: item.sectionName,
       notes: item.notes,
     })),
-    installedParts: input.installedParts.slice(0, 40).map((item) => ({
+    installedParts: installedPartSample.map((item) => ({
       findNumber: item.findNumber,
       positionCode: item.positionCode,
       partNumber: item.partNumber,
@@ -1622,7 +2288,7 @@ function buildStage1PromptPayload(input: {
       batchNumber: item.batchNumber,
       supplierName: item.supplierName,
     })),
-    rework: input.rework.map((item) => ({
+    rework: recentRework.map((item) => ({
       id: item.id,
       recordedAt: item.recordedAt,
       sectionId: item.sectionId,
@@ -1630,7 +2296,7 @@ function buildStage1PromptPayload(input: {
       actionText: item.actionText,
       userId: item.userId,
     })),
-    actions: input.actions.map((item) => ({
+    actions: recentActions.map((item) => ({
       id: item.id,
       recordedAt: item.recordedAt,
       actionType: item.actionType,
@@ -1667,7 +2333,13 @@ function ensureMechanismEvidence(
   if (
     thread.mechanismEvidence &&
     typeof thread.mechanismEvidence === "object" &&
-    typeof thread.mechanismEvidence.traceabilityEvidence === "object"
+    typeof thread.mechanismEvidence.traceabilityEvidence === "object" &&
+    Array.isArray(thread.mechanismEvidence.traceabilityEvidence.dominantTraceAnchors) &&
+    typeof thread.mechanismEvidence.temporalProcessEvidence?.firstFactorySignalWeek !== "undefined" &&
+    Array.isArray(thread.mechanismEvidence.temporalProcessEvidence?.marginalVsFailHints) &&
+    typeof thread.mechanismEvidence.fieldLeakEvidence?.claimLagStats === "object" &&
+    Array.isArray(thread.mechanismEvidence.operatorHandlingEvidence?.orderClusterHints) &&
+    Array.isArray(thread.mechanismEvidence.confounderEvidence?.nearLimitTestSignals)
   ) {
     return thread.mechanismEvidence;
   }
@@ -1963,19 +2635,23 @@ async function loadReworkByProduct(products: ProductRow[]) {
 async function buildArticleDossier(
   articleId: string,
   onStageChange?: (stage: "stage1_loading" | "stage1_synthesis", detail: string) => Promise<void>,
+  options?: PipelineExecutionOptions,
 ): Promise<ClusteredArticleDossier> {
   if (!capabilities.hasPostgres) {
     throw new Error("Article dossier building requires DATABASE_URL.");
   }
 
+  throwIfPipelineAborted(options?.abortSignal);
   await ensureTeamCaseClusteringState();
 
   const normalizedArticleId =
     normalizeUiIdentifier(articleId) ?? articleId.replace(/\s+/g, "").trim().toUpperCase();
 
   await onStageChange?.("stage1_loading", "Loading deterministic article dossier.");
+  throwIfPipelineAborted(options?.abortSignal);
 
   const { article, products } = await loadArticleMeta(normalizedArticleId);
+  throwIfPipelineAborted(options?.abortSignal);
 
   if (!article || !products.length) {
     throw new Error(`No products found for article ${normalizedArticleId}.`);
@@ -2097,37 +2773,48 @@ async function buildArticleDossier(
     "stage1_synthesis",
     `Synthesizing ${productThreadDrafts.length} product threads.`,
   );
+  let completedProductThreads = 0;
+  const stage1ProgressStep = Math.max(1, Math.ceil(productThreadDrafts.length / 10));
 
   const productThreads = await mapWithConcurrency(
     productThreadDrafts,
     STAGE1_PRODUCT_SYNTHESIS_CONCURRENCY,
     async (draft) => {
+      throwIfPipelineAborted(options?.abortSignal);
+      const stage1PromptPayload = buildStage1PromptPayload({
+        product: draft.product,
+        articleName: article.name,
+        sourceCounts: draft.sourceCounts,
+        signalTimeline: draft.signalTimeline,
+        summaryFeatures: draft.summaryFeatures,
+        mechanismEvidence: draft.mechanismEvidence,
+        defects: draft.defects,
+        claims: draft.claims,
+        tests: draft.tests,
+        rework: draft.rework,
+        actions: draft.actions,
+        installedParts: draft.installedParts,
+      });
       const stage1Synthesis =
         draft.signalTimeline.length > 0
           ? await generateProductThreadSynthesis({
-              promptPayload: buildStage1PromptPayload({
-                product: draft.product,
-                articleName: article.name,
-                sourceCounts: draft.sourceCounts,
-                signalTimeline: draft.signalTimeline,
-                summaryFeatures: draft.summaryFeatures,
-                mechanismEvidence: draft.mechanismEvidence,
-                defects: draft.defects,
-                claims: draft.claims,
-                tests: draft.tests,
-                rework: draft.rework,
-                actions: draft.actions,
-                installedParts: draft.installedParts,
-              }),
-            }).catch(() =>
-              buildFallbackProductThreadSynthesis({
+              articleId: draft.product.article_id,
+              productId: draft.product.product_id,
+              promptPayload: stage1PromptPayload,
+              abortSignal: options?.abortSignal,
+            }).catch((error) => {
+              if (isPipelineStopError(error)) {
+                throw error;
+              }
+
+              return buildFallbackProductThreadSynthesis({
                 productId: draft.product.product_id,
                 articleId: draft.product.article_id,
                 signalTimeline: draft.signalTimeline,
                 summaryFeatures: draft.summaryFeatures,
                 mechanismEvidence: draft.mechanismEvidence,
-              }),
-            )
+              });
+            })
           : buildFallbackProductThreadSynthesis({
               productId: draft.product.product_id,
               articleId: draft.product.article_id,
@@ -2136,6 +2823,7 @@ async function buildArticleDossier(
               mechanismEvidence: draft.mechanismEvidence,
             });
 
+      throwIfPipelineAborted(options?.abortSignal);
       const payload = {
         contractVersion: PRODUCT_DOSSIER_SCHEMA_VERSION,
         productId: draft.product.product_id,
@@ -2183,9 +2871,25 @@ async function buildArticleDossier(
         payload,
       });
 
+      completedProductThreads += 1;
+
+      if (
+        completedProductThreads === productThreadDrafts.length ||
+        completedProductThreads === 1 ||
+        completedProductThreads % stage1ProgressStep === 0
+      ) {
+        await onStageChange?.(
+          "stage1_synthesis",
+          `Synthesizing ${productThreadDrafts.length} product threads (${completedProductThreads}/${productThreadDrafts.length}).`,
+        );
+      }
+
       return payload;
     },
+    options,
   );
+
+  throwIfPipelineAborted(options?.abortSignal);
 
   const allSignals = productThreads.flatMap((thread) => thread.signals);
   const allInstalls = productThreads.flatMap((thread) => thread.installedParts);
@@ -2340,11 +3044,13 @@ async function buildArticleDossier(
 }
 
 function chooseRunStrategy(dossier: ClusteredArticleDossier) {
-  const serialized = JSON.stringify(dossier);
+  const proposalPayload = buildStage2ProposalPayload({ dossier });
+  const estimatedPromptChars =
+    buildPassASystemPrompt().length + buildPassAUserPrompt(proposalPayload).length;
 
   if (
     dossier.productThreads.length > SINGLE_PASS_PRODUCT_LIMIT ||
-    serialized.length > MAX_PROMPT_CHARS
+    estimatedPromptChars > STAGE2_SINGLE_PASS_PROMPT_CHAR_BUDGET
   ) {
     return "chunked" as const;
   }
@@ -2352,50 +3058,491 @@ function chooseRunStrategy(dossier: ClusteredArticleDossier) {
   return "single" as const;
 }
 
-function toPromptProductThread(thread: ClusteredProductDossier) {
+function estimateStage2ProposalPromptChars(input: {
+  dossier: ClusteredArticleDossier;
+  productIds?: Set<string>;
+  chunkInfo?: {
+    chunkIndex: number;
+    chunkCount: number;
+    productIds: string[];
+  };
+}) {
+  const payload = buildStage2ProposalPayload(input);
+  return buildPassASystemPrompt().length + buildPassAUserPrompt(payload).length;
+}
+
+function estimateStage2ReviewPromptChars(payload: ReturnType<typeof buildStage2ReviewPayload>) {
+  return buildPassBSystemPrompt().length + buildPassBUserPrompt(payload).length;
+}
+
+function formatBuildWeek(buildTs: string | null) {
+  if (!buildTs) {
+    return null;
+  }
+
+  return startOfWeek(new Date(buildTs)).toISOString().slice(0, 10);
+}
+
+function rankSignalForStage2(signal: ProductSignalTimelineItem) {
+  const typeRank =
+    signal.signalType === "defect"
+      ? 6
+      : signal.signalType === "field_claim"
+        ? 5
+        : signal.signalType === "bad_test"
+          ? 4
+          : signal.signalType === "rework"
+            ? 3
+            : signal.signalType === "marginal_test"
+              ? 2
+              : 1;
+  const severityRank =
+    /critical|high|major/i.test(signal.severity ?? "")
+      ? 3
+      : /medium|moderate/i.test(signal.severity ?? "")
+        ? 2
+        : /low|minor/i.test(signal.severity ?? "")
+          ? 1
+          : 0;
+
+  return typeRank * 100 + severityRank * 10;
+}
+
+function collectDiagnosticTimelineEvents(thread: ClusteredProductDossier) {
+  return [...thread.signals]
+    .sort((left, right) => {
+      const rankDelta = rankSignalForStage2(right) - rankSignalForStage2(left);
+
+      if (rankDelta !== 0) {
+        return rankDelta;
+      }
+
+      return right.occurredAt.localeCompare(left.occurredAt);
+    })
+    .slice(0, MAX_STAGE2_DIAGNOSTIC_TIMELINE_EVENTS)
+    .sort(byOccurredAtAsc)
+    .map((signal) => ({
+      signalId: signal.signalId,
+      signalType: signal.signalType,
+      occurredAt: signal.occurredAt,
+      severity: signal.severity,
+      headline: trimPreview(signal.headline, 120),
+      section: signal.section,
+      reportedPartNumber: signal.reportedPartNumber,
+      sourceContext: signal.sourceContext,
+      notePreview: trimPreview(signal.notePreview, 140),
+    }));
+}
+
+function collectRawEvidenceSnippets(thread: ClusteredProductDossier) {
+  const snippets = [
+    ...thread.defects
+      .filter((item) => normalizeText(item.notes).length > 0)
+      .map((item) => ({
+        signalId: item.id,
+        signalType: "defect" as const,
+        text: trimPreview(item.notes, 180),
+      })),
+    ...thread.claims
+      .filter(
+        (item) =>
+          normalizeText(item.complaintText).length > 0 || normalizeText(item.notes).length > 0,
+      )
+      .map((item) => ({
+        signalId: item.id,
+        signalType: "field_claim" as const,
+        text: trimPreview(item.complaintText || item.notes, 180),
+      })),
+    ...thread.tests
+      .filter((item) => normalizeText(item.notes).length > 0)
+      .map((item) => ({
+        signalId: item.id,
+        signalType:
+          item.overallResult === "FAIL"
+            ? ("bad_test" as const)
+            : ("marginal_test" as const),
+        text: trimPreview(item.notes, 180),
+      })),
+    ...thread.rework
+      .filter((item) => normalizeText(item.actionText).length > 0)
+      .map((item) => ({
+        signalId: item.id,
+        signalType: "rework" as const,
+        text: trimPreview(item.actionText, 180),
+      })),
+    ...thread.actions
+      .filter((item) => normalizeText(item.comments).length > 0)
+      .map((item) => ({
+        signalId: item.id,
+        signalType: "product_action" as const,
+        text: trimPreview(item.comments, 180),
+      })),
+  ];
+
+  return snippets
+    .filter(
+      (item, index, collection) =>
+        collection.findIndex((candidate) => candidate.text === item.text) === index,
+    )
+    .slice(0, MAX_STAGE2_RAW_SNIPPETS);
+}
+
+function toStage2ProductClusterCard(thread: ClusteredProductDossier) {
   return {
     productId: thread.productId,
     articleId: thread.articleId,
     articleName: thread.articleName,
-    buildTs: thread.buildTs,
+    buildWeek: formatBuildWeek(thread.buildTs),
     orderId: thread.orderId,
-    productSummary: thread.stage1Synthesis.productSummary,
-    timelineSummary: thread.stage1Synthesis.timeline,
-    suspiciousPatterns: thread.stage1Synthesis.suspiciousPatterns,
-    possibleNoiseFlags: thread.stage1Synthesis.possibleNoiseFlags,
-    openQuestions: thread.stage1Synthesis.openQuestions,
-    structuredEvidenceFeatures: thread.stage1Synthesis.evidenceFeatures,
     sourceCounts: thread.sourceCounts,
-    summaryFeatures: thread.summaryFeatures,
-    signals: thread.signals,
-    defects: thread.defects.map((item) => ({
+    claimLagSummary: {
+      claimLagBucket: thread.mechanismEvidence.fieldLeakEvidence.claimLagBucket,
+      buildToClaimDays: thread.summaryFeatures.daysFromBuildToClaim.slice(0, 5),
+      fieldClaimWithoutFactoryDefect: thread.summaryFeatures.fieldClaimWithoutFactoryDefect,
+    },
+    stage1Summary: {
+      productSummary: trimPreview(thread.stage1Synthesis.productSummary, 320),
+      timeline: thread.stage1Synthesis.timeline.slice(0, 5),
+      evidenceFeatures: {
+        confirmedFailures: thread.stage1Synthesis.evidenceFeatures.confirmedFailures.slice(0, 4),
+        marginalSignals: thread.stage1Synthesis.evidenceFeatures.marginalSignals.slice(0, 4),
+        traceHighlights: thread.stage1Synthesis.evidenceFeatures.traceHighlights.slice(0, 4),
+        serviceSignals: thread.stage1Synthesis.evidenceFeatures.serviceSignals.slice(0, 4),
+        contradictions: thread.stage1Synthesis.evidenceFeatures.contradictions.slice(0, 3),
+      },
+      suspiciousPatterns: thread.stage1Synthesis.suspiciousPatterns.slice(0, 4),
+      possibleNoiseFlags: thread.stage1Synthesis.possibleNoiseFlags.slice(0, 4),
+      openQuestions: thread.stage1Synthesis.openQuestions.slice(0, 4),
+    },
+    strongestMechanismAnchors: {
+      signalTypesPresent: thread.summaryFeatures.signalTypesPresent.slice(0, 6),
+      defectCodesPresent: thread.summaryFeatures.defectCodesPresent.slice(0, 8),
+      testKeysMarginalFail: thread.summaryFeatures.testKeysMarginalFail.slice(0, 8),
+      reportedPartNumbers: thread.summaryFeatures.reportedPartNumbers.slice(0, 8),
+      bomFindNumbers: thread.summaryFeatures.bomFindNumbers.slice(0, 8),
+      supplierBatches: thread.summaryFeatures.supplierBatches.slice(0, 8),
+      sectionsSeen: thread.summaryFeatures.sectionsSeen.slice(0, 8),
+      ordersSeen: thread.summaryFeatures.ordersSeen.slice(0, 4),
+    },
+    traceabilityAnchors: {
+      dominantInstalledParts:
+        thread.mechanismEvidence.traceabilityEvidence.dominantInstalledParts.slice(0, 4),
+      dominantBomPositions:
+        thread.mechanismEvidence.traceabilityEvidence.dominantBomPositions.slice(0, 4),
+      dominantSupplierBatches:
+        thread.mechanismEvidence.traceabilityEvidence.dominantSupplierBatches.slice(0, 4),
+      dominantSuppliers:
+        thread.mechanismEvidence.traceabilityEvidence.dominantSuppliers.slice(0, 4),
+      productAnchorCandidates:
+        thread.mechanismEvidence.traceabilityEvidence.productAnchorCandidates
+          .slice(0, 3)
+          .map((item) => ({
+            anchorType: item.anchorType,
+            anchorValue: item.anchorValue,
+            reason: trimPreview(item.reason, 120),
+          })),
+      dominantTraceAnchors:
+        thread.mechanismEvidence.traceabilityEvidence.dominantTraceAnchors.slice(0, 4),
+      blastRadiusHints:
+        thread.mechanismEvidence.traceabilityEvidence.blastRadiusHints.slice(0, 2).map((item) => ({
+          anchorType: item.anchorType,
+          anchorValue: item.anchorValue,
+          relatedProductCount: item.relatedProductCount,
+          sharedPartNumbers: item.sharedPartNumbers.slice(0, 4),
+          sharedBomPositions: item.sharedBomPositions.slice(0, 4),
+          sharedSupplierBatches: item.sharedSupplierBatches.slice(0, 4),
+        })),
+      batchConcentrationHints:
+        thread.mechanismEvidence.traceabilityEvidence.batchConcentrationHints.slice(0, 3),
+      traceabilityConcentrationHints:
+        thread.mechanismEvidence.traceabilityEvidence.traceabilityConcentrationHints.slice(0, 4),
+    },
+    temporalProcessAnchors: {
+      buildWeek: thread.mechanismEvidence.temporalProcessEvidence.buildWeek,
+      firstFactorySignalWeek:
+        thread.mechanismEvidence.temporalProcessEvidence.firstFactorySignalWeek,
+      lastFactorySignalWeek:
+        thread.mechanismEvidence.temporalProcessEvidence.lastFactorySignalWeek,
+      dominantOccurrenceSections:
+        thread.mechanismEvidence.temporalProcessEvidence.dominantOccurrenceSections.slice(0, 4),
+      dominantDetectedSections:
+        thread.mechanismEvidence.temporalProcessEvidence.dominantDetectedSections.slice(0, 4),
+      dominantTestResults:
+        thread.mechanismEvidence.temporalProcessEvidence.dominantTestResults.slice(0, 2),
+      occurrenceDetectedMismatch:
+        thread.mechanismEvidence.temporalProcessEvidence.occurrenceDetectedMismatch,
+      temporalBurstHints:
+        thread.mechanismEvidence.temporalProcessEvidence.temporalBurstHints.slice(0, 4),
+      postWindowQuietHints:
+        thread.mechanismEvidence.temporalProcessEvidence.postWindowQuietHints.slice(0, 3),
+      temporalContainmentHints:
+        thread.mechanismEvidence.temporalProcessEvidence.temporalContainmentHints.slice(0, 4),
+      marginalVsFailHints:
+        thread.mechanismEvidence.temporalProcessEvidence.marginalVsFailHints.slice(0, 4),
+    },
+    fieldLeakAnchors: {
+      claimOnlyThread: thread.mechanismEvidence.fieldLeakEvidence.claimOnlyThread,
+      hasPriorFactoryDefect: thread.mechanismEvidence.fieldLeakEvidence.hasPriorFactoryDefect,
+      claimLagBucket: thread.mechanismEvidence.fieldLeakEvidence.claimLagBucket,
+      buildToClaimDays:
+        thread.mechanismEvidence.fieldLeakEvidence.buildToClaimDays.slice(0, 6),
+      claimLagStats: thread.mechanismEvidence.fieldLeakEvidence.claimLagStats,
+      dominantClaimReportedParts:
+        thread.mechanismEvidence.fieldLeakEvidence.dominantClaimReportedParts.slice(0, 4),
+      dominantClaimBomPositions:
+        thread.mechanismEvidence.fieldLeakEvidence.dominantClaimBomPositions.slice(0, 4),
+      latentFailureHints:
+        thread.mechanismEvidence.fieldLeakEvidence.latentFailureHints.slice(0, 4),
+    },
+    operatorHandlingAnchors: {
+      dominantReworkUsers:
+        thread.mechanismEvidence.operatorHandlingEvidence.dominantReworkUsers.slice(0, 4),
+      orderClusterHints:
+        thread.mechanismEvidence.operatorHandlingEvidence.orderClusterHints.slice(0, 4),
+      userConcentrationHints:
+        thread.mechanismEvidence.operatorHandlingEvidence.userConcentrationHints.slice(0, 4),
+      handlingPatternHints:
+        thread.mechanismEvidence.operatorHandlingEvidence.handlingPatternHints.slice(0, 4),
+      fieldImpactPresent:
+        thread.mechanismEvidence.operatorHandlingEvidence.fieldImpactPresent,
+      lowSeverityOnly: thread.mechanismEvidence.operatorHandlingEvidence.lowSeverityOnly,
+      cosmeticOnlySignals:
+        thread.mechanismEvidence.operatorHandlingEvidence.cosmeticOnlySignals,
+    },
+    confounders: {
+      falsePositiveMarkers: thread.summaryFeatures.falsePositiveMarkers.slice(0, 4),
+      marginalOnlySignals: thread.mechanismEvidence.confounderEvidence.marginalOnlySignals,
+      detectionBiasRisk:
+        thread.mechanismEvidence.confounderEvidence.detectionBiasRisk.slice(0, 4),
+      lowVolumePeriodRisk:
+        thread.mechanismEvidence.confounderEvidence.lowVolumePeriodRisk.slice(0, 4),
+      mixedServiceDocumentationSignals:
+        thread.mechanismEvidence.confounderEvidence.mixedServiceDocumentationSignals.slice(0, 4),
+      nearLimitTestSignals:
+        thread.mechanismEvidence.confounderEvidence.nearLimitTestSignals.slice(0, 4),
+    },
+    diagnosticTimelineEvents: collectDiagnosticTimelineEvents(thread),
+    rawEvidenceSnippets: collectRawEvidenceSnippets(thread),
+  };
+}
+
+function buildStage2ArticleContext(dossier: ClusteredArticleDossier) {
+  return {
+    article: dossier.article,
+    articleSummary: {
+      sourceCounts: dossier.articleSummary.sourceCounts,
+      topDefectCodes: dossier.articleSummary.topDefectCodes.slice(0, 6),
+      topReportedParts: dossier.articleSummary.topReportedParts.slice(0, 6),
+      topBomPositions: dossier.articleSummary.topBomPositions.slice(0, 6),
+      topSections: dossier.articleSummary.topSections.slice(0, 6),
+      topSupplierBatches: dossier.articleSummary.topSupplierBatches.slice(0, 6),
+      topProductionOrders: dossier.articleSummary.topProductionOrders.slice(0, 6),
+      fieldClaimOnlyPatterns: dossier.articleSummary.fieldClaimOnlyPatterns.slice(0, 6),
+      testHotspots: dossier.articleSummary.testHotspots.slice(0, 6),
+    },
+    crossProductSummaries: {
+      sharedSupplierBatches: dossier.crossProductSummaries.sharedSupplierBatches.slice(0, 6),
+      sharedReportedPartNumbers:
+        dossier.crossProductSummaries.sharedReportedPartNumbers.slice(0, 6),
+      sharedBomFindNumbers: dossier.crossProductSummaries.sharedBomFindNumbers.slice(0, 6),
+      similarClaimThemes: dossier.crossProductSummaries.similarClaimThemes.slice(0, 6),
+      sharedOrders: dossier.crossProductSummaries.sharedOrders.slice(0, 6),
+      sharedReworkUsers: dossier.crossProductSummaries.sharedReworkUsers.slice(0, 6),
+      sharedOccurrenceSections:
+        dossier.crossProductSummaries.sharedOccurrenceSections.slice(0, 6),
+      sharedSections: dossier.crossProductSummaries.sharedSections.slice(0, 6),
+      sharedTestHotspots: dossier.crossProductSummaries.sharedTestHotspots.slice(0, 6),
+    },
+  };
+}
+
+function buildStage2ProposalPayload(input: {
+  dossier: ClusteredArticleDossier;
+  productIds?: Set<string>;
+  chunkInfo?: {
+    chunkIndex: number;
+    chunkCount: number;
+    productIds: string[];
+  };
+}) {
+  const selectedThreads = input.productIds
+    ? input.dossier.productThreads.filter((thread) => input.productIds?.has(thread.productId))
+    : input.dossier.productThreads;
+
+  return {
+    articleContext: buildStage2ArticleContext(input.dossier),
+    productClusterCards: selectedThreads.map((thread) => toStage2ProductClusterCard(thread)),
+    chunkInfo: input.chunkInfo ?? null,
+  };
+}
+
+function mergeProposalOutputs(outputs: ProposalOutput[], reviewSummary: string): ProposalOutput {
+  return {
+    contractVersion: CASE_PROPOSAL_SCHEMA_VERSION,
+    reviewSummary,
+    cases: outputs.flatMap((item) => item.cases),
+    incidents: outputs.flatMap((item) => item.incidents),
+    watchlists: outputs.flatMap((item) => item.watchlists),
+    noise: outputs.flatMap((item) => item.noise),
+    unassignedProducts: outputs.flatMap((item) => item.unassignedProducts),
+    standaloneSignals: outputs.flatMap((item) => item.standaloneSignals),
+    ambiguousLinks: outputs.flatMap((item) => item.ambiguousLinks),
+    globalObservations: uniqueValues(
+      outputs.flatMap((item) => item.globalObservations),
+    ).slice(0, 12),
+  };
+}
+
+function rankDraftCaseForReview(caseItem: ProposalOutput["cases"][number]) {
+  const priorityRank =
+    caseItem.priority === "critical"
+      ? 3
+      : caseItem.priority === "high"
+        ? 2
+        : caseItem.priority === "medium"
+          ? 1
+          : 0;
+
+  return (
+    priorityRank * 10_000 +
+    Math.round(caseItem.confidence * 1_000) * 10 +
+    caseItem.includedProductIds.length
+  );
+}
+
+function rankDraftIncidentForReview(incident: ProposalIncident) {
+  const priorityRank =
+    incident.priority === "critical"
+      ? 3
+      : incident.priority === "high"
+        ? 2
+        : incident.priority === "medium"
+          ? 1
+          : 0;
+
+  return priorityRank * 10_000 + Math.round(incident.confidence * 1_000) * 10;
+}
+
+function rankDraftWatchlistForReview(watchlist: ProposalWatchlist) {
+  const priorityRank =
+    watchlist.priority === "critical"
+      ? 3
+      : watchlist.priority === "high"
+        ? 2
+        : watchlist.priority === "medium"
+          ? 1
+          : 0;
+
+  return (
+    priorityRank * 10_000 +
+    Math.round(watchlist.confidence * 1_000) * 10 +
+    watchlist.linkedProductIds.length
+  );
+}
+
+function toChunkReviewCaseDigest(caseItem: ProposalOutput["cases"][number]) {
+  return {
+    proposalTempId: caseItem.proposalTempId,
+    title: caseItem.title,
+    caseKind: caseItem.caseKind,
+    summary: trimPreview(caseItem.summary, 280),
+    suspectedCommonRootCause: trimPreview(caseItem.suspectedCommonRootCause, 220),
+    suspectedRootCauseFamily: caseItem.suspectedRootCauseFamily,
+    confidence: caseItem.confidence,
+    priority: caseItem.priority,
+    includedProductIds: caseItem.includedProductIds,
+    productCount: caseItem.includedProductIds.length,
+    signalCount: caseItem.includedSignalIds.length,
+    sharedEvidence: caseItem.sharedEvidence.slice(0, 4),
+    conflictingEvidence: caseItem.conflictingEvidence.slice(0, 3),
+    strongestEvidence: caseItem.strongestEvidence.slice(0, 3),
+    recommendedNextTraceChecks: caseItem.recommendedNextTraceChecks.slice(0, 3),
+    signalTypesPresent: caseItem.signalTypesPresent.slice(0, 6),
+    defectCodesPresent: caseItem.defectCodesPresent.slice(0, 8),
+    reportedPartNumbers: caseItem.reportedPartNumbers.slice(0, 8),
+    bomFindNumbers: caseItem.bomFindNumbers.slice(0, 8),
+    supplierBatches: caseItem.supplierBatches.slice(0, 8),
+    sections: caseItem.sections.slice(0, 8),
+  };
+}
+
+function toChunkReviewIncidentDigest(incident: ProposalIncident) {
+  return {
+    incidentTempId: incident.incidentTempId,
+    title: incident.title,
+    incidentKind: incident.incidentKind,
+    summary: trimPreview(incident.summary, 240),
+    suspectedPrimaryCause: trimPreview(incident.suspectedPrimaryCause, 200),
+    confidence: incident.confidence,
+    priority: incident.priority,
+    productId: incident.productId,
+    signalCount: incident.includedSignalIds.length,
+    strongestEvidence: incident.strongestEvidence.slice(0, 4),
+    conflictingEvidence: incident.conflictingEvidence.slice(0, 3),
+    reasonNotCase: incident.reasonNotCase,
+    orders: incident.orders.slice(0, 4),
+    supplierBatches: incident.supplierBatches.slice(0, 4),
+    sections: incident.sections.slice(0, 4),
+  };
+}
+
+function toChunkReviewWatchlistDigest(watchlist: ProposalWatchlist) {
+  return {
+    watchlistTempId: watchlist.watchlistTempId,
+    title: watchlist.title,
+    watchlistKind: watchlist.watchlistKind,
+    summary: trimPreview(watchlist.summary, 220),
+    rationale: trimPreview(watchlist.rationale, 180),
+    confidence: watchlist.confidence,
+    priority: watchlist.priority,
+    linkedProductIds: watchlist.linkedProductIds,
+    strongestEvidence: watchlist.strongestEvidence.slice(0, 4),
+    confounders: watchlist.confounders.slice(0, 4),
+  };
+}
+
+function toChunkReviewNoiseDigest(noise: ProposalNoise) {
+  return {
+    noiseTempId: noise.noiseTempId,
+    title: noise.title,
+    noiseKind: noise.noiseKind,
+    summary: trimPreview(noise.summary, 220),
+    dismissalReason: trimPreview(noise.dismissalReason, 180),
+    linkedProductIds: noise.linkedProductIds,
+    strongestEvidence: noise.strongestEvidence.slice(0, 4),
+  };
+}
+
+function toStage2ReviewEvidencePacket(thread: ClusteredProductDossier) {
+  return {
+    productId: thread.productId,
+    sourceCounts: thread.sourceCounts,
+    diagnosticTimelineEvents: collectDiagnosticTimelineEvents(thread).slice(
+      0,
+      MAX_STAGE2_REVIEW_RAW_EVENTS,
+    ),
+    rawEvidenceSnippets: collectRawEvidenceSnippets(thread),
+    defects: thread.defects.slice(0, 3).map((item) => ({
       id: item.id,
       occurredAt: item.occurredAt,
       code: item.code,
       severity: item.severity,
       reportedPartNumber: item.reportedPartNumber,
-      reportedPartTitle: item.reportedPartTitle,
       detectedSectionName: item.detectedSectionName,
       occurrenceSectionName: item.occurrenceSectionName,
       detectedTestName: item.detectedTestName,
-      detectedTestOverall: item.detectedTestOverall,
-      notes: item.notes,
-      imageUrl: item.imageUrl,
+      notes: trimPreview(item.notes, 180),
     })),
-    claims: thread.claims.map((item) => ({
+    claims: thread.claims.slice(0, 2).map((item) => ({
       id: item.id,
       claimedAt: item.claimedAt,
       mappedDefectCode: item.mappedDefectCode,
       mappedDefectSeverity: item.mappedDefectSeverity,
       reportedPartNumber: item.reportedPartNumber,
-      reportedPartTitle: item.reportedPartTitle,
-      market: item.market,
       daysFromBuild: item.daysFromBuild,
-      complaintText: item.complaintText,
-      notes: item.notes,
-      imageUrl: item.imageUrl,
+      complaintText: trimPreview(item.complaintText || item.notes, 180),
     })),
-    tests: thread.tests.map((item) => ({
+    tests: thread.tests.slice(0, 3).map((item) => ({
       id: item.id,
       occurredAt: item.occurredAt,
       overallResult: item.overallResult,
@@ -2403,137 +3550,281 @@ function toPromptProductThread(thread: ClusteredProductDossier) {
       testValue: item.testValue,
       unit: item.unit,
       sectionName: item.sectionName,
-      notes: item.notes,
+      notes: trimPreview(item.notes, 160),
     })),
-    rework: thread.rework.map((item) => ({
+    rework: thread.rework.slice(0, 2).map((item) => ({
       id: item.id,
       recordedAt: item.recordedAt,
-      sectionId: item.sectionId,
       reportedPartNumber: item.reportedPartNumber,
-      actionText: item.actionText,
+      actionText: trimPreview(item.actionText, 160),
       userId: item.userId,
     })),
-    actions: thread.actions.map((item) => ({
+    actions: thread.actions.slice(0, 2).map((item) => ({
       id: item.id,
       recordedAt: item.recordedAt,
       actionType: item.actionType,
       status: item.status,
-      sectionId: item.sectionId,
-      comments: item.comments,
       defectId: item.defectId,
+      comments: trimPreview(item.comments, 160),
     })),
-    installedParts: thread.installedParts.map((item) => ({
-      installId: item.installId,
+    installedParts: thread.installedParts.slice(0, 6).map((item) => ({
       findNumber: item.findNumber,
       positionCode: item.positionCode,
       partNumber: item.partNumber,
-      partTitle: item.partTitle,
-      partId: item.partId,
-      serialNumber: item.serialNumber,
-      qualityStatus: item.qualityStatus,
       batchId: item.batchId,
       batchNumber: item.batchNumber,
       supplierName: item.supplierName,
-      supplierId: item.supplierId,
-      manufacturerName: item.manufacturerName,
-      installedAt: item.installedAt,
     })),
-    weeklyQualitySnippets: thread.weeklyQualitySnippets.map((item) => ({
-      weekStart: item.weekStart,
-      defectCount: item.defectCount,
-      claimCount: item.claimCount,
-      reworkCount: item.reworkCount,
-      topDefectCode: item.topDefectCode,
-    })),
-    evidenceFrames: thread.evidenceFrames,
-    traceabilitySnapshot: thread.traceabilitySnapshot,
-    mechanismEvidence: thread.mechanismEvidence,
-    existingSurfaceContext: thread.existingSurfaceContext,
   };
 }
 
-function toPromptArticlePayload(dossier: ClusteredArticleDossier, productIds?: Set<string>) {
-  const selectedThreads = productIds
-    ? dossier.productThreads.filter((thread) => productIds.has(thread.productId))
-    : dossier.productThreads;
+function selectStage2ReviewEvidenceProductIds(input: {
+  dossier: ClusteredArticleDossier;
+  draft: ProposalOutput;
+  selectedProductIds?: Set<string>;
+}) {
+  const allowedProductIds = input.selectedProductIds
+    ? new Set(
+        input.dossier.productThreads
+          .filter((thread) => input.selectedProductIds?.has(thread.productId))
+          .map((thread) => thread.productId),
+      )
+    : new Set(input.dossier.productThreads.map((thread) => thread.productId));
+  const proposalByTempId = new Map(
+    input.draft.cases.map((caseItem) => [caseItem.proposalTempId, caseItem]),
+  );
+  const selected = new Set<string>();
 
-  const selectedProductIds = new Set(selectedThreads.map((thread) => thread.productId));
+  const pushProductId = (productId: string | null | undefined) => {
+    const normalized = normalizeNullableText(productId);
+
+    if (
+      !normalized ||
+      !allowedProductIds.has(normalized) ||
+      selected.size >= MAX_STAGE2_REVIEW_EVIDENCE_PRODUCTS
+    ) {
+      return;
+    }
+
+    selected.add(normalized);
+  };
+
+  const rankedCases = [...input.draft.cases].sort(
+    (left, right) => rankDraftCaseForReview(right) - rankDraftCaseForReview(left),
+  );
+
+  for (const caseItem of rankedCases.filter(
+    (item) =>
+      item.priority === "critical" ||
+      item.priority === "high" ||
+      item.confidence >= 0.55 ||
+      item.includedProductIds.length <= 2,
+  )) {
+    for (const productId of caseItem.includedProductIds) {
+      pushProductId(productId);
+    }
+  }
+
+  for (const incident of [...input.draft.incidents]
+    .sort((left, right) => rankDraftIncidentForReview(right) - rankDraftIncidentForReview(left))
+    .slice(0, 16)) {
+    pushProductId(incident.productId);
+  }
+
+  for (const watchlist of [...input.draft.watchlists]
+    .sort((left, right) => rankDraftWatchlistForReview(right) - rankDraftWatchlistForReview(left))
+    .slice(0, 12)) {
+    for (const productId of watchlist.linkedProductIds) {
+      pushProductId(productId);
+    }
+  }
+
+  for (const noise of input.draft.noise.slice(0, 12)) {
+    for (const productId of noise.linkedProductIds) {
+      pushProductId(productId);
+    }
+  }
+
+  for (const link of input.draft.ambiguousLinks.slice(0, 20)) {
+    pushProductId(link.productId);
+
+    for (const proposalTempId of link.relatedProposalTempIds) {
+      const relatedCase = proposalByTempId.get(proposalTempId);
+
+      for (const productId of relatedCase?.includedProductIds ?? []) {
+        pushProductId(productId);
+      }
+    }
+  }
+
+  for (const standalone of input.draft.standaloneSignals.slice(0, 12)) {
+    pushProductId(standalone.productId);
+  }
+
+  for (const unassigned of input.draft.unassignedProducts.slice(0, 12)) {
+    pushProductId(unassigned.productId);
+  }
+
+  for (const caseItem of rankedCases) {
+    for (const productId of caseItem.includedProductIds) {
+      pushProductId(productId);
+    }
+  }
+
+  return [...selected];
+}
+
+function buildStage2ReviewPayload(input: {
+  dossier: ClusteredArticleDossier;
+  draft: ProposalOutput;
+  selectedProductIds?: Set<string>;
+}) {
+  const reviewThreads = input.selectedProductIds
+    ? input.dossier.productThreads.filter((thread) =>
+        input.selectedProductIds?.has(thread.productId),
+      )
+    : input.dossier.productThreads;
+  const caseDigests = [...input.draft.cases]
+    .sort((left, right) => {
+      const rankDelta = rankDraftCaseForReview(right) - rankDraftCaseForReview(left);
+
+      if (rankDelta !== 0) {
+        return rankDelta;
+      }
+
+      return left.title.localeCompare(right.title);
+    })
+    .slice(0, MAX_CHUNK_REVIEW_CASE_DIGESTS)
+    .map((caseItem) => toChunkReviewCaseDigest(caseItem));
+  const incidentDigests = [...input.draft.incidents]
+    .sort(
+      (left, right) =>
+        rankDraftIncidentForReview(right) - rankDraftIncidentForReview(left),
+    )
+    .slice(0, 40)
+    .map((incident) => toChunkReviewIncidentDigest(incident));
+  const watchlistDigests = [...input.draft.watchlists]
+    .sort(
+      (left, right) =>
+        rankDraftWatchlistForReview(right) - rankDraftWatchlistForReview(left),
+    )
+    .slice(0, 24)
+    .map((watchlist) => toChunkReviewWatchlistDigest(watchlist));
+  const noiseDigests = input.draft.noise.slice(0, 24).map((noise) => toChunkReviewNoiseDigest(noise));
+
+  const standaloneSignals = input.draft.standaloneSignals
+    .slice(0, MAX_CHUNK_REVIEW_STANDALONE_SIGNAL_DIGESTS)
+    .map((item) => ({
+      signalId: item.signalId,
+      productId: item.productId,
+      signalType: item.signalType,
+      reason: trimPreview(item.reason, 180),
+    }));
+  const validationEvidenceProductIds = selectStage2ReviewEvidenceProductIds(input);
+  const reviewProductCards = reviewThreads
+    .filter((thread) => validationEvidenceProductIds.includes(thread.productId))
+    .map((thread) => toStage2ProductClusterCard(thread));
+  const validationEvidencePackets = reviewThreads
+    .filter((thread) => validationEvidenceProductIds.includes(thread.productId))
+    .map((thread) => toStage2ReviewEvidencePacket(thread));
 
   return {
-    contractVersion: dossier.contractVersion,
-    generatedAt: dossier.generatedAt,
-    article: dossier.article,
-    articleSummary: dossier.articleSummary,
-    crossProductSummaries: dossier.crossProductSummaries,
-    productThreads: selectedThreads.map(toPromptProductThread),
-    rawEvidenceAppendix: {
-      defects: dossier.rawEvidenceAppendix.defects
-        .filter((item) => selectedProductIds.has(item.productId))
-        .map((item) => ({
-          id: item.id,
-          productId: item.productId,
-          occurredAt: item.occurredAt,
-          code: item.code,
-          severity: item.severity,
-          reportedPartNumber: item.reportedPartNumber,
-          notes: item.notes,
-        })),
-      claims: dossier.rawEvidenceAppendix.claims
-        .filter((item) => selectedProductIds.has(item.productId))
-        .map((item) => ({
-          id: item.id,
-          productId: item.productId,
-          claimedAt: item.claimedAt,
-          mappedDefectCode: item.mappedDefectCode,
-          mappedDefectSeverity: item.mappedDefectSeverity,
-          reportedPartNumber: item.reportedPartNumber,
-          complaintText: item.complaintText,
-        })),
-      tests: dossier.rawEvidenceAppendix.tests
-        .filter((item) => selectedProductIds.has(item.productId))
-        .map((item) => ({
-          id: item.id,
-          productId: item.productId,
-          occurredAt: item.occurredAt,
-          overallResult: item.overallResult,
-          testKey: item.testKey,
-          testValue: item.testValue,
-          sectionName: item.sectionName,
-          notes: item.notes,
-        })),
-      installs: dossier.rawEvidenceAppendix.installs
-        .filter((item) => selectedProductIds.has(item.productId))
-        .map((item) => ({
-          productId: item.productId,
-          findNumber: item.findNumber,
-          positionCode: item.positionCode,
-          partNumber: item.partNumber,
-          batchId: item.batchId,
-          batchNumber: item.batchNumber,
-          supplierName: item.supplierName,
-        })),
-      rework: dossier.rawEvidenceAppendix.rework
-        .filter((item) => selectedProductIds.has(item.productId))
-        .map((item) => ({
-          id: item.id,
-          productId: item.productId,
-          recordedAt: item.recordedAt,
-          reportedPartNumber: item.reportedPartNumber,
-          actionText: item.actionText,
-        })),
-      actions: dossier.rawEvidenceAppendix.actions
-        .filter((item) => selectedProductIds.has(item.productId))
-        .map((item) => ({
-          id: item.id,
-          productId: item.productId,
-          recordedAt: item.recordedAt,
-          actionType: item.actionType,
-          status: item.status,
-          defectId: item.defectId,
-          comments: item.comments,
-        })),
+    articleContext: buildStage2ArticleContext(input.dossier),
+    reviewProductCards,
+    draftDigest: {
+      originalCaseCount: input.draft.cases.length,
+      surfacedCaseCount: caseDigests.length,
+      originalIncidentCount: input.draft.incidents.length,
+      surfacedIncidentCount: incidentDigests.length,
+      originalWatchlistCount: input.draft.watchlists.length,
+      surfacedWatchlistCount: watchlistDigests.length,
+      originalNoiseCount: input.draft.noise.length,
+      surfacedNoiseCount: noiseDigests.length,
+      originalStandaloneSignalCount: input.draft.standaloneSignals.length,
+      surfacedStandaloneSignalCount: standaloneSignals.length,
+      unassignedProductCount: input.draft.unassignedProducts.length,
+      ambiguousLinkCount: input.draft.ambiguousLinks.length,
+      globalObservations: input.draft.globalObservations,
+      cases: caseDigests,
+      incidents: incidentDigests,
+      watchlists: watchlistDigests,
+      noise: noiseDigests,
+      unassignedProducts: input.draft.unassignedProducts.slice(0, 80),
+      standaloneSignals,
+      standaloneSignalTypeCounts: input.draft.standaloneSignals.reduce<Record<string, number>>(
+        (counts, item) => {
+          counts[item.signalType] = (counts[item.signalType] ?? 0) + 1;
+          return counts;
+        },
+        {},
+      ),
+      ambiguousLinks: input.draft.ambiguousLinks.slice(0, 40),
+    },
+    validationEvidence: {
+      selectedProductCount: validationEvidencePackets.length,
+      productPackets: validationEvidencePackets,
     },
   };
+}
+
+function fitStage2ReviewPayloadToBudget(payload: ReturnType<typeof buildStage2ReviewPayload>) {
+  let fittedPayload = payload;
+
+  while (
+    estimateStage2ReviewPromptChars(fittedPayload) > STAGE2_REVIEW_PROMPT_CHAR_BUDGET &&
+    fittedPayload.validationEvidence.productPackets.length > 4
+  ) {
+    const nextCount = Math.max(
+      4,
+      Math.ceil(fittedPayload.validationEvidence.productPackets.length / 2),
+    );
+
+    fittedPayload = {
+      ...fittedPayload,
+      reviewProductCards: fittedPayload.reviewProductCards.slice(0, nextCount),
+      validationEvidence: {
+        selectedProductCount: nextCount,
+        productPackets: fittedPayload.validationEvidence.productPackets.slice(0, nextCount),
+      },
+    };
+  }
+
+  while (
+    estimateStage2ReviewPromptChars(fittedPayload) > STAGE2_REVIEW_PROMPT_CHAR_BUDGET &&
+    fittedPayload.draftDigest.cases.length > 24
+  ) {
+    const nextCaseCount = Math.max(24, Math.ceil(fittedPayload.draftDigest.cases.length / 2));
+
+    fittedPayload = {
+      ...fittedPayload,
+      draftDigest: {
+        ...fittedPayload.draftDigest,
+        surfacedCaseCount: nextCaseCount,
+        cases: fittedPayload.draftDigest.cases.slice(0, nextCaseCount),
+      },
+    };
+  }
+
+  while (
+    estimateStage2ReviewPromptChars(fittedPayload) > STAGE2_REVIEW_PROMPT_CHAR_BUDGET &&
+    fittedPayload.draftDigest.standaloneSignals.length > 20
+  ) {
+    const nextSignalCount = Math.max(
+      20,
+      Math.ceil(fittedPayload.draftDigest.standaloneSignals.length / 2),
+    );
+
+    fittedPayload = {
+      ...fittedPayload,
+      draftDigest: {
+        ...fittedPayload.draftDigest,
+        surfacedStandaloneSignalCount: nextSignalCount,
+        standaloneSignals: fittedPayload.draftDigest.standaloneSignals.slice(0, nextSignalCount),
+      },
+    };
+  }
+
+  return fittedPayload;
 }
 
 function getOpenAiClient() {
@@ -2552,30 +3843,83 @@ async function generateStructuredObject<TSchema extends z.ZodTypeAny>(input: {
   schemaDescription: string;
   system: string;
   prompt: string;
+  reasoningEffort: "none" | "low" | "medium" | "high" | "xhigh";
+  stageName: ModelCallStageName;
+  articleId: string;
+  payload: unknown;
+  chunkId?: string | null;
+  selectedProductCount?: number | null;
+  maxOutputTokens?: number | null;
+  abortSignal?: AbortSignal;
 }) {
   const openai = getOpenAiClient();
+  let lastError: unknown = null;
 
-  const result = await generateObject({
-    model: openai.responses(env.OPENAI_MODEL),
-    schema: input.schema,
-    schemaName: input.schemaName,
-    schemaDescription: input.schemaDescription,
+  logModelCallMetrics({
+    stageName: input.stageName,
+    articleId: input.articleId,
+    model: env.OPENAI_MODEL,
     system: input.system,
     prompt: input.prompt,
-    providerOptions: {
-      openai: {
-        reasoningEffort: "medium",
-        store: false,
-        textVerbosity: "low",
-      },
-    },
+    payload: input.payload,
+    chunkId: input.chunkId,
+    selectedProductCount: input.selectedProductCount,
+    maxOutputTokens: input.maxOutputTokens,
   });
 
-  return result.object as z.infer<TSchema>;
+  for (let attempt = 1; attempt <= MODEL_CALL_MAX_ATTEMPTS; attempt += 1) {
+    throwIfPipelineAborted(input.abortSignal);
+
+    try {
+      const result = await generateObject({
+        model: openai.responses(env.OPENAI_MODEL),
+        schema: input.schema,
+        schemaName: input.schemaName,
+        schemaDescription: input.schemaDescription,
+        system: input.system,
+        prompt: input.prompt,
+        maxOutputTokens: input.maxOutputTokens ?? undefined,
+        abortSignal: input.abortSignal,
+        providerOptions: {
+          openai: {
+            reasoningEffort: input.reasoningEffort,
+            store: false,
+            textVerbosity: "low",
+          },
+        },
+      });
+
+      return result.object as z.infer<TSchema>;
+    } catch (error) {
+      lastError = error;
+
+      if (isPipelineStopError(error)) {
+        throw createPipelineStopError(
+          error instanceof Error ? error.message : STOPPED_PIPELINE_MESSAGE,
+        );
+      }
+
+      if (!isRetryableModelError(error) || attempt >= MODEL_CALL_MAX_ATTEMPTS) {
+        throw error;
+      }
+
+      const message = error instanceof Error ? error.message : String(error);
+      const hintedDelayMs = extractRetryDelayMs(message);
+      const fallbackDelayMs = Math.min(12_000, 1_250 * 2 ** (attempt - 1));
+      const jitterMs = Math.floor(Math.random() * 600);
+
+      await sleep((hintedDelayMs ?? fallbackDelayMs) + jitterMs, input.abortSignal);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 async function generateProductThreadSynthesis(input: {
+  articleId: string;
+  productId: string;
   promptPayload: unknown;
+  abortSignal?: AbortSignal;
 }) {
   return generateStructuredObject({
     schema: productThreadSynthesisSchema,
@@ -2584,12 +3928,28 @@ async function generateProductThreadSynthesis(input: {
       "Compressed product-level investigation dossier for one manufactured unit in the Manex hackathon dataset.",
     system: buildStage1SystemPrompt(),
     prompt: buildStage1UserPrompt(input.promptPayload),
+    reasoningEffort: STAGE1_REASONING_EFFORT,
+    stageName: "stage1_product_synthesis",
+    articleId: input.articleId,
+    payload: input.promptPayload,
+    chunkId: input.productId,
+    selectedProductCount: 1,
+    maxOutputTokens: STAGE1_MAX_OUTPUT_TOKENS,
+    abortSignal: input.abortSignal,
   });
 }
 
 async function generateProposalObject(input: {
+  articleId: string;
+  stageName: "stage2_draft" | "stage2_review";
   system: string;
   prompt: string;
+  reasoningEffort: "none" | "low" | "medium" | "high" | "xhigh";
+  payload: unknown;
+  chunkId?: string | null;
+  selectedProductCount?: number | null;
+  maxOutputTokens?: number | null;
+  abortSignal?: AbortSignal;
 }) {
   return generateStructuredObject({
     schema: clusteringProposalSchema,
@@ -2598,11 +3958,21 @@ async function generateProposalObject(input: {
       "Article-local proposed case set for one article dossier in the Manex hackathon dataset.",
     system: input.system,
     prompt: input.prompt,
+    reasoningEffort: input.reasoningEffort,
+    stageName: input.stageName,
+    articleId: input.articleId,
+    payload: input.payload,
+    chunkId: input.chunkId,
+    selectedProductCount: input.selectedProductCount,
+    maxOutputTokens: input.maxOutputTokens,
+    abortSignal: input.abortSignal,
   });
 }
 
 async function generateGlobalReconciliationObject(input: {
+  articleId: string;
   payload: unknown;
+  abortSignal?: AbortSignal;
 }) {
   return generateStructuredObject({
     schema: globalReconciliationSchema,
@@ -2611,15 +3981,49 @@ async function generateGlobalReconciliationObject(input: {
       "Global reconciliation inventory of validated cases, watchlists, noise buckets, and rejected cases for the Manex hackathon dataset.",
     system: buildStage3SystemPrompt(),
     prompt: buildStage3UserPrompt(input.payload),
+    reasoningEffort: STAGE3_REASONING_EFFORT,
+    stageName: "stage3_reconciliation",
+    articleId: input.articleId,
+    payload: input.payload,
+    selectedProductCount: null,
+    maxOutputTokens: STAGE3_MAX_OUTPUT_TOKENS,
+    abortSignal: input.abortSignal,
   });
 }
 
-function chunkProductThreads(productThreads: ClusteredProductDossier[]) {
+function planStage2Chunks(dossier: ClusteredArticleDossier) {
   const chunks: ClusteredProductDossier[][] = [];
+  let currentChunk: ClusteredProductDossier[] = [];
 
-  for (let index = 0; index < productThreads.length; index += PRODUCT_CHUNK_SIZE) {
-    chunks.push(productThreads.slice(index, index + PRODUCT_CHUNK_SIZE));
+  const flushChunk = () => {
+    if (currentChunk.length > 0) {
+      chunks.push(currentChunk);
+      currentChunk = [];
+    }
+  };
+
+  for (const thread of dossier.productThreads) {
+    const nextChunk = [...currentChunk, thread];
+    const nextProductIds = new Set(nextChunk.map((item) => item.productId));
+    const estimatedPromptChars = estimateStage2ProposalPromptChars({
+      dossier,
+      productIds: nextProductIds,
+    });
+
+    if (
+      currentChunk.length > 0 &&
+      (currentChunk.length >= PRODUCT_CHUNK_SIZE ||
+        estimatedPromptChars > STAGE2_CHUNK_PROMPT_CHAR_BUDGET)
+    ) {
+      flushChunk();
+      currentChunk = [thread];
+      continue;
+    }
+
+    currentChunk = nextChunk;
   }
+
+  flushChunk();
 
   return chunks;
 }
@@ -2627,7 +4031,9 @@ function chunkProductThreads(productThreads: ClusteredProductDossier[]) {
 async function runProposalPass(
   dossier: ClusteredArticleDossier,
   onStageChange?: (stage: "stage2_draft" | "stage2_review", detail: string) => Promise<void>,
+  options?: PipelineExecutionOptions,
 ): Promise<{ draft: ProposalOutput; review: ProposalOutput; strategy: "single" | "chunked" }> {
+  throwIfPipelineAborted(options?.abortSignal);
   const strategy = chooseRunStrategy(dossier);
 
   if (strategy === "single") {
@@ -2635,77 +4041,109 @@ async function runProposalPass(
       "stage2_draft",
       `Drafting article-wide cases for ${dossier.article.productCount} products.`,
     );
+    const proposalPayload = buildStage2ProposalPayload({ dossier });
     const draft = await generateProposalObject({
+      articleId: dossier.article.articleId,
+      stageName: "stage2_draft",
       system: buildPassASystemPrompt(),
-      prompt: buildPassAUserPrompt(toPromptArticlePayload(dossier)),
+      prompt: buildPassAUserPrompt(proposalPayload),
+      reasoningEffort: STAGE2_DRAFT_REASONING_EFFORT,
+      payload: proposalPayload,
+      selectedProductCount: dossier.productThreads.length,
+      maxOutputTokens: STAGE2_DRAFT_MAX_OUTPUT_TOKENS,
+      abortSignal: options?.abortSignal,
     });
     await onStageChange?.("stage2_review", "Reviewing and refining article-wide cases.");
+    const reviewPayload = fitStage2ReviewPayloadToBudget(
+      buildStage2ReviewPayload({ dossier, draft }),
+    );
     const review = await generateProposalObject({
+      articleId: dossier.article.articleId,
+      stageName: "stage2_review",
       system: buildPassBSystemPrompt(),
-      prompt: buildPassBUserPrompt({
-        articleDossier: toPromptArticlePayload(dossier),
-        draftProposals: draft,
-      }),
+      prompt: buildPassBUserPrompt(reviewPayload),
+      reasoningEffort: STAGE2_REVIEW_REASONING_EFFORT,
+      payload: reviewPayload,
+      selectedProductCount: reviewPayload.reviewProductCards.length,
+      maxOutputTokens: STAGE2_REVIEW_MAX_OUTPUT_TOKENS,
+      abortSignal: options?.abortSignal,
     });
 
     return { draft, review, strategy };
   }
 
-  const chunks = chunkProductThreads(dossier.productThreads);
+  const chunks = planStage2Chunks(dossier);
   await onStageChange?.(
     "stage2_draft",
     `Drafting article-wide cases across ${chunks.length} dossier chunks.`,
   );
+  let completedChunks = 0;
+  const stage2ChunkProgressStep = Math.max(1, Math.ceil(chunks.length / 8));
   const chunkDrafts = await mapWithConcurrency(
     chunks,
     STAGE2_CHUNK_PROPOSAL_CONCURRENCY,
     async (chunk, index) => {
+      throwIfPipelineAborted(options?.abortSignal);
       const chunkProductIds = new Set(chunk.map((item) => item.productId));
-      const chunkPayload = {
-        ...toPromptArticlePayload(dossier, chunkProductIds),
+      const chunkPayload = buildStage2ProposalPayload({
+        dossier,
+        productIds: chunkProductIds,
         chunkInfo: {
           chunkIndex: index + 1,
           chunkCount: chunks.length,
           productIds: [...chunkProductIds],
         },
-      };
+      });
 
       return generateProposalObject({
+        articleId: dossier.article.articleId,
+        stageName: "stage2_draft",
         system: buildPassASystemPrompt(),
         prompt: buildPassAUserPrompt(chunkPayload),
+        reasoningEffort: STAGE2_DRAFT_REASONING_EFFORT,
+        payload: chunkPayload,
+        chunkId: `chunk-${index + 1}-of-${chunks.length}`,
+        selectedProductCount: chunk.length,
+        maxOutputTokens: STAGE2_DRAFT_MAX_OUTPUT_TOKENS,
+        abortSignal: options?.abortSignal,
+      }).finally(async () => {
+        completedChunks += 1;
+
+        if (
+          completedChunks === chunks.length ||
+          completedChunks === 1 ||
+          completedChunks % stage2ChunkProgressStep === 0
+        ) {
+          await onStageChange?.(
+            "stage2_draft",
+            `Drafting article-wide cases across ${chunks.length} dossier chunks (${completedChunks}/${chunks.length}).`,
+          );
+        }
       });
     },
+    options,
   );
 
-  const draft: ProposalOutput = {
-    contractVersion: CASE_PROPOSAL_SCHEMA_VERSION,
-    reviewSummary: "Chunked draft proposals generated before final review.",
-    cases: chunkDrafts.flatMap((item) => item.cases),
-    unassignedProducts: chunkDrafts.flatMap((item) => item.unassignedProducts),
-    standaloneSignals: chunkDrafts.flatMap((item) => item.standaloneSignals),
-    ambiguousLinks: chunkDrafts.flatMap((item) => item.ambiguousLinks),
-    globalObservations: uniqueValues(
-      chunkDrafts.flatMap((item) => item.globalObservations),
-    ).slice(0, 12),
-  };
+  throwIfPipelineAborted(options?.abortSignal);
+  const draft = mergeProposalOutputs(
+    chunkDrafts,
+    "Chunked draft proposals generated before final review.",
+  );
 
   await onStageChange?.("stage2_review", "Reviewing and consolidating chunked case drafts.");
+  const reviewPayload = fitStage2ReviewPayloadToBudget(
+    buildStage2ReviewPayload({ dossier, draft }),
+  );
   const review = await generateProposalObject({
-      system: buildPassBSystemPrompt(),
-      prompt: buildPassBUserPrompt({
-        articleContext: {
-          article: dossier.article,
-          articleSummary: dossier.articleSummary,
-          crossProductSummaries: dossier.crossProductSummaries,
-        },
-        allProductThreads: dossier.productThreads.map((thread) => ({
-          productId: thread.productId,
-          sourceCounts: thread.sourceCounts,
-          summaryFeatures: thread.summaryFeatures,
-          mechanismEvidence: thread.mechanismEvidence,
-        })),
-        draftProposals: draft,
-      }),
+    articleId: dossier.article.articleId,
+    stageName: "stage2_review",
+    system: buildPassBSystemPrompt(),
+    prompt: buildPassBUserPrompt(reviewPayload),
+    reasoningEffort: STAGE2_REVIEW_REASONING_EFFORT,
+    payload: reviewPayload,
+    selectedProductCount: reviewPayload.reviewProductCards.length,
+    maxOutputTokens: STAGE2_REVIEW_MAX_OUTPUT_TOKENS,
+    abortSignal: options?.abortSignal,
   });
 
   return { draft, review, strategy };
@@ -2773,6 +4211,9 @@ function materializeCaseCandidates(input: {
         payload: {
           contractVersion: CASE_PROPOSAL_SCHEMA_VERSION,
           proposal: candidate,
+          incidents: input.proposal.incidents,
+          watchlists: input.proposal.watchlists,
+          noise: input.proposal.noise,
           unassignedProducts: input.proposal.unassignedProducts,
           standaloneSignals: input.proposal.standaloneSignals,
           ambiguousLinks: input.proposal.ambiguousLinks,
@@ -2837,6 +4278,9 @@ function extractUnclusteredState(input: {
 
   if (!parsed) {
     return {
+      incidents: [] as ArticleCaseboardReadModel["incidents"],
+      watchlists: [] as ArticleCaseboardReadModel["watchlists"],
+      noise: [] as ArticleCaseboardReadModel["noise"],
       unassignedProducts: [] as ArticleCaseboardReadModel["unassignedProducts"],
       standaloneSignals: [] as ArticleCaseboardReadModel["standaloneSignals"],
       ambiguousLinks: [] as ArticleCaseboardReadModel["ambiguousLinks"],
@@ -2845,6 +4289,16 @@ function extractUnclusteredState(input: {
   }
 
   const standaloneBySignalId = new Map<string, ProposalStandaloneSignal>();
+  const typedProductIds = new Set<string>([
+    ...parsed.incidents.map((item) => item.productId),
+    ...parsed.watchlists.flatMap((item) => item.linkedProductIds),
+    ...parsed.noise.flatMap((item) => item.linkedProductIds),
+  ]);
+  const typedSignalIds = new Set<string>([
+    ...parsed.incidents.flatMap((item) => item.includedSignalIds),
+    ...parsed.watchlists.flatMap((item) => item.linkedSignalIds),
+    ...parsed.noise.flatMap((item) => item.linkedSignalIds),
+  ]);
 
   for (const item of parsed.standaloneSignals) {
     if (!standaloneBySignalId.has(item.signalId)) {
@@ -2853,10 +4307,18 @@ function extractUnclusteredState(input: {
   }
 
   return {
+    incidents: parsed.incidents.filter((item) => productIdSet.has(item.productId)),
+    watchlists: parsed.watchlists.filter((item) =>
+      item.linkedProductIds.some((productId) => productIdSet.has(productId)),
+    ),
+    noise: parsed.noise.filter((item) =>
+      item.linkedProductIds.some((productId) => productIdSet.has(productId)),
+    ),
     unassignedProducts: parsed.unassignedProducts.filter(
       (item) =>
         productIdSet.has(item.productId) &&
-        !assignedProductIds.has(item.productId),
+        !assignedProductIds.has(item.productId) &&
+        !typedProductIds.has(item.productId),
     ),
     standaloneSignals: [...standaloneBySignalId.values()].filter((item) => {
       const signal = signalLookup.get(item.signalId);
@@ -2865,7 +4327,8 @@ function extractUnclusteredState(input: {
         Boolean(signal) &&
         signal?.productId === item.productId &&
         signal?.signalType === item.signalType &&
-        !assignedSignalIds.has(item.signalId)
+        !assignedSignalIds.has(item.signalId) &&
+        !typedSignalIds.has(item.signalId)
       );
     }),
     ambiguousLinks: parsed.ambiguousLinks.filter((item) =>
@@ -2876,7 +4339,22 @@ function extractUnclusteredState(input: {
 }
 
 function parseStage2FromReviewPayload(payload: unknown) {
-  const direct = clusteringProposalSchema.safeParse(payload);
+  const normalizeProposalPayload = (value: unknown) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return value;
+    }
+
+    const proposal = value as Record<string, unknown>;
+
+    return {
+      ...proposal,
+      incidents: Array.isArray(proposal.incidents) ? proposal.incidents : [],
+      watchlists: Array.isArray(proposal.watchlists) ? proposal.watchlists : [],
+      noise: Array.isArray(proposal.noise) ? proposal.noise : [],
+    };
+  };
+
+  const direct = clusteringProposalSchema.safeParse(normalizeProposalPayload(payload));
 
   if (direct.success) {
     return direct.data;
@@ -2884,7 +4362,7 @@ function parseStage2FromReviewPayload(payload: unknown) {
 
   if (payload && typeof payload === "object" && "stage2" in payload) {
     const nested = clusteringProposalSchema.safeParse(
-      (payload as { stage2?: unknown }).stage2,
+      normalizeProposalPayload((payload as { stage2?: unknown }).stage2),
     );
 
     if (nested.success) {
@@ -2991,6 +4469,9 @@ function buildArticleCaseSetSummary(input: {
           : [],
       };
     }),
+    incidents: input.stage2.incidents,
+    watchlists: input.stage2.watchlists,
+    noise: input.stage2.noise,
     unassignedProducts: input.stage2.unassignedProducts,
     standaloneSignals: input.stage2.standaloneSignals,
     ambiguousProducts: input.stage2.ambiguousLinks,
@@ -3007,15 +4488,17 @@ function buildGlobalReconciliationContext(input: {
   const tests = productThreads.flatMap((thread) => thread.tests);
   const weeklySummaryByWeek = new Map<
     string,
-    { defectCount: number; claimCount: number; reworkCount: number }
+    { productsBuilt: number; defectCount: number; claimCount: number; reworkCount: number }
   >();
 
   for (const summary of input.dossiers.flatMap((dossier) => dossier.weeklyQualitySummaries)) {
     const current = weeklySummaryByWeek.get(summary.weekStart) ?? {
+      productsBuilt: 0,
       defectCount: 0,
       claimCount: 0,
       reworkCount: 0,
     };
+    current.productsBuilt += summary.productsBuilt;
     current.defectCount += summary.defectCount;
     current.claimCount += summary.claimCount;
     current.reworkCount += summary.reworkCount;
@@ -3118,6 +4601,12 @@ function buildGlobalReconciliationContext(input: {
         .map(([weekStart, value]) => ({
           weekStart,
           ...value,
+          defectRatePerBuilt:
+            value.productsBuilt > 0 ? value.defectCount / value.productsBuilt : null,
+          claimRatePerBuilt:
+            value.productsBuilt > 0 ? value.claimCount / value.productsBuilt : null,
+          reworkRatePerBuilt:
+            value.productsBuilt > 0 ? value.reworkCount / value.productsBuilt : null,
         })),
       testResultBandSummaries,
       fieldClaimLagSummaries,
@@ -3158,12 +4647,15 @@ async function runGlobalReconciliation(input: {
   currentDossier: ClusteredArticleDossier;
   currentStage2: ProposalOutput;
   currentCandidates: TeamCaseCandidateRecord[];
+  abortSignal?: AbortSignal;
 }) {
+  throwIfPipelineAborted(input.abortSignal);
   const latestCompletedRuns = await loadLatestCompletedArticleRuns();
   const persistedEntries = await mapWithConcurrency(
     latestCompletedRuns.filter((row) => row.article_id !== input.currentArticleId),
     STAGE3_ARTICLE_LOAD_CONCURRENCY,
     async (row) => {
+      throwIfPipelineAborted(input.abortSignal);
       const stage2 = parseStage2FromReviewPayload(row.review_payload);
 
       if (!stage2) {
@@ -3192,6 +4684,7 @@ async function runGlobalReconciliation(input: {
         }),
       };
     },
+    { abortSignal: input.abortSignal },
   );
 
   const currentCaseSet = buildArticleCaseSetSummary({
@@ -3216,7 +4709,9 @@ async function runGlobalReconciliation(input: {
   });
 
   return generateGlobalReconciliationObject({
+    articleId: input.currentArticleId,
     payload: context,
+    abortSignal: input.abortSignal,
   });
 }
 
@@ -3283,7 +4778,10 @@ async function getLatestGlobalRunWithInventory() {
   };
 }
 
-export async function runArticleCaseClustering(articleId: string) {
+export async function runArticleCaseClustering(
+  articleId: string,
+  options?: PipelineExecutionOptions,
+) {
   if (!capabilities.hasPostgres) {
     throw new Error("Case clustering requires DATABASE_URL.");
   }
@@ -3294,6 +4792,7 @@ export async function runArticleCaseClustering(articleId: string) {
 
   const normalizedArticleId =
     normalizeUiIdentifier(articleId) ?? articleId.replace(/\s+/g, "").trim().toUpperCase();
+  throwIfPipelineAborted(options?.abortSignal);
   const preloadedMeta = await loadArticleMeta(normalizedArticleId);
 
   if (!preloadedMeta.article || !preloadedMeta.products.length) {
@@ -3327,14 +4826,19 @@ export async function runArticleCaseClustering(articleId: string) {
   });
 
   try {
-    const dossier = await buildArticleDossier(normalizedArticleId, async (stage, detail) => {
-      await updateTeamCaseRunStage({
-        id: runId,
-        currentStage: stage,
-        stageDetail: detail,
-      });
-    });
+    const dossier = await buildArticleDossier(
+      normalizedArticleId,
+      async (stage, detail) => {
+        await updateTeamCaseRunStage({
+          id: runId,
+          currentStage: stage,
+          stageDetail: detail,
+        });
+      },
+      options,
+    );
 
+    throwIfPipelineAborted(options?.abortSignal);
     await updateTeamCaseRunStage({
       id: runId,
       currentStage: "stage1_synthesis",
@@ -3344,13 +4848,18 @@ export async function runArticleCaseClustering(articleId: string) {
       signalCount: dossier.article.totalSignals,
     });
 
-    const proposalPass = await runProposalPass(dossier, async (stage, detail) => {
-      await updateTeamCaseRunStage({
-        id: runId,
-        currentStage: stage,
-        stageDetail: detail,
-      });
-    });
+    const proposalPass = await runProposalPass(
+      dossier,
+      async (stage, detail) => {
+        await updateTeamCaseRunStage({
+          id: runId,
+          currentStage: stage,
+          stageDetail: detail,
+        });
+      },
+      options,
+    );
+    throwIfPipelineAborted(options?.abortSignal);
     const candidates = materializeCaseCandidates({
       articleId: dossier.article.articleId,
       runId,
@@ -3371,6 +4880,7 @@ export async function runArticleCaseClustering(articleId: string) {
     });
 
     const persistedCandidates = await listTeamCaseCandidatesForRun(runId);
+    throwIfPipelineAborted(options?.abortSignal);
 
     await updateTeamCaseRunStage({
       id: runId,
@@ -3384,6 +4894,7 @@ export async function runArticleCaseClustering(articleId: string) {
       currentDossier: dossier,
       currentStage2: proposalPass.review,
       currentCandidates: persistedCandidates,
+      abortSignal: options?.abortSignal,
     });
 
     const reviewPayload: CasePipelineReviewPayload = {
@@ -3414,8 +4925,14 @@ export async function runArticleCaseClustering(articleId: string) {
   } catch (error) {
     await failTeamCaseRun({
       id: runId,
-      errorMessage: error instanceof Error ? error.message : String(error),
-      stageDetail: "Pipeline failed before completion.",
+      errorMessage: isPipelineStopError(error)
+        ? STOPPED_PIPELINE_MESSAGE
+        : error instanceof Error
+          ? error.message
+          : String(error),
+      stageDetail: isPipelineStopError(error)
+        ? STOPPED_PIPELINE_MESSAGE
+        : "Pipeline failed before completion.",
     });
 
     throw error;
@@ -3435,7 +4952,34 @@ async function loadAllClusterableArticleIds() {
   return rows.map((row) => row.article_id);
 }
 
-export async function runArticleCaseClusteringBatch(articleIds?: string[]) {
+export type ArticleCaseClusteringBatchResult = {
+  articleId: string;
+  ok: boolean;
+  runId: string | null;
+  caseCount: number;
+  validatedCount: number;
+  watchlistCount: number;
+  noiseCount: number;
+  error: string | null;
+  completedAt: string;
+};
+
+export async function runArticleCaseClusteringBatch(input?: {
+  articleIds?: string[];
+  onStart?: (payload: {
+    requestedArticleIds: string[];
+    concurrency: number;
+    totalArticleCount: number;
+  }) => Promise<void> | void;
+  onArticleComplete?: (payload: {
+    result: ArticleCaseClusteringBatchResult;
+    okCount: number;
+    errorCount: number;
+    completedCount: number;
+    totalArticleCount: number;
+  }) => Promise<void> | void;
+  abortSignal?: AbortSignal;
+}) {
   if (!capabilities.hasPostgres) {
     throw new Error("Case clustering requires DATABASE_URL.");
   }
@@ -3445,29 +4989,44 @@ export async function runArticleCaseClusteringBatch(articleIds?: string[]) {
   }
 
   const requestedIds =
-    articleIds?.map((articleId) => normalizeUiIdentifier(articleId)).filter(Boolean) ?? [];
+    input?.articleIds?.map((articleId) => normalizeUiIdentifier(articleId)).filter(Boolean) ?? [];
+  throwIfPipelineAborted(input?.abortSignal);
   const targetArticleIds = requestedIds.length
     ? uniqueValues(requestedIds)
     : await loadAllClusterableArticleIds();
+  let okCount = 0;
+  let errorCount = 0;
+  let completedCount = 0;
+
+  await input?.onStart?.({
+    requestedArticleIds: targetArticleIds,
+    concurrency: ARTICLE_PIPELINE_CONCURRENCY,
+    totalArticleCount: targetArticleIds.length,
+  });
 
   const results = await mapWithConcurrency(
     targetArticleIds,
     ARTICLE_PIPELINE_CONCURRENCY,
     async (articleId) => {
+      throwIfPipelineAborted(input?.abortSignal);
+      let result: Omit<ArticleCaseClusteringBatchResult, "completedAt">;
+
       try {
-        const result = await runArticleCaseClustering(articleId);
-        return {
+        const articleResult = await runArticleCaseClustering(articleId, {
+          abortSignal: input?.abortSignal,
+        });
+        result = {
           articleId,
           ok: true as const,
-          runId: result.latestRun?.id ?? null,
-          caseCount: result.proposedCases.length,
-          validatedCount: result.globalInventory?.validatedCases.length ?? 0,
-          watchlistCount: result.globalInventory?.watchlists.length ?? 0,
-          noiseCount: result.globalInventory?.noiseBuckets.length ?? 0,
+          runId: articleResult.latestRun?.id ?? null,
+          caseCount: articleResult.proposedCases.length,
+          validatedCount: articleResult.globalInventory?.validatedCases.length ?? 0,
+          watchlistCount: articleResult.globalInventory?.watchlists.length ?? 0,
+          noiseCount: articleResult.globalInventory?.noiseBuckets.length ?? 0,
           error: null,
         };
       } catch (error) {
-        return {
+        result = {
           articleId,
           ok: false as const,
           runId: null,
@@ -3478,7 +5037,31 @@ export async function runArticleCaseClusteringBatch(articleIds?: string[]) {
           error: error instanceof Error ? error.message : String(error),
         };
       }
+
+      const completedResult = {
+        ...result,
+        completedAt: new Date().toISOString(),
+      } satisfies ArticleCaseClusteringBatchResult;
+
+      completedCount += 1;
+
+      if (completedResult.ok) {
+        okCount += 1;
+      } else {
+        errorCount += 1;
+      }
+
+      await input?.onArticleComplete?.({
+        result: completedResult,
+        okCount,
+        errorCount,
+        completedCount,
+        totalArticleCount: targetArticleIds.length,
+      });
+
+      return completedResult;
     },
+    { abortSignal: input?.abortSignal },
   );
 
   const latestGlobalSnapshot = await getLatestGlobalRunWithInventory();
@@ -3486,8 +5069,8 @@ export async function runArticleCaseClusteringBatch(articleIds?: string[]) {
   return {
     requestedArticleIds: targetArticleIds,
     concurrency: ARTICLE_PIPELINE_CONCURRENCY,
-    okCount: results.filter((item) => item.ok).length,
-    errorCount: results.filter((item) => !item.ok).length,
+    okCount,
+    errorCount,
     results,
     latestGlobalRun: latestGlobalSnapshot.latestGlobalRun,
     globalInventory: latestGlobalSnapshot.globalInventory,
@@ -3627,6 +5210,9 @@ export const getArticleCaseboard = memoizeWithTtl(
       dossier: hydratedDossier,
       latestRun,
       proposedCases,
+      incidents: unclusteredState.incidents,
+      watchlists: unclusteredState.watchlists,
+      noise: unclusteredState.noise,
       unassignedProducts: unclusteredState.unassignedProducts,
       standaloneSignals: unclusteredState.standaloneSignals,
       ambiguousLinks: unclusteredState.ambiguousLinks,

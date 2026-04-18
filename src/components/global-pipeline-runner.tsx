@@ -1,26 +1,42 @@
 "use client";
 
-import { LoaderCircle, Play, Trash2, Workflow } from "lucide-react";
+import { LoaderCircle, Play, Square, Trash2, Workflow } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
 import type {
   TeamCaseRunSummary,
   TeamClusteringResetSummary,
 } from "@/lib/manex-case-clustering-state";
 import { formatUiDateTime } from "@/lib/ui-format";
 
+type BatchArticleResult = {
+  articleId: string;
+  ok: boolean;
+  runId: string | null;
+  caseCount: number;
+  validatedCount: number;
+  watchlistCount: number;
+  noiseCount: number;
+  error: string | null;
+  completedAt: string;
+};
+
 type BatchStatus = {
   status: "idle" | "running" | "completed" | "failed";
   requestedArticleIds: string[];
+  totalArticleCount: number;
   startedAt: string | null;
   completedAt: string | null;
+  lastUpdatedAt: string | null;
   concurrency: number | null;
   okCount: number;
   errorCount: number;
   errorMessage: string | null;
+  articleResults: BatchArticleResult[];
 };
 
 type ResetStatus = {
@@ -35,6 +51,7 @@ type StatusPayload = {
   activeRuns: TeamCaseRunSummary[];
   runningArticleCount: number;
   stageCounts: Record<string, number>;
+  message?: string;
   error?: string;
 };
 
@@ -59,9 +76,17 @@ const stageLabels: Record<string, string> = {
   completed: "Completed",
   failed: "Failed",
 };
+const STOPPED_PIPELINE_MESSAGE = "Pipeline stopped by user.";
 
 function formatStage(stage: string) {
   return stageLabels[stage] ?? stage.replaceAll("_", " ");
+}
+
+function buildInitialStageCounts(activeRuns: TeamCaseRunSummary[]) {
+  return activeRuns.reduce<Record<string, number>>((counts, run) => {
+    counts[run.currentStage] = (counts[run.currentStage] ?? 0) + 1;
+    return counts;
+  }, {});
 }
 
 export function GlobalPipelineRunner({
@@ -70,26 +95,42 @@ export function GlobalPipelineRunner({
 }: GlobalPipelineRunnerProps) {
   const router = useRouter();
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
   const [feedback, setFeedback] = useState<FeedbackState | null>(null);
   const [activeRuns, setActiveRuns] = useState(initialActiveRuns);
+  const [stageCounts, setStageCounts] = useState<Record<string, number>>(
+    buildInitialStageCounts(initialActiveRuns),
+  );
   const [batch, setBatch] = useState<BatchStatus>({
     status: initialActiveRuns.length ? "running" : "idle",
     requestedArticleIds: [],
+    totalArticleCount: 0,
     startedAt: null,
     completedAt: null,
+    lastUpdatedAt: null,
     concurrency: null,
     okCount: 0,
     errorCount: 0,
     errorMessage: null,
+    articleResults: [],
   });
   const [reset, setReset] = useState<ResetStatus>({
     completedAt: null,
     summary: null,
   });
+  const batchRef = useRef(batch);
+
+  useEffect(() => {
+    batchRef.current = batch;
+  }, [batch]);
 
   const shouldPoll =
-    batch.status === "running" || activeRuns.length > 0 || isSubmitting || isResetting;
+    batch.status === "running" ||
+    activeRuns.length > 0 ||
+    isSubmitting ||
+    isStopping ||
+    isResetting;
 
   async function refreshStatus() {
     const response = await fetch("/api/articles/cluster-all", {
@@ -102,9 +143,33 @@ export function GlobalPipelineRunner({
       throw new Error(payload.error ?? "Could not refresh pipeline status.");
     }
 
+    const previousBatch = batchRef.current;
+
+    if (previousBatch.status === "running" && payload.batch.status === "completed") {
+      setFeedback({
+        tone: "success",
+        text: `Complete pipeline finished. ${payload.batch.okCount} article runs completed successfully.`,
+      });
+    } else if (previousBatch.status === "running" && payload.batch.status === "failed") {
+      if (payload.batch.errorMessage === STOPPED_PIPELINE_MESSAGE) {
+        setFeedback({
+          tone: "success",
+          text: "Pipeline stopped.",
+        });
+      } else {
+        setFeedback({
+          tone: "error",
+          text:
+            payload.batch.errorMessage ??
+            "The complete pipeline finished with one or more failed article runs.",
+        });
+      }
+    }
+
     setBatch(payload.batch);
     setReset(payload.reset);
     setActiveRuns(payload.activeRuns);
+    setStageCounts(payload.stageCounts);
     return payload;
   }
 
@@ -127,7 +192,7 @@ export function GlobalPipelineRunner({
       } catch {
         // Ignore transient polling failures and keep the last visible state.
       }
-    }, 3000);
+    }, 1500);
 
     return () => {
       cancelled = true;
@@ -149,7 +214,10 @@ export function GlobalPipelineRunner({
         body: JSON.stringify({}),
       });
 
-      const payload = (await response.json()) as StatusPayload & { accepted?: boolean; error?: string };
+      const payload = (await response.json()) as StatusPayload & {
+        accepted?: boolean;
+        error?: string;
+      };
 
       if (!response.ok || !payload.ok) {
         setFeedback({
@@ -160,7 +228,9 @@ export function GlobalPipelineRunner({
       }
 
       setBatch(payload.batch);
+      setReset(payload.reset);
       setActiveRuns(payload.activeRuns);
+      setStageCounts(payload.stageCounts);
       setFeedback({
         tone: "success",
         text: "Complete pipeline started. The dashboard will keep polling live stage progress.",
@@ -210,6 +280,7 @@ export function GlobalPipelineRunner({
       setBatch(payload.batch);
       setReset(payload.reset);
       setActiveRuns(payload.activeRuns);
+      setStageCounts(payload.stageCounts);
 
       const summary = payload.reset.summary;
       setFeedback({
@@ -231,6 +302,55 @@ export function GlobalPipelineRunner({
       setIsResetting(false);
     }
   }
+
+  async function stopPipeline() {
+    setIsStopping(true);
+    setFeedback(null);
+
+    try {
+      const response = await fetch("/api/articles/cluster-all", {
+        method: "PATCH",
+      });
+
+      const payload = (await response.json()) as StatusPayload;
+
+      if (!response.ok || !payload.ok) {
+        setFeedback({
+          tone: "error",
+          text: payload.error ?? "The pipeline could not be stopped.",
+        });
+        return;
+      }
+
+      setBatch(payload.batch);
+      setReset(payload.reset);
+      setActiveRuns(payload.activeRuns);
+      setStageCounts(payload.stageCounts);
+      setFeedback({
+        tone: "success",
+        text: payload.message ?? "Pipeline stopped.",
+      });
+      router.refresh();
+    } catch (error) {
+      setFeedback({
+        tone: "error",
+        text:
+          error instanceof Error ? error.message : "The pipeline could not be stopped.",
+      });
+    } finally {
+      setIsStopping(false);
+    }
+  }
+
+  const totalArticleCount = batch.totalArticleCount || batch.requestedArticleIds.length;
+  const finishedArticleCount = batch.okCount + batch.errorCount;
+  const queuedArticleCount = Math.max(
+    0,
+    totalArticleCount - activeRuns.length - finishedArticleCount,
+  );
+  const progressValue = totalArticleCount
+    ? Math.round((finishedArticleCount / totalArticleCount) * 100)
+    : 0;
 
   const headline = useMemo(() => {
     if (batch.status === "running" || activeRuns.length > 0) {
@@ -261,24 +381,68 @@ export function GlobalPipelineRunner({
       </div>
 
       <p className="text-sm leading-6 text-[var(--muted-foreground)]">
-        Launch the full dataset pipeline from Global Intelligence. This triggers all
-        article runs with bounded concurrency and keeps the dashboard updated with the
-        current stage for every active article run.
+        Launch the full dataset pipeline from Global Intelligence. This now reports
+        queue depth, live stage distribution, and article-by-article outcomes while
+        the batch is still running.
       </p>
 
       <div className="flex flex-wrap gap-2">
         <Badge>{hasAi ? "GPT pipeline enabled" : "OpenAI key missing"}</Badge>
         <Badge variant="outline">{headline}</Badge>
+        {totalArticleCount ? <Badge variant="outline">{totalArticleCount} articles</Badge> : null}
         {batch.concurrency ? (
           <Badge variant="outline">Concurrency {batch.concurrency}</Badge>
         ) : null}
       </div>
 
-      <div className="grid gap-3 md:grid-cols-2">
+      <div className="rounded-[22px] border border-white/10 bg-black/8 px-4 py-4">
+        <div className="mb-2 flex items-center justify-between gap-3 text-sm">
+          <span className="font-medium">Batch progress</span>
+          <span className="text-[var(--muted-foreground)]">{progressValue}%</span>
+        </div>
+        <Progress value={progressValue} />
+
+        <div className="mt-4 grid gap-3 sm:grid-cols-4">
+          <div className="rounded-[18px] bg-[color:var(--surface-low)] px-3 py-3">
+            <div className="eyebrow">Queued</div>
+            <div className="mt-2 text-2xl font-semibold">{queuedArticleCount}</div>
+          </div>
+          <div className="rounded-[18px] bg-[color:var(--surface-low)] px-3 py-3">
+            <div className="eyebrow">Running</div>
+            <div className="mt-2 text-2xl font-semibold">{activeRuns.length}</div>
+          </div>
+          <div className="rounded-[18px] bg-[color:var(--surface-low)] px-3 py-3">
+            <div className="eyebrow">Completed</div>
+            <div className="mt-2 text-2xl font-semibold">{batch.okCount}</div>
+          </div>
+          <div className="rounded-[18px] bg-[color:var(--surface-low)] px-3 py-3">
+            <div className="eyebrow">Failed</div>
+            <div className="mt-2 text-2xl font-semibold">{batch.errorCount}</div>
+          </div>
+        </div>
+
+        {Object.entries(stageCounts).length ? (
+          <div className="mt-4 flex flex-wrap gap-2">
+            {Object.entries(stageCounts).map(([stage, count]) => (
+              <Badge key={stage} variant="outline">
+                {formatStage(stage)}: {count}
+              </Badge>
+            ))}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-3">
         <Button
           size="lg"
           onClick={runCompletePipeline}
-          disabled={isSubmitting || isResetting || batch.status === "running" || !hasAi}
+          disabled={
+            isSubmitting ||
+            isStopping ||
+            isResetting ||
+            batch.status === "running" ||
+            !hasAi
+          }
           className="w-full"
         >
           {isSubmitting ? (
@@ -301,9 +465,40 @@ export function GlobalPipelineRunner({
 
         <Button
           size="lg"
+          variant="outline"
+          onClick={stopPipeline}
+          disabled={
+            isSubmitting ||
+            isResetting ||
+            isStopping ||
+            (batch.status !== "running" && activeRuns.length === 0)
+          }
+          className="w-full"
+        >
+          {isStopping ? (
+            <>
+              <LoaderCircle className="size-4 animate-spin" />
+              Stopping pipeline
+            </>
+          ) : (
+            <>
+              <Square className="size-4" />
+              Stop pipeline
+            </>
+          )}
+        </Button>
+
+        <Button
+          size="lg"
           variant="destructive"
           onClick={resetClusteringState}
-          disabled={isSubmitting || isResetting || batch.status === "running" || activeRuns.length > 0}
+          disabled={
+            isSubmitting ||
+            isStopping ||
+            isResetting ||
+            batch.status === "running" ||
+            activeRuns.length > 0
+          }
           className="w-full"
         >
           {isResetting ? (
@@ -342,14 +537,48 @@ export function GlobalPipelineRunner({
           ))
         ) : (
           <div className="rounded-[22px] border border-dashed border-white/10 bg-black/8 px-4 py-4 text-sm leading-6 text-[var(--muted-foreground)]">
-            {batch.status === "completed"
-              ? `Last batch completed at ${
+            {batch.status === "completed" || batch.status === "failed"
+              ? `Last batch finished at ${
                   batch.completedAt ? formatUiDateTime(batch.completedAt) : "an unknown time"
                 }.`
               : "No active article runs right now."}
           </div>
         )}
       </div>
+
+      {batch.articleResults.length ? (
+        <div className="space-y-3">
+          <div className="eyebrow">Recent article outcomes</div>
+          {batch.articleResults.slice(0, 8).map((result) => (
+            <div
+              key={`${result.articleId}-${result.completedAt}`}
+              className="rounded-[22px] border border-white/10 bg-black/8 px-4 py-4"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge>{result.articleId}</Badge>
+                <Badge
+                  className={
+                    result.ok
+                      ? "bg-[color:rgba(0,92,151,0.08)] text-[var(--primary)]"
+                      : "bg-[color:rgba(178,69,63,0.08)] text-[var(--destructive)]"
+                  }
+                >
+                  {result.ok ? "Completed" : "Failed"}
+                </Badge>
+                {result.runId ? <Badge variant="outline">{result.runId}</Badge> : null}
+              </div>
+              <p className="mt-3 text-sm leading-6 text-[var(--muted-foreground)]">
+                {result.ok
+                  ? `${result.caseCount} proposed cases, ${result.validatedCount} validated cases, ${result.watchlistCount} watchlists, and ${result.noiseCount} noise buckets.`
+                  : result.error ?? "This article run failed."}
+              </p>
+              <p className="mt-2 text-xs uppercase tracking-[0.16em] text-[var(--muted-foreground)]">
+                Updated {formatUiDateTime(result.completedAt)}
+              </p>
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       {reset.summary ? (
         <div className="rounded-[22px] border border-white/10 bg-black/8 px-4 py-4 text-sm leading-6 text-[var(--muted-foreground)]">
@@ -374,7 +603,7 @@ export function GlobalPipelineRunner({
         </div>
       ) : null}
 
-      {batch.errorMessage ? (
+      {batch.errorMessage && batch.errorMessage !== STOPPED_PIPELINE_MESSAGE ? (
         <div className="rounded-[22px] bg-[color:rgba(178,69,63,0.08)] px-4 py-3 text-sm text-[var(--destructive)]">
           {batch.errorMessage}
         </div>
