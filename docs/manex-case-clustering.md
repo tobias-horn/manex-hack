@@ -84,6 +84,9 @@ The clustering pass is intentionally constrained:
   functional clusters separate when the evidence supports it
 - it returns strict JSON so the output is persistable and forward-compatible
 
+The default model is `gpt-5.4-mini` so article clustering stays responsive while
+still using the GPT-5.4 family for structured reasoning.
+
 Chunking is built in for larger article families:
 
 - pass A proposes cases per chunk of product threads

@@ -47,7 +47,7 @@ There is also a JSON proof endpoint at `/api/data-connection`.
 - `MANEX_STUDIO_URL`: optional Supabase Studio URL for SQL debugging
 - `MANEX_ASSET_BASE_URL`: optional host for defect images
 - `OPENAI_API_KEY`: optional, enables live copilot responses
-- `OPENAI_MODEL`: optional, defaults to `gpt-4.1-mini`
+- `OPENAI_MODEL`: optional, defaults to `gpt-5.4-mini`
 
 If any integration is missing, the UI falls back to grounded demo data based on `design.MD` and the archived Manex dataset docs, so the shell still renders end to end.
 
