@@ -1,2 +1,0 @@
-google-genai>=0.7.0
-faker>=25.0.0

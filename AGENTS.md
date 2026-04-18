@@ -1,5 +1,7 @@
-<!-- BEGIN:nextjs-agent-rules -->
-# This is NOT the Next.js you know
+This is a project for a hackathon. Information about the challenge and data is available here. 
 
-This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
-<!-- END:nextjs-agent-rules -->
+https://github.com/bestler/Thinc-Hackathon-2026-Manex
+
+We are working in a team on this project. Commit timely to avoid merge conflicts. Implement everything in a clean, reproducible way. 
+
+Use md files to document your work. Save context that might be helpful for llms later. 

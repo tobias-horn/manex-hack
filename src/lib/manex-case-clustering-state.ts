@@ -59,6 +59,14 @@ export type TeamCaseRunSummary = {
   reviewPayload?: unknown;
 };
 
+export type TeamClusteringResetSummary = {
+  productDossiers: number;
+  articleDossiers: number;
+  runs: number;
+  candidates: number;
+  candidateMembers: number;
+};
+
 export type TeamPersistedProductDossierRecord<TPayload = unknown> = {
   productId: string;
   articleId: string;
@@ -489,6 +497,54 @@ export async function ensureTeamCaseClusteringState() {
   }
 
   return ensurePromise;
+}
+
+export async function resetTeamCaseClusteringState() {
+  await ensureTeamCaseClusteringState();
+
+  return withClient<TeamClusteringResetSummary>(async (client) => {
+    await client.query("BEGIN");
+
+    try {
+      const countRows = await client.query<
+        QueryResultRow & {
+          product_dossiers: number | string | null;
+          article_dossiers: number | string | null;
+          runs: number | string | null;
+          candidates: number | string | null;
+          candidate_members: number | string | null;
+        }
+      >(`
+        SELECT
+          (SELECT COUNT(*)::int FROM team_product_dossier) AS product_dossiers,
+          (SELECT COUNT(*)::int FROM team_article_dossier) AS article_dossiers,
+          (SELECT COUNT(*)::int FROM team_case_run) AS runs,
+          (SELECT COUNT(*)::int FROM team_case_candidate) AS candidates,
+          (SELECT COUNT(*)::int FROM team_case_candidate_member) AS candidate_members
+      `);
+
+      const counts = countRows.rows[0];
+
+      await client.query("DELETE FROM team_case_candidate_member");
+      await client.query("DELETE FROM team_case_candidate");
+      await client.query("DELETE FROM team_case_run");
+      await client.query("DELETE FROM team_article_dossier");
+      await client.query("DELETE FROM team_product_dossier");
+
+      await client.query("COMMIT");
+
+      return {
+        productDossiers: normalizeInteger(counts?.product_dossiers),
+        articleDossiers: normalizeInteger(counts?.article_dossiers),
+        runs: normalizeInteger(counts?.runs),
+        candidates: normalizeInteger(counts?.candidates),
+        candidateMembers: normalizeInteger(counts?.candidate_members),
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    }
+  });
 }
 
 const mapRunSummary = (row: CaseRunRow): TeamCaseRunSummary => ({

@@ -1,6 +1,10 @@
 import { capabilities } from "@/lib/env";
 import { runArticleCaseClusteringBatch } from "@/lib/manex-case-clustering";
-import { listActiveTeamCaseRuns } from "@/lib/manex-case-clustering-state";
+import {
+  listActiveTeamCaseRuns,
+  resetTeamCaseClusteringState,
+  type TeamClusteringResetSummary,
+} from "@/lib/manex-case-clustering-state";
 import { normalizeUiIdentifier } from "@/lib/ui-format";
 
 export const runtime = "nodejs";
@@ -22,6 +26,11 @@ type BatchStatus = {
   errorMessage: string | null;
 };
 
+type ResetStatus = {
+  completedAt: string | null;
+  summary: TeamClusteringResetSummary | null;
+};
+
 let activeBatchPromise: Promise<void> | null = null;
 let latestBatchStatus: BatchStatus = {
   status: "idle",
@@ -32,6 +41,10 @@ let latestBatchStatus: BatchStatus = {
   okCount: 0,
   errorCount: 0,
   errorMessage: null,
+};
+let latestResetStatus: ResetStatus = {
+  completedAt: null,
+  summary: null,
 };
 
 function validateCapabilities() {
@@ -54,11 +67,24 @@ function validateCapabilities() {
   return null;
 }
 
+function validatePostgresCapability() {
+  if (!capabilities.hasPostgres) {
+    return {
+      ok: false,
+      error: "Case clustering reset requires DATABASE_URL.",
+      status: 503,
+    } as const;
+  }
+
+  return null;
+}
+
 async function buildStatusPayload() {
   const activeRuns = await listActiveTeamCaseRuns();
 
   return {
     batch: latestBatchStatus,
+    reset: latestResetStatus,
     activeRuns,
     runningArticleCount: activeRuns.length,
     stageCounts: activeRuns.reduce<Record<string, number>>((counts, run) => {
@@ -186,6 +212,66 @@ export async function POST(request: Request) {
   return Response.json({
     ok: true,
     accepted: true,
+    ...(await buildStatusPayload()),
+  });
+}
+
+export async function DELETE() {
+  const capabilityError = validatePostgresCapability();
+
+  if (capabilityError) {
+    return Response.json(
+      {
+        ok: false,
+        error: capabilityError.error,
+      },
+      { status: capabilityError.status },
+    );
+  }
+
+  if (activeBatchPromise) {
+    return Response.json(
+      {
+        ok: false,
+        error: "A complete pipeline batch is still running. Wait for it to finish before resetting clustering state.",
+        ...(await buildStatusPayload()),
+      },
+      { status: 409 },
+    );
+  }
+
+  const existingStatus = await buildStatusPayload();
+
+  if (existingStatus.activeRuns.length > 0) {
+    return Response.json(
+      {
+        ok: false,
+        error: "There are active article runs in progress. Wait for them to finish before resetting clustering state.",
+        ...existingStatus,
+      },
+      { status: 409 },
+    );
+  }
+
+  const resetSummary = await resetTeamCaseClusteringState();
+  latestBatchStatus = {
+    status: "idle",
+    requestedArticleIds: [],
+    startedAt: null,
+    completedAt: null,
+    concurrency: null,
+    okCount: 0,
+    errorCount: 0,
+    errorMessage: null,
+  };
+  latestResetStatus = {
+    completedAt: new Date().toISOString(),
+    summary: resetSummary,
+  };
+
+  return Response.json({
+    ok: true,
+    reset: latestResetStatus,
     ...(await buildStatusPayload()),
   });
 }

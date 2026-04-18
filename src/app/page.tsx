@@ -4,7 +4,6 @@ import {
   Filter,
   FlaskConical,
   RefreshCcw,
-  Sparkles,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -19,7 +18,6 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { QualitySignalImage } from "@/components/quality-signal-image";
-import { DEMO_INBOX_JUMPS } from "@/lib/manex-demo";
 import {
   getQualityInbox,
   parseQualityInboxFilters,
@@ -27,7 +25,6 @@ import {
   type QualitySignal,
   type QualitySignalType,
 } from "@/lib/quality-inbox";
-import { DEFAULT_PRODUCT_DOSSIER_ID } from "@/lib/manex-product-dossier";
 import { formatUiDateTime } from "@/lib/ui-format";
 
 export const dynamic = "force-dynamic";
@@ -97,7 +94,7 @@ function ActiveFilters({ filters }: { filters: QualityInboxFilterState }) {
 
 function SignalCard({ item }: { item: QualitySignal }) {
   const showsImagePreview =
-    item.type === "defect" || item.type === "field_claim";
+    (item.type === "defect" || item.type === "field_claim") && Boolean(item.imageUrl);
 
   return (
     <article className="rounded-[26px] border border-white/8 bg-black/8 p-5">
@@ -135,18 +132,10 @@ function SignalCard({ item }: { item: QualitySignal }) {
             />
           </div>
         ) : null}
-
         <div className="rounded-[20px] bg-[color:var(--surface-low)] px-4 py-3 text-right">
           <div className="lab-stamp">{item.sourceLabel}</div>
           <div className="mt-2 text-sm font-medium">
             {formatUiDateTime(item.occurredAt)}
-          </div>
-          <div className="mt-4">
-            <Button
-              variant="outline"
-              size="sm"
-              render={<Link href={`/products/${item.productId}`}>Open dossier</Link>}
-            />
           </div>
         </div>
       </div>
@@ -166,23 +155,13 @@ export default async function Home({ searchParams }: HomeProps) {
       <ScreenState
         eyebrow="Inbox unavailable"
         title="The quality inbox could not be loaded"
-        description="The main symptom feed hit a temporary read failure. The rest of the demo surface is still available through the seeded jumps below."
+        description="The main symptom feed hit a temporary read failure. You can still continue into the proposed-cases workspace while the inbox data layer recovers."
         tone="error"
         actions={
-          <>
-            {DEMO_INBOX_JUMPS.slice(0, 2).map((jump) => (
-              <Button
-                key={jump.id}
-                size="lg"
-                variant="outline"
-                render={<Link href={jump.href}>{jump.label}</Link>}
-              />
-            ))}
-            <Button
-              size="lg"
-              render={<Link href={`/products/${DEFAULT_PRODUCT_DOSSIER_ID}`}>Open dossier</Link>}
-            />
-          </>
+          <Button
+            size="lg"
+            render={<Link href="/articles">Open proposed cases</Link>}
+          />
         }
       />
     );
@@ -199,20 +178,10 @@ export default async function Home({ searchParams }: HomeProps) {
                 Incoming quality signals
               </h1>
               <p className="max-w-3xl text-sm leading-6 text-[var(--muted-foreground)] sm:text-base">
-                This is the intake surface before case formation. It merges field
-                claims, factory defects, and outlier test results into one browsable
-                feed, then hands off into proposed cases and the investigation workspace.
+                This page merges field claims, factory defects, and outlier test
+                results into one browsable signal feed for triage.
               </p>
               <div className="flex flex-wrap gap-3">
-                <Button
-                  variant="outline"
-                  size="lg"
-                  render={
-                    <Link href={`/products/${DEFAULT_PRODUCT_DOSSIER_ID}`}>
-                      Open product dossier
-                    </Link>
-                  }
-                />
                 <Button
                   variant="outline"
                   size="lg"
@@ -227,11 +196,6 @@ export default async function Home({ searchParams }: HomeProps) {
                   variant="outline"
                   size="lg"
                   render={<Link href="/cases">Open case state layer</Link>}
-                />
-                <Button
-                  variant="outline"
-                  size="lg"
-                  render={<Link href="/workflow">Open workflow foundation</Link>}
                 />
               </div>
               <ActiveFilters filters={inbox.filters} />
@@ -433,73 +397,6 @@ export default async function Home({ searchParams }: HomeProps) {
                     />
                   </div>
                 </form>
-              </CardContent>
-            </Card>
-
-            <Card className="surface-panel rounded-[30px] px-0 py-0">
-              <CardHeader className="px-6 pt-6">
-                <Badge>
-                  <Sparkles className="size-3.5" />
-                  Intake notes
-                </Badge>
-                <CardTitle className="section-title mt-3">Why this is useful now</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4 px-5 pb-5">
-                <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                  <div className="eyebrow">No root cause leap</div>
-                  <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                    The inbox stays symptom-first so the team can triage what is arriving
-                    before locking onto explanations too early.
-                  </p>
-                </div>
-                <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                  <div className="eyebrow">Case-ready shape</div>
-                  <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                    Each signal already carries article, product, timestamp, and defect/test
-                    hints so later stages can cluster them into cases.
-                  </p>
-                </div>
-                <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                  <div className="eyebrow">No SQL needed</div>
-                  <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                    This page is backed by the domain data layer, so product work can consume
-                    structured quality signals instead of raw schema knowledge.
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card className="surface-panel rounded-[30px] px-0 py-0">
-              <CardHeader className="px-6 pt-6">
-                <Badge variant="outline">Demo jumps</Badge>
-                <CardTitle className="section-title mt-3">
-                  Seeded navigation
-                </CardTitle>
-                <CardDescription className="mt-2 leading-6">
-                  These links jump straight into reliable live views for the demo.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3 px-5 pb-5">
-                {DEMO_INBOX_JUMPS.map((jump) => (
-                  <article
-                    key={jump.id}
-                    className="rounded-[22px] bg-[color:var(--surface-low)] p-4"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="text-sm font-semibold">{jump.label}</div>
-                        <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                          {jump.description}
-                        </p>
-                      </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        render={<Link href={jump.href}>Open</Link>}
-                      />
-                    </div>
-                  </article>
-                ))}
               </CardContent>
             </Card>
           </div>

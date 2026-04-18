@@ -1,7 +1,6 @@
 "use client";
 
 import { LoaderCircle, Workflow } from "lucide-react";
-import Link from "next/link";
 import { useMemo, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -169,7 +168,7 @@ export function ProductActionPanel({
           placeholder="Describe the next containment or verification move."
         />
 
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
           <Button
             type="button"
             size="lg"
@@ -185,10 +184,6 @@ export function ProductActionPanel({
               "Create action"
             )}
           </Button>
-          <Button
-            variant="outline"
-            render={<Link href="/workflow">Open workflow board</Link>}
-          />
         </div>
 
         {feedback ? (
