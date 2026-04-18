@@ -20,10 +20,12 @@ import {
   failTeamCaseRun,
   getLatestTeamCaseRun,
   getTeamArticleDossierRecord,
+  listActiveTeamCaseRuns,
   listTeamArticleClusterCards,
   listTeamCaseCandidatesForProduct,
   listTeamCaseCandidatesForRun,
   replaceTeamCaseCandidatesForRun,
+  updateTeamCaseRunStage,
   upsertTeamArticleDossier,
   upsertTeamProductDossier,
   type TeamArticleClusterCard,
@@ -513,6 +515,7 @@ export type GlobalReconciliationOutput = z.infer<typeof globalReconciliationSche
 
 export type ProposedCasesDashboardReadModel = {
   articles: TeamArticleClusterCard[];
+  activeRuns: TeamCaseRunSummary[];
   articleQueues: Array<{
     articleId: string;
     articleName: string | null;
@@ -1511,7 +1514,10 @@ async function loadReworkByProduct(products: ProductRow[]) {
   );
 }
 
-async function buildArticleDossier(articleId: string): Promise<ClusteredArticleDossier> {
+async function buildArticleDossier(
+  articleId: string,
+  onStageChange?: (stage: "stage1_loading" | "stage1_synthesis", detail: string) => Promise<void>,
+): Promise<ClusteredArticleDossier> {
   if (!capabilities.hasPostgres) {
     throw new Error("Article dossier building requires DATABASE_URL.");
   }
@@ -1520,6 +1526,8 @@ async function buildArticleDossier(articleId: string): Promise<ClusteredArticleD
 
   const normalizedArticleId =
     normalizeUiIdentifier(articleId) ?? articleId.replace(/\s+/g, "").trim().toUpperCase();
+
+  await onStageChange?.("stage1_loading", "Loading deterministic article dossier.");
 
   const { article, products } = await loadArticleMeta(normalizedArticleId);
 
@@ -1619,6 +1627,11 @@ async function buildArticleDossier(articleId: string): Promise<ClusteredArticleD
         sourceCounts,
       };
     });
+
+  await onStageChange?.(
+    "stage1_synthesis",
+    `Synthesizing ${productThreadDrafts.length} product threads.`,
+  );
 
   const productThreads = await mapWithConcurrency(
     productThreadDrafts,
@@ -2235,14 +2248,20 @@ function chunkProductThreads(productThreads: ClusteredProductDossier[]) {
 
 async function runProposalPass(
   dossier: ClusteredArticleDossier,
+  onStageChange?: (stage: "stage2_draft" | "stage2_review", detail: string) => Promise<void>,
 ): Promise<{ draft: ProposalOutput; review: ProposalOutput; strategy: "single" | "chunked" }> {
   const strategy = chooseRunStrategy(dossier);
 
   if (strategy === "single") {
+    await onStageChange?.(
+      "stage2_draft",
+      `Drafting article-wide cases for ${dossier.article.productCount} products.`,
+    );
     const draft = await generateProposalObject({
       system: buildPassASystemPrompt(),
       prompt: buildPassAUserPrompt(toPromptArticlePayload(dossier)),
     });
+    await onStageChange?.("stage2_review", "Reviewing and refining article-wide cases.");
     const review = await generateProposalObject({
       system: buildPassBSystemPrompt(),
       prompt: buildPassBUserPrompt({
@@ -2255,6 +2274,10 @@ async function runProposalPass(
   }
 
   const chunks = chunkProductThreads(dossier.productThreads);
+  await onStageChange?.(
+    "stage2_draft",
+    `Drafting article-wide cases across ${chunks.length} dossier chunks.`,
+  );
   const chunkDrafts = await mapWithConcurrency(
     chunks,
     STAGE2_CHUNK_PROPOSAL_CONCURRENCY,
@@ -2288,6 +2311,7 @@ async function runProposalPass(
     ).slice(0, 12),
   };
 
+  await onStageChange?.("stage2_review", "Reviewing and consolidating chunked case drafts.");
   const review = await generateProposalObject({
       system: buildPassBSystemPrompt(),
       prompt: buildPassBUserPrompt({
@@ -2860,6 +2884,9 @@ async function getLatestGlobalRunWithInventory() {
           startedAt: row.completed_at ?? new Date().toISOString(),
           completedAt: row.completed_at,
           errorMessage: null,
+          currentStage: "completed" as const,
+          stageDetail: null,
+          stageUpdatedAt: row.completed_at,
         },
         globalInventory,
       };
@@ -2886,37 +2913,76 @@ export async function runArticleCaseClustering(articleId: string) {
     throw new Error("Case clustering requires OPENAI_API_KEY.");
   }
 
-  const dossier = await buildArticleDossier(articleId);
+  const normalizedArticleId =
+    normalizeUiIdentifier(articleId) ?? articleId.replace(/\s+/g, "").trim().toUpperCase();
+  const preloadedMeta = await loadArticleMeta(normalizedArticleId);
+
+  if (!preloadedMeta.article || !preloadedMeta.products.length) {
+    throw new Error(`No products found for article ${normalizedArticleId}.`);
+  }
+
   const runId = createId("TCRUN");
 
   await createTeamCaseRun({
     id: runId,
-    articleId: dossier.article.articleId,
-    articleName: dossier.article.articleName,
+    articleId: normalizedArticleId,
+    articleName: preloadedMeta.article.name,
     model: env.OPENAI_MODEL,
-    strategy: chooseRunStrategy(dossier),
+    strategy:
+      preloadedMeta.products.length > SINGLE_PASS_PRODUCT_LIMIT ? "chunked" : "single",
     schemaVersion: CASE_PROPOSAL_SCHEMA_VERSION,
     promptVersion: CASE_PROMPT_VERSION,
-    productCount: dossier.article.productCount,
-    signalCount: dossier.article.totalSignals,
+    productCount: preloadedMeta.products.length,
+    signalCount: 0,
+    currentStage: "stage1_loading",
+    stageDetail: "Loading deterministic article dossier.",
     builderPayload: {
       articleDossierSchemaVersion: ARTICLE_DOSSIER_SCHEMA_VERSION,
       productDossierSchemaVersion: PRODUCT_DOSSIER_SCHEMA_VERSION,
     },
     requestPayload: {
-      articleId: dossier.article.articleId,
-      productCount: dossier.article.productCount,
-      totalSignals: dossier.article.totalSignals,
+      articleId: normalizedArticleId,
+      productCount: preloadedMeta.products.length,
+      totalSignals: 0,
     },
   });
 
   try {
-    const proposalPass = await runProposalPass(dossier);
+    const dossier = await buildArticleDossier(normalizedArticleId, async (stage, detail) => {
+      await updateTeamCaseRunStage({
+        id: runId,
+        currentStage: stage,
+        stageDetail: detail,
+      });
+    });
+
+    await updateTeamCaseRunStage({
+      id: runId,
+      currentStage: "stage1_synthesis",
+      stageDetail: `Built article dossier with ${dossier.article.totalSignals} signals.`,
+      articleName: dossier.article.articleName,
+      productCount: dossier.article.productCount,
+      signalCount: dossier.article.totalSignals,
+    });
+
+    const proposalPass = await runProposalPass(dossier, async (stage, detail) => {
+      await updateTeamCaseRunStage({
+        id: runId,
+        currentStage: stage,
+        stageDetail: detail,
+      });
+    });
     const candidates = materializeCaseCandidates({
       articleId: dossier.article.articleId,
       runId,
       proposal: proposalPass.review,
       dossier,
+    });
+
+    await updateTeamCaseRunStage({
+      id: runId,
+      currentStage: "stage2_persisting",
+      stageDetail: `Persisting ${candidates.length} proposed cases.`,
     });
 
     await replaceTeamCaseCandidatesForRun({
@@ -2926,6 +2992,12 @@ export async function runArticleCaseClustering(articleId: string) {
     });
 
     const persistedCandidates = await listTeamCaseCandidatesForRun(runId);
+
+    await updateTeamCaseRunStage({
+      id: runId,
+      currentStage: "stage3_reconciliation",
+      stageDetail: "Reconciling global watchlists, validated cases, and noise.",
+    });
 
     const globalReconciliation = await runGlobalReconciliation({
       currentArticleId: dossier.article.articleId,
@@ -2946,6 +3018,7 @@ export async function runArticleCaseClustering(articleId: string) {
       candidateCount: candidates.length,
       proposalPayload: proposalPass.draft,
       reviewPayload,
+      stageDetail: `Finished with ${candidates.length} proposed cases.`,
     });
 
     const [latestRun] = await Promise.all([
@@ -2963,6 +3036,7 @@ export async function runArticleCaseClustering(articleId: string) {
     await failTeamCaseRun({
       id: runId,
       errorMessage: error instanceof Error ? error.message : String(error),
+      stageDetail: "Pipeline failed before completion.",
     });
 
     throw error;
@@ -3062,14 +3136,16 @@ export const getProposedCasesDashboard = memoizeWithTtl(
     if (!capabilities.hasPostgres) {
       return {
         articles: [],
+        activeRuns: [],
         articleQueues: [],
         latestGlobalRun: null,
         globalInventory: null,
       };
     }
 
-    const [articles, globalSnapshot] = await Promise.all([
+    const [articles, activeRuns, globalSnapshot] = await Promise.all([
       listTeamArticleClusterCards(),
+      listActiveTeamCaseRuns(),
       getLatestGlobalRunWithInventory(),
     ]);
 
@@ -3122,6 +3198,7 @@ export const getProposedCasesDashboard = memoizeWithTtl(
 
     return {
       articles,
+      activeRuns,
       articleQueues,
       latestGlobalRun: globalSnapshot.latestGlobalRun,
       globalInventory: globalSnapshot.globalInventory,

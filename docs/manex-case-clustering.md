@@ -12,6 +12,7 @@ The result is a simpler UI shape:
 - `/` stays the symptom inbox
 - `/articles` becomes the proposed-cases dashboard
 - `/articles/[articleId]` becomes the investigation workspace
+- `/articles` also exposes a complete-pipeline runner with live stage tracking
 
 ## What changed
 
@@ -27,6 +28,8 @@ The result is a simpler UI shape:
   Triggers the end-to-end pipeline and returns article plus global counts.
 - `src/app/api/articles/cluster-all/route.ts`
   Runs multiple article pipelines concurrently for faster full-dataset refreshes.
+- `team_case_run`
+  now stores stage progress so the UI can show where each active run currently is.
 
 ## Stage 1
 
@@ -116,6 +119,8 @@ The UI is intentionally more opinionated now.
 `/articles` is no longer just an article list. It is the main proposed-cases
 dashboard, with:
 
+- a complete-pipeline button for all articles
+- live per-article run stages while the pipeline is active
 - validated cases first
 - watchlists second
 - noise buckets third

@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 
+import { GlobalPipelineRunner } from "@/components/global-pipeline-runner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -161,6 +162,7 @@ export default async function ArticlesPage() {
   const rejectedCases = dashboard.globalInventory?.rejectedCases ?? [];
   const globalPatterns = [...crossArticleCases, ...watchlists, ...noiseBuckets, ...rejectedCases];
   const articleQueues = dashboard.articleQueues;
+  const activeRuns = dashboard.activeRuns;
 
   return (
     <main className="min-h-screen">
@@ -266,6 +268,8 @@ export default async function ArticlesPage() {
           </div>
 
           <div className="space-y-6">
+            <GlobalPipelineRunner hasAi={capabilities.hasAi} initialActiveRuns={activeRuns} />
+
             <Card className="surface-panel rounded-[30px] px-0 py-0">
               <CardHeader className="px-6 pt-6">
                 <Badge variant="outline">

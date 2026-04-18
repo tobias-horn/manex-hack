@@ -10,6 +10,16 @@ export type TeamCaseRunStatus = "building" | "completed" | "failed";
 export type TeamCaseRunStrategy = "single" | "chunked";
 export type TeamCaseCandidateLifecycle = "proposed" | "accepted" | "rejected" | "merged";
 export type TeamCaseCandidatePriority = "low" | "medium" | "high" | "critical";
+export type TeamCaseRunStage =
+  | "queued"
+  | "stage1_loading"
+  | "stage1_synthesis"
+  | "stage2_draft"
+  | "stage2_review"
+  | "stage2_persisting"
+  | "stage3_reconciliation"
+  | "completed"
+  | "failed";
 
 export type TeamArticleClusterCard = {
   articleId: string;
@@ -40,6 +50,9 @@ export type TeamCaseRunSummary = {
   startedAt: string;
   completedAt: string | null;
   errorMessage: string | null;
+  currentStage: TeamCaseRunStage;
+  stageDetail: string | null;
+  stageUpdatedAt: string | null;
   builderPayload?: unknown;
   requestPayload?: unknown;
   proposalPayload?: unknown;
@@ -150,6 +163,9 @@ type CaseRunRow = QueryResultRow & {
   started_at: string;
   completed_at: string | null;
   error_message: string | null;
+  current_stage: TeamCaseRunStage;
+  stage_detail: string | null;
+  stage_updated_at: string | null;
   builder_payload: unknown;
   request_payload: unknown;
   proposal_payload: unknown;
@@ -217,6 +233,9 @@ type ArticleClusterCardRow = QueryResultRow & {
   started_at: string | null;
   completed_at: string | null;
   error_message: string | null;
+  current_stage: TeamCaseRunStage | null;
+  stage_detail: string | null;
+  stage_updated_at: string | null;
 };
 
 const CLUSTERING_SCHEMA_SQL = `
@@ -321,11 +340,23 @@ CREATE TABLE IF NOT EXISTS team_case_run (
   review_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
   started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   completed_at TIMESTAMPTZ,
-  error_message TEXT
+  error_message TEXT,
+  current_stage TEXT NOT NULL DEFAULT 'queued',
+  stage_detail TEXT,
+  stage_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_team_case_run_article_id
   ON team_case_run (article_id, started_at DESC);
+
+ALTER TABLE team_case_run
+  ADD COLUMN IF NOT EXISTS current_stage TEXT NOT NULL DEFAULT 'queued';
+
+ALTER TABLE team_case_run
+  ADD COLUMN IF NOT EXISTS stage_detail TEXT;
+
+ALTER TABLE team_case_run
+  ADD COLUMN IF NOT EXISTS stage_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
 CREATE TABLE IF NOT EXISTS team_case_candidate (
   candidate_id TEXT PRIMARY KEY,
@@ -475,6 +506,9 @@ const mapRunSummary = (row: CaseRunRow): TeamCaseRunSummary => ({
   startedAt: new Date(row.started_at).toISOString(),
   completedAt: normalizeIso(row.completed_at),
   errorMessage: normalizeNullableText(row.error_message),
+  currentStage: row.current_stage,
+  stageDetail: normalizeNullableText(row.stage_detail),
+  stageUpdatedAt: normalizeIso(row.stage_updated_at),
   builderPayload: row.builder_payload,
   requestPayload: row.request_payload,
   proposalPayload: row.proposal_payload,
@@ -566,7 +600,10 @@ export async function listTeamArticleClusterCards() {
           candidate_count,
           started_at,
           completed_at,
-          error_message
+          error_message,
+          current_stage,
+          stage_detail,
+          stage_updated_at
         FROM team_case_run
         ORDER BY article_id, started_at DESC
       ),
@@ -600,7 +637,10 @@ export async function listTeamArticleClusterCards() {
         lr.candidate_count,
         lr.started_at,
         lr.completed_at,
-        lr.error_message
+        lr.error_message,
+        lr.current_stage,
+        lr.stage_detail,
+        lr.stage_updated_at
       FROM article a
       LEFT JOIN product_counts pc ON pc.article_id = a.article_id
       LEFT JOIN signal_counts sc ON sc.article_id = a.article_id
@@ -638,6 +678,9 @@ export async function listTeamArticleClusterCards() {
           startedAt: normalizeIso(row.started_at) ?? new Date(0).toISOString(),
           completedAt: normalizeIso(row.completed_at),
           errorMessage: normalizeNullableText(row.error_message),
+          currentStage: row.current_stage ?? "queued",
+          stageDetail: normalizeNullableText(row.stage_detail),
+          stageUpdatedAt: normalizeIso(row.stage_updated_at),
           builderPayload: undefined,
           requestPayload: undefined,
           proposalPayload: undefined,
@@ -848,6 +891,8 @@ export async function createTeamCaseRun(input: {
   signalCount: number;
   builderPayload: unknown;
   requestPayload: unknown;
+  currentStage?: TeamCaseRunStage;
+  stageDetail?: string | null;
 }) {
   await ensureTeamCaseClusteringState();
 
@@ -864,10 +909,13 @@ export async function createTeamCaseRun(input: {
         prompt_version,
         product_count,
         signal_count,
+        current_stage,
+        stage_detail,
+        stage_updated_at,
         builder_payload,
         request_payload
       )
-      VALUES ($1, $2, $3, $4, 'building', $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb)
+      VALUES ($1, $2, $3, $4, 'building', $5, $6, $7, $8, $9, $10, $11, NOW(), $12::jsonb, $13::jsonb)
     `,
     [
       input.id,
@@ -879,6 +927,8 @@ export async function createTeamCaseRun(input: {
       input.promptVersion,
       input.productCount,
       input.signalCount,
+      input.currentStage ?? "queued",
+      input.stageDetail ?? null,
       JSON.stringify(input.builderPayload),
       JSON.stringify(input.requestPayload),
     ],
@@ -890,6 +940,7 @@ export async function completeTeamCaseRun(input: {
   candidateCount: number;
   proposalPayload: unknown;
   reviewPayload: unknown;
+  stageDetail?: string | null;
 }) {
   await ensureTeamCaseClusteringState();
 
@@ -901,6 +952,9 @@ export async function completeTeamCaseRun(input: {
         candidate_count = $2,
         proposal_payload = $3::jsonb,
         review_payload = $4::jsonb,
+        current_stage = 'completed',
+        stage_detail = $5,
+        stage_updated_at = NOW(),
         completed_at = NOW(),
         error_message = NULL
       WHERE run_id = $1
@@ -910,6 +964,7 @@ export async function completeTeamCaseRun(input: {
       input.candidateCount,
       JSON.stringify(input.proposalPayload),
       JSON.stringify(input.reviewPayload),
+      input.stageDetail ?? null,
     ],
   );
 }
@@ -919,6 +974,7 @@ export async function failTeamCaseRun(input: {
   errorMessage: string;
   proposalPayload?: unknown;
   reviewPayload?: unknown;
+  stageDetail?: string | null;
 }) {
   await ensureTeamCaseClusteringState();
 
@@ -929,6 +985,9 @@ export async function failTeamCaseRun(input: {
         status = 'failed',
         proposal_payload = $3::jsonb,
         review_payload = $4::jsonb,
+        current_stage = 'failed',
+        stage_detail = $5,
+        stage_updated_at = NOW(),
         completed_at = NOW(),
         error_message = $2
       WHERE run_id = $1
@@ -938,8 +997,58 @@ export async function failTeamCaseRun(input: {
       input.errorMessage,
       JSON.stringify(input.proposalPayload ?? {}),
       JSON.stringify(input.reviewPayload ?? {}),
+      input.stageDetail ?? null,
     ],
   );
+}
+
+export async function updateTeamCaseRunStage(input: {
+  id: string;
+  currentStage: TeamCaseRunStage;
+  stageDetail?: string | null;
+  articleName?: string | null;
+  productCount?: number;
+  signalCount?: number;
+}) {
+  await ensureTeamCaseClusteringState();
+
+  await queryPostgres(
+    `
+      UPDATE team_case_run
+      SET
+        article_name = COALESCE($2, article_name),
+        product_count = COALESCE($3, product_count),
+        signal_count = COALESCE($4, signal_count),
+        current_stage = $5,
+        stage_detail = $6,
+        stage_updated_at = NOW()
+      WHERE run_id = $1
+    `,
+    [
+      input.id,
+      input.articleName ?? null,
+      input.productCount ?? null,
+      input.signalCount ?? null,
+      input.currentStage,
+      input.stageDetail ?? null,
+    ],
+  );
+}
+
+export async function listActiveTeamCaseRuns() {
+  await ensureTeamCaseClusteringState();
+
+  const rows =
+    (await queryPostgres<CaseRunRow>(
+      `
+      SELECT *
+      FROM team_case_run
+      WHERE status = 'building'
+      ORDER BY started_at DESC
+    `,
+    )) ?? [];
+
+  return rows.map(mapRunSummary);
 }
 
 export async function replaceTeamCaseCandidatesForRun(input: {

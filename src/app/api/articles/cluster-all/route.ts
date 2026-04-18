@@ -1,5 +1,6 @@
 import { capabilities } from "@/lib/env";
 import { runArticleCaseClusteringBatch } from "@/lib/manex-case-clustering";
+import { listActiveTeamCaseRuns } from "@/lib/manex-case-clustering-state";
 import { normalizeUiIdentifier } from "@/lib/ui-format";
 
 export const runtime = "nodejs";
@@ -8,24 +9,119 @@ type BatchRequestBody = {
   articleIds?: string[];
 };
 
-export async function POST(request: Request) {
+type BatchLifecycleStatus = "idle" | "running" | "completed" | "failed";
+
+type BatchStatus = {
+  status: BatchLifecycleStatus;
+  requestedArticleIds: string[];
+  startedAt: string | null;
+  completedAt: string | null;
+  concurrency: number | null;
+  okCount: number;
+  errorCount: number;
+  errorMessage: string | null;
+};
+
+let activeBatchPromise: Promise<void> | null = null;
+let latestBatchStatus: BatchStatus = {
+  status: "idle",
+  requestedArticleIds: [],
+  startedAt: null,
+  completedAt: null,
+  concurrency: null,
+  okCount: 0,
+  errorCount: 0,
+  errorMessage: null,
+};
+
+function validateCapabilities() {
   if (!capabilities.hasPostgres) {
-    return Response.json(
-      {
-        ok: false,
-        error: "Case clustering requires DATABASE_URL for dossier and candidate persistence.",
-      },
-      { status: 503 },
-    );
+    return {
+      ok: false,
+      error: "Case clustering requires DATABASE_URL for dossier and candidate persistence.",
+      status: 503,
+    } as const;
   }
 
   if (!capabilities.hasAi) {
+    return {
+      ok: false,
+      error: "Set OPENAI_API_KEY before running article clustering.",
+      status: 503,
+    } as const;
+  }
+
+  return null;
+}
+
+async function buildStatusPayload() {
+  const activeRuns = await listActiveTeamCaseRuns();
+
+  return {
+    batch: latestBatchStatus,
+    activeRuns,
+    runningArticleCount: activeRuns.length,
+    stageCounts: activeRuns.reduce<Record<string, number>>((counts, run) => {
+      counts[run.currentStage] = (counts[run.currentStage] ?? 0) + 1;
+      return counts;
+    }, {}),
+  };
+}
+
+export async function GET() {
+  const capabilityError = validateCapabilities();
+
+  if (capabilityError) {
     return Response.json(
       {
         ok: false,
-        error: "Set OPENAI_API_KEY before running article clustering.",
+        error: capabilityError.error,
       },
-      { status: 503 },
+      { status: capabilityError.status },
+    );
+  }
+
+  return Response.json({
+    ok: true,
+    ...(await buildStatusPayload()),
+  });
+}
+
+export async function POST(request: Request) {
+  const capabilityError = validateCapabilities();
+
+  if (capabilityError) {
+    return Response.json(
+      {
+        ok: false,
+        error: capabilityError.error,
+      },
+      { status: capabilityError.status },
+    );
+  }
+
+  if (activeBatchPromise) {
+    const statusPayload = await buildStatusPayload();
+    return Response.json(
+      {
+        ok: false,
+        error: "A complete pipeline batch is already running.",
+        ...statusPayload,
+      },
+      { status: 409 },
+    );
+  }
+
+  const existingStatus = await buildStatusPayload();
+
+  if (existingStatus.activeRuns.length > 0) {
+    return Response.json(
+      {
+        ok: false,
+        error: "There are already active article runs in progress.",
+        ...existingStatus,
+      },
+      { status: 409 },
     );
   }
 
@@ -42,33 +138,54 @@ export async function POST(request: Request) {
       ?.map((articleId) => normalizeUiIdentifier(articleId))
       .filter((articleId): articleId is string => Boolean(articleId)) ?? [];
 
-  try {
-    const result = await runArticleCaseClusteringBatch(
-      normalizedArticleIds.length ? normalizedArticleIds : undefined,
-    );
+  latestBatchStatus = {
+    status: "running",
+    requestedArticleIds: normalizedArticleIds,
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+    concurrency: null,
+    okCount: 0,
+    errorCount: 0,
+    errorMessage: null,
+  };
 
-    return Response.json({
-      ok: result.errorCount === 0,
-      articleCount: result.requestedArticleIds.length,
-      concurrency: result.concurrency,
-      okCount: result.okCount,
-      errorCount: result.errorCount,
-      results: result.results,
-      latestGlobalRunId: result.latestGlobalRun?.id ?? null,
-      validatedCount: result.globalInventory?.validatedCases.length ?? 0,
-      watchlistCount: result.globalInventory?.watchlists.length ?? 0,
-      noiseCount: result.globalInventory?.noiseBuckets.length ?? 0,
-    });
-  } catch (error) {
-    return Response.json(
-      {
-        ok: false,
-        error:
+  activeBatchPromise = (async () => {
+    try {
+      const result = await runArticleCaseClusteringBatch(
+        normalizedArticleIds.length ? normalizedArticleIds : undefined,
+      );
+
+      latestBatchStatus = {
+        status: result.errorCount > 0 ? "failed" : "completed",
+        requestedArticleIds: result.requestedArticleIds,
+        startedAt: latestBatchStatus.startedAt,
+        completedAt: new Date().toISOString(),
+        concurrency: result.concurrency,
+        okCount: result.okCount,
+        errorCount: result.errorCount,
+        errorMessage:
+          result.errorCount > 0
+            ? `${result.errorCount} article runs failed during the complete pipeline batch.`
+            : null,
+      };
+    } catch (error) {
+      latestBatchStatus = {
+        ...latestBatchStatus,
+        status: "failed",
+        completedAt: new Date().toISOString(),
+        errorMessage:
           error instanceof Error
             ? error.message
             : "The batch clustering engine failed unexpectedly.",
-      },
-      { status: 500 },
-    );
-  }
+      };
+    } finally {
+      activeBatchPromise = null;
+    }
+  })();
+
+  return Response.json({
+    ok: true,
+    accepted: true,
+    ...(await buildStatusPayload()),
+  });
 }
