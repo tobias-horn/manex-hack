@@ -1,0 +1,100 @@
+# Per-team Supabase-lite stack for Manex Hackathon.
+# Each team runs an independent instance with unique ports, JWT secret, and DB credentials.
+# Provisioned by scripts/deploy-team.sh which writes .env.<team-slug> and runs:
+#   docker compose --env-file .env.<team-slug> -p manex-<team-slug> up -d
+#
+# Services:
+#   - db:        PostgreSQL 15
+#   - postgrest: REST API (validates apikey JWT directly)
+#   - meta:      postgres-meta (introspection backend for Studio)
+#   - studio:    Supabase Studio (web UI + SQL editor)
+
+services:
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-hackathon}
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ${POSTGRES_DB:-hackathon}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  postgrest:
+    image: postgrest/postgrest:v12.2.0
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${API_PORT}:3000"
+    environment:
+      PGRST_DB_URI: postgres://authenticator:${AUTHENTICATOR_PASSWORD}@db:5432/${POSTGRES_DB:-hackathon}
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+      PGRST_JWT_SECRET_IS_BASE64: "false"
+      PGRST_DB_USE_LEGACY_GUCS: "false"
+      PGRST_OPENAPI_MODE: ignore-privileges
+      PGRST_DB_POOL: "20"
+      PGRST_DB_MAX_ROWS: "10000"
+
+  meta:
+    image: supabase/postgres-meta:v0.84.2
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PG_META_PORT: "8080"
+      PG_META_DB_HOST: db
+      PG_META_DB_PORT: "5432"
+      PG_META_DB_NAME: ${POSTGRES_DB:-hackathon}
+      PG_META_DB_USER: ${TEAM_DB_USER}
+      PG_META_DB_PASSWORD: ${TEAM_DB_PASSWORD}
+
+  studio:
+    image: supabase/studio:20240326-5e5586d
+    restart: unless-stopped
+    depends_on:
+      - meta
+      - postgrest
+    expose:
+      - "3000"
+    environment:
+      STUDIO_PG_META_URL: http://meta:8080
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DEFAULT_ORGANIZATION_NAME: "Manex Hackathon"
+      DEFAULT_PROJECT_NAME: "Team ${TEAM_SLUG}"
+      SUPABASE_URL: http://postgrest:3000
+      SUPABASE_PUBLIC_URL: http://localhost:${API_PORT}
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      LOGFLARE_API_KEY: "dummy"
+      LOGFLARE_URL: "http://dummy"
+      NEXT_PUBLIC_ENABLE_LOGS: "false"
+
+  studio_auth:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - studio
+    ports:
+      - "${STUDIO_PORT}:80"
+    command: >
+      sh -ec '
+        HASH=$$(caddy hash-password --plaintext "${STUDIO_DASHBOARD_PASSWORD:-studioPass123}")
+        printf ":80 {\n  basicauth {\n    %s %s\n  }\n  reverse_proxy studio:3000\n}\n" \
+          "${STUDIO_DASHBOARD_USERNAME:-studio}" "$$HASH" > /etc/caddy/Caddyfile
+        exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+      '
+
+volumes:
+  db_data:

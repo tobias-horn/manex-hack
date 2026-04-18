@@ -1,0 +1,8 @@
+# One team slug per line. Comments (#) and blank lines ignored.
+# Order matters: first non-empty line = team 1 (ports 8001/8401/5431).
+# Slugs must be lowercase alphanumeric + hyphen. Stable identifiers — used in
+# Docker project names, DB users, and handout files.
+bahnwaerter_hackers
+hosenpause
+mariaEinsiedler
+vitruvius

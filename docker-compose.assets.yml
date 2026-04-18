@@ -1,0 +1,13 @@
+# Shared static file server for defect images.
+# One container on the VM, serves ./assets/ to all teams on port 9000.
+# Started once by scripts/deploy-assets.sh.
+
+services:
+  assets:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "9000:80"
+    volumes:
+      - ./assets:/usr/share/nginx/html:ro
+      - ./assets/nginx.conf:/etc/nginx/conf.d/default.conf:ro
