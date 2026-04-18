@@ -1,0 +1,10 @@
+.env
+.env.*
+!.env.example
+handouts/team-*.txt
+volumes/
+data-generation/.venv/
+.venv/
+data-generation/__pycache__/
+data-generation/*.pyc
+.DS_Store
