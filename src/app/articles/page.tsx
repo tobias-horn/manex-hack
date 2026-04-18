@@ -2,7 +2,8 @@ import {
   ArrowLeft,
   CircuitBoard,
   EyeOff,
-  Radar,
+  FolderKanban,
+  Orbit,
   ShieldAlert,
   Sparkles,
 } from "lucide-react";
@@ -62,7 +63,7 @@ function inventoryHref(item: GlobalInventoryItem) {
   return candidateId ? `/articles/${articleId}?case=${candidateId}` : `/articles/${articleId}`;
 }
 
-function InventorySection({
+function GlobalPatternSection({
   title,
   description,
   items,
@@ -92,16 +93,21 @@ function InventorySection({
                 <div className="space-y-3">
                   <div className="flex flex-wrap gap-2">
                     <Badge className={toneStyles[item.inventoryKind]}>
-                      {item.caseTypeHint}
+                      {item.inventoryKind.replaceAll("_", " ")}
                     </Badge>
+                    <Badge variant="outline">{item.caseTypeHint}</Badge>
                     <Badge variant="outline">
                       {item.priority} · {Math.round(item.confidence * 100)}%
                     </Badge>
-                    {item.articleIds.map((articleId) => (
-                      <Badge key={articleId} variant="outline">
-                        {articleId}
-                      </Badge>
-                    ))}
+                    {item.articleIds.length ? (
+                      item.articleIds.map((articleId) => (
+                        <Badge key={articleId} variant="outline">
+                          {articleId}
+                        </Badge>
+                      ))
+                    ) : (
+                      <Badge variant="outline">Global</Badge>
+                    )}
                   </div>
                   <div>
                     <div className="text-lg font-semibold">{item.title}</div>
@@ -128,7 +134,7 @@ function InventorySection({
                     render={
                       <Link href={inventoryHref(item)}>
                         <CircuitBoard className="size-4" />
-                        Open workspace
+                        Open article
                       </Link>
                     }
                   />
@@ -148,10 +154,13 @@ function InventorySection({
 
 export default async function ArticlesPage() {
   const dashboard = await getProposedCasesDashboard();
-  const validatedCases = dashboard.globalInventory?.validatedCases ?? [];
+  const crossArticleCases =
+    dashboard.globalInventory?.validatedCases.filter((item) => item.articleIds.length > 1) ?? [];
   const watchlists = dashboard.globalInventory?.watchlists ?? [];
   const noiseBuckets = dashboard.globalInventory?.noiseBuckets ?? [];
   const rejectedCases = dashboard.globalInventory?.rejectedCases ?? [];
+  const globalPatterns = [...crossArticleCases, ...watchlists, ...noiseBuckets, ...rejectedCases];
+  const articleQueues = dashboard.articleQueues;
 
   return (
     <main className="min-h-screen">
@@ -161,22 +170,22 @@ export default async function ArticlesPage() {
             <div className="space-y-3">
               <Badge variant="outline">
                 <Sparkles className="size-3.5" />
-                Three-stage case formation
+                Global intelligence
               </Badge>
               <h1 className="font-heading text-3xl leading-none font-semibold tracking-[-0.03em] sm:text-4xl">
-                Proposed cases
+                Global intelligence
               </h1>
               <p className="max-w-3xl text-sm leading-6 text-[var(--muted-foreground)] sm:text-base">
-                The pipeline now runs in three steps: product thread synthesis,
-                article-local clustering, and global reconciliation into validated
-                cases, watchlists, and visible noise buckets.
+                This screen has two jobs: surface global patterns that should be
+                monitored or suppressed, and show which articles currently have
+                meaningful proposed cases worth opening for investigation.
               </p>
               <div className="flex flex-wrap gap-2">
                 <Badge>{capabilities.hasAi ? "LLM pipeline live" : "OpenAI key missing"}</Badge>
-                <Badge variant="outline">{dashboard.articles.length} article families</Badge>
-                <Badge variant="outline">{validatedCases.length} validated cases</Badge>
-                <Badge variant="outline">{watchlists.length} watchlists</Badge>
-                <Badge variant="outline">{noiseBuckets.length} noise buckets</Badge>
+                <Badge variant="outline">{globalPatterns.length} global patterns</Badge>
+                <Badge variant="outline">
+                  {articleQueues.length} articles with proposed cases
+                </Badge>
               </div>
             </div>
 
@@ -197,47 +206,63 @@ export default async function ArticlesPage() {
           <div className="space-y-6">
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               <Metric
-                label="Validated"
-                value={validatedCases.length}
-                caption="Active investigation candidates after global review."
+                label="Patterns"
+                value={globalPatterns.length}
+                caption="Global watchlists, noise, and cross-article anomalies."
               />
               <Metric
                 label="Watchlists"
                 value={watchlists.length}
-                caption="Patterns worth monitoring but not escalating yet."
+                caption="Things to monitor, not active article cases."
               />
               <Metric
-                label="Noise"
-                value={noiseBuckets.length}
-                caption="Distractors, weak patterns, or detection bias buckets."
+                label="Detected noise"
+                value={noiseBuckets.length + rejectedCases.length}
+                caption="Distractors and down-ranked patterns."
               />
               <Metric
-                label="Rejected"
-                value={rejectedCases.length}
-                caption="Cases the global pass actively down-ranked."
+                label="Article queues"
+                value={articleQueues.length}
+                caption="Articles currently carrying proposed cases."
               />
             </div>
 
-            <InventorySection
-              title="Validated Cases"
-              description="These are the strongest cross-checked investigation groups after article-local clustering and global reconciliation."
-              items={validatedCases}
-              emptyText="Run the pipeline on at least one article to produce the first validated investigation inventory."
-            />
-
-            <InventorySection
-              title="Watchlists"
-              description="These are leading indicators and near-miss patterns that should stay visible without being treated like active defect cases."
-              items={watchlists}
-              emptyText="No watchlists were emitted in the latest global pass."
-            />
-
-            <InventorySection
-              title="Noise And Distractors"
-              description="The system surfaces its own bad leads instead of hiding them. That includes likely false positives, detection hotspots, and weak marginal-only patterns."
-              items={noiseBuckets}
-              emptyText="No explicit noise buckets were emitted in the latest global pass."
-            />
+            <Card className="surface-sheet rounded-[30px] px-0 py-0">
+              <CardHeader className="px-6 pt-6">
+                <Badge variant="outline">
+                  <Orbit className="size-3.5" />
+                  Global patterns
+                </Badge>
+                <CardTitle className="section-title mt-3">
+                  Watchlists, noise, and cross-article anomalies
+                </CardTitle>
+                <CardDescription className="mt-2 max-w-3xl leading-6">
+                  This is not the main case list for the whole system. It is the
+                  global intelligence layer: things to monitor, suppress, or compare
+                  across articles before opening an article workspace.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6 px-5 pb-5">
+                <GlobalPatternSection
+                  title="Cross-Article Anomalies"
+                  description="Patterns that appear to connect more than one article family."
+                  items={crossArticleCases}
+                  emptyText="No cross-article anomalies were promoted in the latest global pass."
+                />
+                <GlobalPatternSection
+                  title="Watchlists"
+                  description="Global monitoring patterns that should stay visible without becoming active cases."
+                  items={watchlists}
+                  emptyText="No watchlists were emitted in the latest global pass."
+                />
+                <GlobalPatternSection
+                  title="Noise and distractors"
+                  description="False positives, weak-only patterns, and suspected detection bias the system wants you to ignore or down-rank."
+                  items={[...noiseBuckets, ...rejectedCases]}
+                  emptyText="No explicit noise buckets were emitted in the latest global pass."
+                />
+              </CardContent>
+            </Card>
           </div>
 
           <div className="space-y-6">
@@ -291,40 +316,67 @@ export default async function ArticlesPage() {
             <Card className="surface-sheet rounded-[30px] px-0 py-0">
               <CardHeader className="px-6 pt-6">
                 <Badge variant="outline">
-                  <Radar className="size-3.5" />
-                  Article families
+                  <FolderKanban className="size-3.5" />
+                  Articles with proposed cases
                 </Badge>
                 <CardTitle className="section-title mt-3">
-                  Local workspaces
+                  Article investigation inventory
                 </CardTitle>
+                <CardDescription className="mt-2 max-w-3xl leading-6">
+                  This is the real investigation entry point. Open an article when
+                  it already has article-wide proposed cases worth reviewing.
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3 px-5 pb-5">
-                {dashboard.articles.map((article) => (
-                  <article
-                    key={article.articleId}
-                    className="rounded-[22px] border border-white/10 bg-black/8 p-4"
-                  >
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge>{article.articleId}</Badge>
-                      <Badge variant="outline">{article.productCount} products</Badge>
-                      <Badge variant="outline">{article.totalSignals} signals</Badge>
-                    </div>
-                    <div className="mt-3 font-medium">
-                      {article.articleName ?? "Unnamed article"}
-                    </div>
-                    <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                      {article.proposedCaseCount} proposed cases · latest run{" "}
-                      {article.latestRun?.status ?? "not started"}
-                    </p>
-                    <div className="mt-3">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        render={<Link href={`/articles/${article.articleId}`}>Open workspace</Link>}
-                      />
-                    </div>
-                  </article>
-                ))}
+                {articleQueues.length ? (
+                  articleQueues.map((article) => (
+                    <article
+                      key={article.articleId}
+                      className="rounded-[24px] border border-white/10 bg-black/8 p-4"
+                    >
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge>{article.articleId}</Badge>
+                        <Badge variant="outline">
+                          {article.proposedCaseCount} proposed cases
+                        </Badge>
+                        <Badge variant="outline">
+                          {article.affectedProductCount} affected products
+                        </Badge>
+                        {article.highestPriority ? (
+                          <Badge variant="outline">
+                            Highest priority: {article.highestPriority}
+                          </Badge>
+                        ) : null}
+                      </div>
+                      <div className="mt-3 font-medium">
+                        {article.articleName ?? "Unnamed article"}
+                      </div>
+                      <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
+                        {article.leadingCaseTitle
+                          ? `${article.leadingCaseTitle}${
+                              article.topConfidence !== null
+                                ? ` · ${Math.round(article.topConfidence * 100)}% confidence`
+                                : ""
+                            }`
+                          : "Proposed cases are available for review."}
+                      </p>
+                      <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
+                        {article.summary ?? "No article summary available yet."}
+                      </p>
+                      <div className="mt-3">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          render={<Link href={`/articles/${article.articleId}`}>Open article</Link>}
+                        />
+                      </div>
+                    </article>
+                  ))
+                ) : (
+                  <div className="rounded-[24px] border border-dashed border-white/10 bg-black/8 px-4 py-5 text-sm leading-6 text-[var(--muted-foreground)]">
+                    No article currently has proposed cases to review.
+                  </div>
+                )}
               </CardContent>
             </Card>
 

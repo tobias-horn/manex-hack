@@ -181,14 +181,14 @@ export default async function ArticleCaseboardPage({
             <div className="space-y-3">
               <Badge variant="outline">
                 <Sparkles className="size-3.5" />
-                Investigation workspace
+                Article intelligence
               </Badge>
               <h1 className="font-heading text-3xl leading-none font-semibold tracking-[-0.03em] sm:text-4xl">
                 {caseboard.articleId}
               </h1>
               <p className="max-w-3xl text-sm leading-6 text-[var(--muted-foreground)] sm:text-base">
-                This workspace keeps one article in focus: proposed cases on the left,
-                the evidence spine in the center, and actions plus caution signals on the right.
+                This screen separates article-wide cases from product-specific threads so
+                investigators can review shared mechanisms without losing the per-unit evidence story.
               </p>
               <div className="flex flex-wrap gap-2">
                 {caseboard.articleName ? <Badge variant="outline">{caseboard.articleName}</Badge> : null}
@@ -233,8 +233,12 @@ export default async function ArticleCaseboardPage({
 
             <Card className="surface-sheet rounded-[30px] px-0 py-0">
               <CardHeader className="px-6 pt-6">
-                <Badge variant="outline">Article-local cases</Badge>
-                <CardTitle className="section-title mt-3">Select a proposed case</CardTitle>
+                <Badge variant="outline">Article-wide cases</Badge>
+                <CardTitle className="section-title mt-3">Proposed case candidates</CardTitle>
+                <CardDescription className="mt-2 leading-6">
+                  Each card is a shared multi-product pattern proposed by the article-local
+                  clustering stage.
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3 px-5 pb-5">
                 {proposedCases.length ? (
@@ -283,9 +287,12 @@ export default async function ArticleCaseboardPage({
               <CardHeader className="px-6 pt-6">
                 <Badge variant="outline">
                   <CircleOff className="size-3.5" />
-                  Left outside clustering
+                  Product-specific threads
                 </Badge>
-                <CardTitle className="section-title mt-3">Unresolved and standalone</CardTitle>
+                <CardTitle className="section-title mt-3">Outside article-wide cases</CardTitle>
+                <CardDescription className="mt-2 leading-6">
+                  These are real product threads and signals that stayed unresolved, weak, or intentionally non-clustered.
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3 px-5 pb-5">
                 <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
@@ -311,13 +318,13 @@ export default async function ArticleCaseboardPage({
           <div className="space-y-6">
             <Card className="surface-panel rounded-[30px] px-0 py-0">
               <CardHeader className="px-6 pt-6">
-                <Badge>{selectedCase ? "Selected case" : "Article overview"}</Badge>
+                <Badge>{selectedCase ? "Article-wide case" : "Article overview"}</Badge>
                 <CardTitle className="section-title mt-3">
                   {selectedCase?.title ?? "No case selected yet"}
                 </CardTitle>
                 <CardDescription className="mt-2 max-w-3xl leading-6">
                   {selectedCase?.summary ??
-                    "Choose a proposed case from the left rail to see why the included products belong together."}
+                    "Choose an article-wide case from the left rail to see which product threads support it."}
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4 px-5 pb-5">
@@ -358,9 +365,12 @@ export default async function ArticleCaseboardPage({
               <CardHeader className="px-6 pt-6">
                 <Badge variant="outline">
                   <Boxes className="size-3.5" />
-                  Included products
+                  Product-specific threads
                 </Badge>
-                <CardTitle className="section-title mt-3">Product threads in this case</CardTitle>
+                <CardTitle className="section-title mt-3">Per-product evidence threads</CardTitle>
+                <CardDescription className="mt-2 leading-6">
+                  Each thread is a Stage 1 product dossier: one unit, one evidence story, kept separate from the article-wide case object.
+                </CardDescription>
               </CardHeader>
               <CardContent className="grid gap-4 px-5 pb-5 md:grid-cols-2">
                 {selectedThreads.length ? (
@@ -411,7 +421,10 @@ export default async function ArticleCaseboardPage({
                   <Link2 className="size-3.5" />
                   Evidence spine
                 </Badge>
-                <CardTitle className="section-title mt-3">Unified timeline</CardTitle>
+                <CardTitle className="section-title mt-3">Signals from selected product threads</CardTitle>
+                <CardDescription className="mt-2 leading-6">
+                  This timeline merges the selected product threads so you can inspect the shared signal pattern behind the article-wide case.
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3 px-5 pb-5">
                 {selectedTimeline.length ? (

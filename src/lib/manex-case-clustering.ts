@@ -437,6 +437,17 @@ export type GlobalReconciliationOutput = z.infer<typeof globalReconciliationSche
 
 export type ProposedCasesDashboardReadModel = {
   articles: TeamArticleClusterCard[];
+  articleQueues: Array<{
+    articleId: string;
+    articleName: string | null;
+    proposedCaseCount: number;
+    affectedProductCount: number;
+    highestPriority: "low" | "medium" | "high" | "critical" | null;
+    topConfidence: number | null;
+    summary: string | null;
+    leadingCaseTitle: string | null;
+    latestRun: TeamCaseRunSummary | null;
+  }>;
   latestGlobalRun: TeamCaseRunSummary | null;
   globalInventory: GlobalReconciliationOutput | null;
 };
@@ -2211,6 +2222,31 @@ function parseStage3FromReviewPayload(payload: unknown) {
   return null;
 }
 
+const priorityRank: Record<"low" | "medium" | "high" | "critical", number> = {
+  low: 0,
+  medium: 1,
+  high: 2,
+  critical: 3,
+};
+
+function sortCandidatesForArticleQueue(candidates: TeamCaseCandidateRecord[]) {
+  return [...candidates].sort((left, right) => {
+    const priorityDelta = priorityRank[right.priority] - priorityRank[left.priority];
+
+    if (priorityDelta !== 0) {
+      return priorityDelta;
+    }
+
+    const confidenceDelta = (right.confidence ?? -1) - (left.confidence ?? -1);
+
+    if (confidenceDelta !== 0) {
+      return confidenceDelta;
+    }
+
+    return left.title.localeCompare(right.title);
+  });
+}
+
 function buildArticleCaseSetSummary(input: {
   articleId: string;
   articleName: string | null;
@@ -2670,6 +2706,7 @@ export const getProposedCasesDashboard = memoizeWithTtl(
     if (!capabilities.hasPostgres) {
       return {
         articles: [],
+        articleQueues: [],
         latestGlobalRun: null,
         globalInventory: null,
       };
@@ -2680,8 +2717,56 @@ export const getProposedCasesDashboard = memoizeWithTtl(
       getLatestGlobalRunWithInventory(),
     ]);
 
+    const articleQueues = (
+      await Promise.all(
+        articles
+          .filter(
+            (article) =>
+              article.proposedCaseCount > 0 &&
+              article.latestRun?.status === "completed" &&
+              article.latestRun.id,
+          )
+          .map(async (article) => {
+            const candidates = await listTeamCaseCandidatesForRun(article.latestRun!.id);
+            const sortedCandidates = sortCandidatesForArticleQueue(candidates);
+            const leadingCase = sortedCandidates[0] ?? null;
+            const affectedProductCount = new Set(
+              candidates.flatMap((candidate) => candidate.includedProductIds),
+            ).size;
+
+            return {
+              articleId: article.articleId,
+              articleName: article.articleName,
+              proposedCaseCount: article.proposedCaseCount,
+              affectedProductCount,
+              highestPriority: leadingCase?.priority ?? null,
+              topConfidence: leadingCase?.confidence ?? null,
+              summary: leadingCase?.summary ?? null,
+              leadingCaseTitle: leadingCase?.title ?? null,
+              latestRun: article.latestRun,
+            };
+          }),
+      )
+    ).sort((left, right) => {
+      const leftRank = left.highestPriority ? priorityRank[left.highestPriority] : -1;
+      const rightRank = right.highestPriority ? priorityRank[right.highestPriority] : -1;
+
+      if (rightRank !== leftRank) {
+        return rightRank - leftRank;
+      }
+
+      const confidenceDelta = (right.topConfidence ?? -1) - (left.topConfidence ?? -1);
+
+      if (confidenceDelta !== 0) {
+        return confidenceDelta;
+      }
+
+      return left.articleId.localeCompare(right.articleId);
+    });
+
     return {
       articles,
+      articleQueues,
       latestGlobalRun: globalSnapshot.latestGlobalRun,
       globalInventory: globalSnapshot.globalInventory,
     };
