@@ -19,6 +19,7 @@ The exported API is investigation-oriented:
 - `investigation.findTestSignalsForProduct(productId, ...)`
 - `traceability.findInstalledParts(...)`
 - `traceability.findInstalledPartsForProduct(productId, ...)`
+- installed-part rows now include article and build context for downstream traceability work
 - `quality.findWeeklySummaries(...)`
 - `quality.findWeeklySummariesForArticle(articleId, ...)`
 - `workflow.findActions(...)`
@@ -63,3 +64,5 @@ Raw table names are now confined to the data layer for workflow write-back and i
 - `src/app/api/actions/route.ts`
 
 If a new feature needs data, extend the domain layer first, then consume it from the feature.
+
+For Prompt 6, the higher-order deterministic helpers that sit on top of this layer are documented in `docs/manex-traceability.md`.

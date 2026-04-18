@@ -166,6 +166,13 @@ export default async function Home({ searchParams }: HomeProps) {
                 claims, factory defects, and outlier test results into one browsable
                 feed without jumping into SQL or root-cause analysis yet.
               </p>
+              <div className="flex flex-wrap gap-3">
+                <Button
+                  variant="outline"
+                  size="lg"
+                  render={<Link href="/traceability">Open traceability explorer</Link>}
+                />
+              </div>
               <ActiveFilters filters={inbox.filters} />
             </div>
 

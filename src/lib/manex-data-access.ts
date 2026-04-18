@@ -259,6 +259,10 @@ export type ManexFieldClaim = {
 
 export type ManexInstalledPart = {
   productId: string;
+  articleId: string | null;
+  articleName: string | null;
+  orderId: string | null;
+  productBuiltAt: string | null;
   installId: string;
   installedAt: string | null;
   installedSectionId: string | null;
@@ -282,6 +286,14 @@ export type ManexInstalledPart = {
   supplierName: string | null;
   supplierId: string | null;
   batchReceivedDate: string | null;
+};
+
+type ManexResolvedProductContext = {
+  productId: string;
+  articleId: string | null;
+  articleName: string | null;
+  orderId: string | null;
+  buildTs: string | null;
 };
 
 export type ManexWeeklyQualitySummary = {
@@ -402,9 +414,15 @@ export type ManexClaimQuery = {
 };
 
 export type ManexInstalledPartQuery = {
-  productId: string;
+  productId?: string;
   supplierName?: string;
+  supplierId?: string;
+  batchId?: string;
   batchNumber?: string;
+  partId?: string;
+  partNumber?: string;
+  positionCode?: string;
+  findNumber?: string;
   limit?: number;
 };
 
@@ -836,8 +854,26 @@ const mapClaim = (row: ClaimRow): ManexFieldClaim => ({
   claimWeekStart: normalizeWeekStart(row.claim_ts),
 });
 
-const mapInstalledPart = (row: InstalledPartRow): ManexInstalledPart => ({
+const mapProductContext = (
+  row: ProductLookupRow,
+  article?: ArticleLookupRow,
+): ManexResolvedProductContext => ({
   productId: row.product_id,
+  articleId: normalizeNullableText(row.article_id),
+  articleName: normalizeNullableText(article?.name),
+  orderId: normalizeNullableText(row.order_id),
+  buildTs: normalizeIso(row.build_ts),
+});
+
+const mapInstalledPart = (
+  row: InstalledPartRow,
+  product?: ManexResolvedProductContext,
+): ManexInstalledPart => ({
+  productId: row.product_id,
+  articleId: product?.articleId ?? null,
+  articleName: product?.articleName ?? null,
+  orderId: product?.orderId ?? null,
+  productBuiltAt: product?.buildTs ?? null,
   installId: row.install_id,
   installedAt: normalizeIso(row.installed_ts),
   installedSectionId: normalizeNullableText(row.installed_section_id),
@@ -974,13 +1010,21 @@ const createInstalledPartFilters = (
   query: ManexInstalledPartQuery,
 ): QueryFilter[] =>
   [
-    createFilter("product_id", "eq", query.productId),
+    query.productId ? createFilter("product_id", "eq", query.productId) : null,
     query.supplierName
       ? createFilter("supplier_name", "eq", query.supplierName)
       : null,
+    query.supplierId ? createFilter("supplier_id", "eq", query.supplierId) : null,
+    query.batchId ? createFilter("batch_id", "eq", query.batchId) : null,
     query.batchNumber
       ? createFilter("batch_number", "eq", query.batchNumber)
       : null,
+    query.partId ? createFilter("part_id", "eq", query.partId) : null,
+    query.partNumber ? createFilter("part_number", "eq", query.partNumber) : null,
+    query.positionCode
+      ? createFilter("position_code", "eq", query.positionCode)
+      : null,
+    query.findNumber ? createFilter("find_number", "eq", query.findNumber) : null,
   ].filter(isPresent);
 
 const createQualityFilters = (
@@ -1499,6 +1543,53 @@ async function findTestSignalsWithFallback(
   throw lastError ?? new Error("No configured transport for test signals.");
 }
 
+async function readProductContextMap(
+  productIds: string[],
+): Promise<Map<string, ManexResolvedProductContext>> {
+  const uniqueProductIds = Array.from(
+    new Set(productIds.filter((value): value is string => Boolean(value))),
+  );
+
+  if (!uniqueProductIds.length) {
+    return new Map();
+  }
+
+  const products = await readWithFallback<ProductLookupRow>("product", {
+    select: defaultProductLookupSelect,
+    filters: [createFilter("product_id", "in", uniqueProductIds)],
+    count: false,
+  });
+
+  if (!products.rows.length) {
+    return new Map();
+  }
+
+  const articleIds = Array.from(
+    new Set(
+      products.rows
+        .map((row) => row.article_id)
+        .filter((value): value is string => Boolean(value)),
+    ),
+  );
+
+  const articles = articleIds.length
+    ? await readWithFallback<ArticleLookupRow>("article", {
+        select: defaultArticleLookupSelect,
+        filters: [createFilter("article_id", "in", articleIds)],
+        count: false,
+      })
+    : { rows: [] as ArticleLookupRow[], total: null, transport: products.transport };
+
+  const articleMap = new Map(articles.rows.map((row) => [row.article_id, row]));
+
+  return new Map(
+    products.rows.map((row) => [
+      row.product_id,
+      mapProductContext(row, articleMap.get(row.article_id)),
+    ]),
+  );
+}
+
 export function createManexDataAccess(): ManexDataAccess {
   return {
     investigation: {
@@ -1576,8 +1667,14 @@ export function createManexDataAccess(): ManexDataAccess {
           },
         );
 
+        const productContextMap = await readProductContextMap(
+          result.rows.map((row) => row.product_id),
+        );
+
         return {
-          items: result.rows.map(mapInstalledPart),
+          items: result.rows.map((row) =>
+            mapInstalledPart(row, productContextMap.get(row.product_id)),
+          ),
           total: result.total,
           transport: result.transport,
         };
