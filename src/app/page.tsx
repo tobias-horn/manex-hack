@@ -221,6 +221,11 @@ export default async function Home({ searchParams }: HomeProps) {
                 <Button
                   variant="outline"
                   size="lg"
+                  render={<Link href="/articles">Open article dashboard</Link>}
+                />
+                <Button
+                  variant="outline"
+                  size="lg"
                   render={<Link href="/cases">Open case state layer</Link>}
                 />
                 <Button

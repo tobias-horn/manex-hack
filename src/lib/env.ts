@@ -65,7 +65,7 @@ export const env = {
   MANEX_STUDIO_URL: readUrl("MANEX_STUDIO_URL"),
   MANEX_ASSET_BASE_URL: readUrl("MANEX_ASSET_BASE_URL"),
   OPENAI_API_KEY: readEnv("OPENAI_API_KEY"),
-  OPENAI_MODEL: readEnv("OPENAI_MODEL") ?? "gpt-4.1-mini",
+  OPENAI_MODEL: readEnv("OPENAI_MODEL") ?? "gpt-5",
 } as const;
 
 export const capabilities = {

@@ -6,6 +6,7 @@ import {
   FileWarning,
   FlaskConical,
   PackageSearch,
+  Sparkles,
 } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -23,6 +24,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { DEMO_DOSSIER_PRODUCTS } from "@/lib/manex-demo";
+import { getProposedCasesForProduct } from "@/lib/manex-case-clustering";
 import {
   getProductDossier,
   type ProductDossierEvidenceFrame,
@@ -91,9 +93,13 @@ export default async function ProductDossierPage({
 }: ProductDossierPageProps) {
   const { productId } = await params;
   let dossier;
+  let proposedCases = [];
 
   try {
-    dossier = await getProductDossier(productId);
+    [dossier, proposedCases] = await Promise.all([
+      getProductDossier(productId),
+      getProposedCasesForProduct(productId),
+    ]);
   } catch {
     return (
       <ScreenState
@@ -178,6 +184,13 @@ export default async function ProductDossierPage({
                   </Link>
                 }
               />
+              {product?.articleId ? (
+                <Button
+                  size="lg"
+                  variant="outline"
+                  render={<Link href={`/articles/${product.articleId}`}>Open article caseboard</Link>}
+                />
+              ) : null}
               <Button
                 size="lg"
                 variant="outline"
@@ -502,6 +515,64 @@ export default async function ProductDossierPage({
           </div>
 
           <div className="space-y-6">
+            <Card className="surface-panel rounded-[30px] px-0 py-0">
+              <CardHeader className="px-6 pt-6">
+                <Badge>
+                  <Sparkles className="size-3.5" />
+                  Proposed clusters
+                </Badge>
+                <CardTitle className="section-title mt-3">
+                  Article-level case suggestions
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3 px-5 pb-5">
+                {proposedCases.length ? (
+                  proposedCases.map((candidate) => (
+                    <article
+                      key={candidate.id}
+                      className="rounded-[22px] border border-white/10 bg-black/8 p-4"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="text-sm font-semibold">{candidate.title}</div>
+                          <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
+                            {candidate.summary}
+                          </p>
+                        </div>
+                        <Badge variant="outline">
+                          {candidate.confidence !== null
+                            ? `${Math.round(candidate.confidence * 100)}%`
+                            : "n/a"}
+                        </Badge>
+                      </div>
+
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <Badge variant="outline">{candidate.caseKind}</Badge>
+                        <Badge variant="outline">{candidate.priority}</Badge>
+                      </div>
+
+                      <div className="mt-4">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          render={
+                            <Link href={`/articles/${candidate.articleId}`}>
+                              Open article caseboard
+                            </Link>
+                          }
+                        />
+                      </div>
+                    </article>
+                  ))
+                ) : (
+                  <div className="rounded-[24px] border border-white/10 bg-black/8 px-4 py-4 text-sm text-[var(--muted-foreground)]">
+                    No proposed case candidates include this product yet. Run the
+                    article clustering pass to generate them.
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
             <Card className="surface-panel rounded-[30px] px-0 py-0">
               <CardHeader className="px-6 pt-6">
                 <Badge variant="outline">Demo products</Badge>
