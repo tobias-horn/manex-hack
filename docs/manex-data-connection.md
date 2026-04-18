@@ -33,6 +33,13 @@ It always attempts to read from `v_defect_detail` and returns:
 - Postgres failures log a redacted `DATABASE_URL` plus the client error message
 - Missing env is treated separately from failed auth/network so setup issues are obvious
 
+## Related abstraction
+
+Prompt 2 adds `src/lib/manex-data-access.ts`, which is the stable domain layer for normal product features.
+
+- use the smoke test for connectivity proof
+- use the domain layer for investigation, traceability, quality-summary, and workflow features
+
 ## Hackathon context
 
 The upstream hackathon repo documents the same three access paths:
