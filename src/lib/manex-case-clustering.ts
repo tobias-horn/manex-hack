@@ -1,4 +1,5 @@
 import { createOpenAI } from "@ai-sdk/openai";
+import { startOfWeek } from "date-fns";
 import { generateObject } from "ai";
 import { z } from "zod";
 
@@ -33,6 +34,11 @@ import {
   type TeamCaseRunSummary,
 } from "@/lib/manex-case-clustering-state";
 import { resolveManexImageUrl } from "@/lib/manex-images";
+import {
+  buildProductTraceabilityEvidence,
+  createTraceabilityScope,
+  type ProductTraceabilityEvidence,
+} from "@/lib/manex-traceability-evidence";
 import { queryPostgres } from "@/lib/postgres";
 import {
   buildPassASystemPrompt,
@@ -48,8 +54,8 @@ import {
 import { memoizeWithTtl } from "@/lib/server-cache";
 import { normalizeUiIdentifier } from "@/lib/ui-format";
 
-const ARTICLE_DOSSIER_SCHEMA_VERSION = "manex.article_dossier.v2";
-const PRODUCT_DOSSIER_SCHEMA_VERSION = "manex.product_dossier.v2";
+const ARTICLE_DOSSIER_SCHEMA_VERSION = "manex.article_dossier.v3";
+const PRODUCT_DOSSIER_SCHEMA_VERSION = "manex.product_dossier.v3";
 const CASE_PROPOSAL_SCHEMA_VERSION = "manex.article_case_set.v2";
 const GLOBAL_RECONCILIATION_SCHEMA_VERSION = "manex.global_case_inventory.v1";
 const CASE_PIPELINE_REVIEW_SCHEMA_VERSION = "manex.case_pipeline_review.v1";
@@ -338,6 +344,65 @@ type ProductTraceabilitySnapshot = {
   };
 };
 
+type ValueCountHint = {
+  value: string;
+  count: number;
+};
+
+type ProductMechanismEvidence = {
+  traceabilityEvidence: Pick<
+    ProductTraceabilityEvidence,
+    | "dominantInstalledParts"
+    | "dominantBomPositions"
+    | "dominantSupplierBatches"
+    | "dominantSuppliers"
+    | "batchConcentrationHints"
+    | "productAnchorCandidates"
+    | "blastRadiusHints"
+  >;
+  temporalProcessEvidence: {
+    buildWeek: string | null;
+    defectWeeks: string[];
+    testWeeks: string[];
+    dominantOccurrenceSections: ValueCountHint[];
+    dominantDetectedSections: ValueCountHint[];
+    occurrenceDetectedMismatch: {
+      present: boolean;
+      mismatchCount: number;
+      examples: string[];
+    };
+    temporalBurstHints: string[];
+    postWindowQuietHints: string[];
+  };
+  fieldLeakEvidence: {
+    claimOnlyThread: boolean;
+    hasPriorFactoryDefect: boolean;
+    buildToClaimDays: number[];
+    claimLagBucket: "none" | "same_week" | "short" | "medium" | "long";
+    dominantClaimReportedParts: ValueCountHint[];
+    dominantClaimBomPositions: ValueCountHint[];
+    latentFailureHints: string[];
+  };
+  operatorHandlingEvidence: {
+    orderId: string | null;
+    dominantReworkUsers: Array<{
+      userId: string;
+      count: number;
+    }>;
+    cosmeticOnlySignals: boolean;
+    lowSeverityOnly: boolean;
+    fieldImpactPresent: boolean;
+    handlingPatternHints: string[];
+  };
+  confounderEvidence: {
+    falsePositiveMarkers: string[];
+    marginalOnlySignals: boolean;
+    detectionBiasRisk: string[];
+    lowVolumePeriodRisk: string[];
+    mixedServiceDocumentationSignals: string[];
+  };
+};
+
 export type ProductThreadSynthesis = z.infer<typeof productThreadSynthesisSchema>;
 
 export type ClusteredProductDossier = {
@@ -374,6 +439,7 @@ export type ClusteredProductDossier = {
   }>;
   stage1Synthesis: ProductThreadSynthesis;
   traceabilitySnapshot: ProductTraceabilitySnapshot;
+  mechanismEvidence: ProductMechanismEvidence;
   summaryFeatures: {
     signalTypesPresent: string[];
     defectCodesPresent: string[];
@@ -586,6 +652,14 @@ const CLAIM_STOP_WORDS = new Set([
   "built",
 ]);
 
+const FALSE_POSITIVE_PATTERN =
+  /false positive|false alarm|no defect found|screening artifact|inspection-only/i;
+const SERVICE_DOCUMENTATION_PATTERN =
+  /service|manual|documentation|firmware|software|configuration|config|instruction|update/i;
+const COSMETIC_PATTERN =
+  /cosmetic|scratch|label|surface|appearance|housing|debris|dent|scuff|bent/i;
+const LOW_SEVERITY_SET = new Set(["low", "minor"]);
+
 const normalizeText = (value: string | null | undefined) => {
   const text = value?.replace(/\s+/g, " ").trim();
   return text ? text : "";
@@ -604,9 +678,6 @@ const uniqueValues = (values: Array<string | null | undefined>) =>
         .filter((value): value is string => Boolean(value)),
     ),
   ).sort((left, right) => left.localeCompare(right));
-
-const countUnique = (values: Array<string | null | undefined>) =>
-  uniqueValues(values).length;
 
 const createId = (prefix: string) =>
   `${prefix}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
@@ -806,48 +877,16 @@ function buildSignalTimeline(input: {
   return timeline.sort(byOccurredAtAsc);
 }
 
-function buildTraceabilitySnapshot(installedParts: ManexInstalledPart[]): ProductTraceabilitySnapshot {
-  const assemblies = groupBy(
-    installedParts,
-    (item) => normalizeNullableText(item.parentFindNumber) ?? "Direct install",
-  );
-
-  const assemblySummaries = [...assemblies.entries()]
-    .map(([assemblyLabel, items]) => ({
-      assemblyLabel,
-      partCount: items.length,
-      uniqueBatchCount: countUnique(items.map((item) => item.batchId ?? item.batchNumber)),
-      uniqueSupplierCount: countUnique(items.map((item) => item.supplierName)),
-    }))
-    .sort(
-      (left, right) =>
-        right.partCount - left.partCount ||
-        left.assemblyLabel.localeCompare(right.assemblyLabel),
-    );
-
+function buildTraceabilitySnapshot(
+  traceabilityEvidence: ProductTraceabilityEvidence,
+): ProductTraceabilitySnapshot {
   return {
-    installedPartCount: installedParts.length,
-    uniqueBatchCount: countUnique(
-      installedParts.map((item) => item.batchId ?? item.batchNumber),
-    ),
-    uniqueSupplierCount: countUnique(installedParts.map((item) => item.supplierName)),
-    uniquePartCount: countUnique(installedParts.map((item) => item.partNumber)),
-    assemblies: assemblySummaries,
-    graphSummary: {
-      nodeCount:
-        1 +
-        countUnique(installedParts.map((item) => item.partNumber)) +
-        countUnique(installedParts.map((item) => item.findNumber ?? item.positionCode)) +
-        countUnique(installedParts.map((item) => item.batchId ?? item.batchNumber)) +
-        countUnique(installedParts.map((item) => item.supplierName)),
-      edgeCount: installedParts.length * 3,
-      dominantBatches: uniqueValues(
-        installedParts.slice(0, 10).map((item) => item.batchId ?? item.batchNumber),
-      ).slice(0, 6),
-      dominantSuppliers: uniqueValues(
-        installedParts.slice(0, 10).map((item) => item.supplierName),
-      ).slice(0, 6),
-    },
+    installedPartCount: traceabilityEvidence.installedPartCount,
+    uniqueBatchCount: traceabilityEvidence.uniqueBatchCount,
+    uniqueSupplierCount: traceabilityEvidence.uniqueSupplierCount,
+    uniquePartCount: traceabilityEvidence.uniquePartCount,
+    assemblies: traceabilityEvidence.assemblies,
+    graphSummary: traceabilityEvidence.graphSummary,
   };
 }
 
@@ -946,6 +985,321 @@ function buildSummaryFeatures(input: {
       input.claims.length > 0 && input.defects.length === 0,
     reworkPresent: input.rework.length > 0,
     actionPresent: input.actions.length > 0,
+  };
+}
+
+function buildValueCountHints(
+  values: Array<string | null | undefined>,
+  limit = 6,
+): ValueCountHint[] {
+  return topEntries(
+    bucketCounts(
+      values
+        .map((value) => normalizeNullableText(value))
+        .filter((value): value is string => Boolean(value))
+        .map((value, index) => ({
+          value,
+          productId: `local-${index}`,
+        })),
+      (item) => item.value,
+      (item) => item.productId,
+    ).map((entry) => ({
+      value: entry.value,
+      count: entry.count,
+    })),
+    limit,
+  );
+}
+
+function normalizeWeekStart(value: string | null | undefined) {
+  return value
+    ? startOfWeek(new Date(value), { weekStartsOn: 1 }).toISOString()
+    : null;
+}
+
+function toSignalWeekSet(values: Array<string | null | undefined>) {
+  return uniqueValues(values.map((value) => normalizeWeekStart(value)));
+}
+
+function getMedian(values: number[]) {
+  if (!values.length) {
+    return null;
+  }
+
+  const midpoint = Math.floor(values.length / 2);
+  return values.length % 2 === 1
+    ? values[midpoint]
+    : (values[midpoint - 1] + values[midpoint]) / 2;
+}
+
+function classifyClaimLag(days: number[]) {
+  const median = getMedian(days);
+
+  if (median === null) {
+    return "none" as const;
+  }
+
+  if (median <= 7) {
+    return "same_week" as const;
+  }
+
+  if (median <= 28) {
+    return "short" as const;
+  }
+
+  if (median <= 56) {
+    return "medium" as const;
+  }
+
+  return "long" as const;
+}
+
+function severityLooksLow(severity: string | null | undefined) {
+  return severity ? LOW_SEVERITY_SET.has(severity.toLowerCase()) : false;
+}
+
+function buildMechanismEvidence(input: {
+  product: ProductRow;
+  defects: ManexDefect[];
+  claims: ManexFieldClaim[];
+  tests: ManexTestSignal[];
+  rework: ManexReworkRecord[];
+  actions: ManexWorkflowAction[];
+  installedParts: ManexInstalledPart[];
+  weeklyQualitySnippets: ManexWeeklyQualitySummary[];
+  summaryFeatures: ClusteredProductDossier["summaryFeatures"];
+  traceabilityEvidence: ProductTraceabilityEvidence;
+}): ProductMechanismEvidence {
+  const buildWeek = normalizeWeekStart(input.product.build_ts);
+  const defectWeeks = uniqueValues(input.defects.map((item) => item.defectWeekStart));
+  const testWeeks = toSignalWeekSet(input.tests.map((item) => item.occurredAt));
+  const dominantOccurrenceSections = buildValueCountHints(
+    input.defects.map((item) => item.occurrenceSectionName),
+    4,
+  );
+  const dominantDetectedSections = buildValueCountHints(
+    [
+      ...input.defects.map((item) => item.detectedSectionName),
+      ...input.tests.map((item) => item.sectionName),
+    ],
+    4,
+  );
+  const occurrenceDetectedMismatches = input.defects
+    .filter(
+      (item) =>
+        item.occurrenceSectionName &&
+        item.detectedSectionName &&
+        item.occurrenceSectionName !== item.detectedSectionName,
+    )
+    .map(
+      (item) =>
+        `${item.code}: ${item.occurrenceSectionName} -> ${item.detectedSectionName}`,
+    );
+  const weekCounts = bucketCounts(
+    [
+      ...input.defects.map((item) => ({
+        weekStart: item.defectWeekStart,
+        signalType: "defect",
+      })),
+      ...input.tests.map((item) => ({
+        weekStart: normalizeWeekStart(item.occurredAt),
+        signalType: item.overallResult.toLowerCase(),
+      })),
+      ...input.rework.map((item) => ({
+        weekStart: normalizeWeekStart(item.recordedAt),
+        signalType: "rework",
+      })),
+      ...input.actions.map((item) => ({
+        weekStart: normalizeWeekStart(item.recordedAt),
+        signalType: "action",
+      })),
+    ],
+    (item) => item.weekStart,
+  );
+  const temporalBurstHints = weekCounts
+    .filter((entry) => entry.count >= 2)
+    .slice(0, 4)
+    .map((entry) => `${entry.value}: ${entry.count} factory-side signals clustered.`);
+
+  const allFactorySignalWeeks = uniqueValues(
+    weekCounts.map((entry) => entry.value).filter((value): value is string => Boolean(value)),
+  );
+  const latestFactorySignalWeek = allFactorySignalWeeks.at(-1) ?? null;
+  const articleWeeks = uniqueValues(input.weeklyQualitySnippets.map((item) => item.weekStart));
+  const laterArticleWeeks = latestFactorySignalWeek
+    ? articleWeeks.filter((week) => week > latestFactorySignalWeek)
+    : [];
+  const postWindowQuietHints =
+    laterArticleWeeks.length >= 2
+      ? [
+          `Factory-side signals stop after ${latestFactorySignalWeek} while the article continues for ${laterArticleWeeks.length} later weeks.`,
+        ]
+      : [];
+
+  const claimOnlyThread = input.claims.length > 0 && input.defects.length === 0;
+  const claimLagBucket = classifyClaimLag(input.summaryFeatures.daysFromBuildToClaim);
+  const dominantClaimReportedParts = buildValueCountHints(
+    input.claims.map((item) => item.reportedPartNumber),
+    4,
+  );
+  const dominantClaimBomPositions = buildValueCountHints(
+    input.claims.flatMap((claim) =>
+      input.installedParts
+        .filter((item) => item.partNumber === claim.reportedPartNumber)
+        .map((item) => item.findNumber ?? item.positionCode),
+    ),
+    4,
+  );
+  const latentFailureHints = [
+    claimOnlyThread
+      ? "Field claims exist without any prior in-factory defect row for this product."
+      : null,
+    claimLagBucket === "medium" || claimLagBucket === "long"
+      ? `Claim lag looks delayed (${claimLagBucket}) rather than immediate.`
+      : null,
+    claimOnlyThread && dominantClaimBomPositions.length > 0
+      ? `Claim focus maps back to installed positions ${dominantClaimBomPositions
+          .map((item) => item.value)
+          .slice(0, 3)
+          .join(", ")}.`
+      : null,
+  ].filter((value): value is string => Boolean(value));
+
+  const dominantReworkUsers = buildValueCountHints(
+    input.rework.map((item) => item.userId),
+    4,
+  ).map((item) => ({
+    userId: item.value,
+    count: item.count,
+  }));
+  const hasHighSeveritySignal =
+    input.defects.some((item) => !severityLooksLow(item.severity)) ||
+    input.claims.some(
+      (item) =>
+        item.mappedDefectSeverity &&
+        !severityLooksLow(item.mappedDefectSeverity),
+    ) ||
+    input.tests.some((item) => item.overallResult === "FAIL");
+  const lowSeverityOnly =
+    (input.defects.length > 0 || input.claims.length > 0) && !hasHighSeveritySignal;
+  const cosmeticTextSignals = uniqueValues(
+    [
+      ...input.defects.map((item) => item.notes),
+      ...input.claims.map((item) => item.complaintText),
+      ...input.claims.map((item) => item.notes),
+    ].filter((value) => COSMETIC_PATTERN.test(value ?? "")),
+  );
+  const cosmeticOnlySignals =
+    lowSeverityOnly && cosmeticTextSignals.length > 0 && input.tests.every((item) => item.overallResult !== "FAIL");
+  const fieldImpactPresent = input.claims.length > 0;
+  const handlingPatternHints = [
+    cosmeticOnlySignals
+      ? "Low-severity, cosmetic-style evidence dominates this thread."
+      : null,
+    input.product.order_id && dominantReworkUsers.length > 0
+      ? `Order ${input.product.order_id} intersects with repeated rework ownership.`
+      : null,
+    !fieldImpactPresent && lowSeverityOnly && dominantReworkUsers.length > 0
+      ? "Handling or late-stage correction may explain the visible signals better than field failure."
+      : null,
+  ].filter((value): value is string => Boolean(value));
+
+  const marginalOnlySignals =
+    input.tests.some((item) => item.overallResult === "MARGINAL") &&
+    input.tests.every((item) => item.overallResult !== "FAIL") &&
+    input.defects.length === 0 &&
+    input.claims.length === 0;
+  const detectionBiasRisk = [
+    occurrenceDetectedMismatches.length > 0
+      ? `${occurrenceDetectedMismatches.length} defect rows were detected in a different section than the stated occurrence section.`
+      : null,
+    dominantDetectedSections.length > 0 && dominantOccurrenceSections.length === 0
+      ? "Signals are concentrated in detected sections without a matching occurrence-section trail."
+      : null,
+  ].filter((value): value is string => Boolean(value));
+
+  const builtOrTriggeredWeeks = uniqueValues(
+    [buildWeek, ...defectWeeks, ...testWeeks].filter((value): value is string => Boolean(value)),
+  );
+  const sortedWeeklyVolumes = [...input.weeklyQualitySnippets]
+    .map((item) => item.productsBuilt)
+    .sort((left, right) => left - right);
+  const lowVolumeThreshold =
+    sortedWeeklyVolumes.length > 0
+      ? sortedWeeklyVolumes[Math.max(0, Math.floor((sortedWeeklyVolumes.length - 1) * 0.25))]
+      : null;
+  const lowVolumePeriodRisk = lowVolumeThreshold === null
+    ? []
+    : input.weeklyQualitySnippets
+        .filter(
+          (item) =>
+            builtOrTriggeredWeeks.includes(item.weekStart) &&
+            item.productsBuilt <= lowVolumeThreshold,
+        )
+        .map(
+          (item) =>
+            `${item.weekStart} is a low-volume week for this article (${item.productsBuilt} products built).`,
+        )
+        .slice(0, 4);
+  const mixedServiceDocumentationSignals = uniqueValues(
+    [
+      ...input.claims.map((item) => item.complaintText),
+      ...input.claims.map((item) => item.notes),
+      ...input.defects.map((item) => item.notes),
+      ...input.actions.map((item) => item.comments),
+    ].filter((value) => SERVICE_DOCUMENTATION_PATTERN.test(value ?? "")),
+  ).slice(0, 6);
+
+  return {
+    traceabilityEvidence: {
+      dominantInstalledParts: input.traceabilityEvidence.dominantInstalledParts,
+      dominantBomPositions: input.traceabilityEvidence.dominantBomPositions,
+      dominantSupplierBatches: input.traceabilityEvidence.dominantSupplierBatches,
+      dominantSuppliers: input.traceabilityEvidence.dominantSuppliers,
+      batchConcentrationHints: input.traceabilityEvidence.batchConcentrationHints,
+      productAnchorCandidates: input.traceabilityEvidence.productAnchorCandidates,
+      blastRadiusHints: input.traceabilityEvidence.blastRadiusHints,
+    },
+    temporalProcessEvidence: {
+      buildWeek,
+      defectWeeks,
+      testWeeks,
+      dominantOccurrenceSections,
+      dominantDetectedSections,
+      occurrenceDetectedMismatch: {
+        present: occurrenceDetectedMismatches.length > 0,
+        mismatchCount: occurrenceDetectedMismatches.length,
+        examples: occurrenceDetectedMismatches.slice(0, 4),
+      },
+      temporalBurstHints,
+      postWindowQuietHints,
+    },
+    fieldLeakEvidence: {
+      claimOnlyThread,
+      hasPriorFactoryDefect: input.defects.length > 0,
+      buildToClaimDays: input.summaryFeatures.daysFromBuildToClaim,
+      claimLagBucket,
+      dominantClaimReportedParts,
+      dominantClaimBomPositions,
+      latentFailureHints,
+    },
+    operatorHandlingEvidence: {
+      orderId: normalizeNullableText(input.product.order_id),
+      dominantReworkUsers,
+      cosmeticOnlySignals,
+      lowSeverityOnly,
+      fieldImpactPresent,
+      handlingPatternHints,
+    },
+    confounderEvidence: {
+      falsePositiveMarkers: input.summaryFeatures.falsePositiveMarkers.filter((value) =>
+        FALSE_POSITIVE_PATTERN.test(value),
+      ),
+      marginalOnlySignals,
+      detectionBiasRisk,
+      lowVolumePeriodRisk,
+      mixedServiceDocumentationSignals,
+    },
   };
 }
 
@@ -1128,6 +1482,7 @@ function buildFallbackProductThreadSynthesis(input: {
   articleId: string;
   signalTimeline: ProductSignalTimelineItem[];
   summaryFeatures: ClusteredProductDossier["summaryFeatures"];
+  mechanismEvidence: ProductMechanismEvidence;
 }) {
   const recentSignals = input.signalTimeline.slice(-4);
 
@@ -1144,10 +1499,22 @@ function buildFallbackProductThreadSynthesis(input: {
       traceHighlights: [
         ...input.summaryFeatures.bomFindNumbers.slice(0, 3),
         ...input.summaryFeatures.supplierBatches.slice(0, 3),
+        ...input.mechanismEvidence.traceabilityEvidence.productAnchorCandidates
+          .map((item) => item.anchorValue)
+          .slice(0, 2),
       ].slice(0, 6),
       serviceSignals: input.summaryFeatures.fieldClaimWithoutFactoryDefect
-        ? ["Field claim exists without a prior factory defect."]
-        : [],
+        ? [
+            "Field claim exists without a prior factory defect.",
+            ...input.mechanismEvidence.confounderEvidence.mixedServiceDocumentationSignals.slice(
+              0,
+              2,
+            ),
+          ]
+        : input.mechanismEvidence.confounderEvidence.mixedServiceDocumentationSignals.slice(
+            0,
+            2,
+          ),
       contradictions: [],
     },
     suspiciousPatterns: [
@@ -1157,14 +1524,23 @@ function buildFallbackProductThreadSynthesis(input: {
       ...input.summaryFeatures.supplierBatches.slice(0, 2).map(
         (batch) => `Traceability touches supplier batch ${batch}.`,
       ),
+      ...input.mechanismEvidence.temporalProcessEvidence.temporalBurstHints.slice(0, 2),
+      ...input.mechanismEvidence.fieldLeakEvidence.latentFailureHints.slice(0, 2),
     ].slice(0, 6),
-    possibleNoiseFlags: input.summaryFeatures.falsePositiveMarkers.slice(0, 6),
+    possibleNoiseFlags: [
+      ...input.summaryFeatures.falsePositiveMarkers.slice(0, 4),
+      ...input.mechanismEvidence.confounderEvidence.detectionBiasRisk.slice(0, 2),
+      ...input.mechanismEvidence.confounderEvidence.lowVolumePeriodRisk.slice(0, 2),
+    ].slice(0, 6),
     openQuestions: [
       input.summaryFeatures.fieldClaimWithoutFactoryDefect
         ? "Why is there a field claim without a corresponding factory defect trail?"
         : null,
       input.summaryFeatures.reworkPresent
         ? "Did rework change the apparent symptom path for this unit?"
+        : null,
+      input.mechanismEvidence.traceabilityEvidence.blastRadiusHints[0]
+        ? `Why does ${input.mechanismEvidence.traceabilityEvidence.blastRadiusHints[0].anchorValue} connect to ${input.mechanismEvidence.traceabilityEvidence.blastRadiusHints[0].relatedProductCount} scoped products?`
         : null,
     ].filter((value): value is string => Boolean(value)),
   } satisfies ProductThreadSynthesis;
@@ -1176,6 +1552,7 @@ function buildStage1PromptPayload(input: {
   sourceCounts: ClusteredProductDossier["sourceCounts"];
   signalTimeline: ProductSignalTimelineItem[];
   summaryFeatures: ClusteredProductDossier["summaryFeatures"];
+  mechanismEvidence: ProductMechanismEvidence;
   defects: ManexDefect[];
   claims: ManexFieldClaim[];
   tests: ManexTestSignal[];
@@ -1203,13 +1580,17 @@ function buildStage1PromptPayload(input: {
       sourceContext: signal.sourceContext,
     })),
     evidenceFeatures: input.summaryFeatures,
+    mechanismEvidence: input.mechanismEvidence,
     defects: input.defects.map((item) => ({
       id: item.id,
       occurredAt: item.occurredAt,
       code: item.code,
       severity: item.severity,
       reportedPartNumber: item.reportedPartNumber,
-      section: item.detectedSectionName ?? item.occurrenceSectionName,
+      detectedSectionName: item.detectedSectionName,
+      occurrenceSectionName: item.occurrenceSectionName,
+      detectedTestName: item.detectedTestName,
+      detectedTestOverall: item.detectedTestOverall,
       notes: item.notes,
     })),
     claims: input.claims.map((item) => ({
@@ -1217,6 +1598,8 @@ function buildStage1PromptPayload(input: {
       claimedAt: item.claimedAt,
       market: item.market,
       mappedDefectCode: item.mappedDefectCode,
+      mappedDefectSeverity: item.mappedDefectSeverity,
+      daysFromBuild: item.daysFromBuild,
       reportedPartNumber: item.reportedPartNumber,
       complaintText: item.complaintText,
       notes: item.notes,
@@ -1227,6 +1610,7 @@ function buildStage1PromptPayload(input: {
       overallResult: item.overallResult,
       testKey: item.testKey,
       testValue: item.testValue,
+      unit: item.unit,
       sectionName: item.sectionName,
       notes: item.notes,
     })),
@@ -1272,6 +1656,43 @@ function ensureStage1Synthesis(thread: ClusteredProductDossier) {
     articleId: thread.articleId,
     signalTimeline: thread.signals,
     summaryFeatures: thread.summaryFeatures,
+    mechanismEvidence: thread.mechanismEvidence,
+  });
+}
+
+function ensureMechanismEvidence(
+  thread: ClusteredProductDossier,
+  articleScope = createTraceabilityScope(thread.installedParts),
+) {
+  if (
+    thread.mechanismEvidence &&
+    typeof thread.mechanismEvidence === "object" &&
+    typeof thread.mechanismEvidence.traceabilityEvidence === "object"
+  ) {
+    return thread.mechanismEvidence;
+  }
+
+  const traceabilityEvidence = buildProductTraceabilityEvidence(
+    thread.installedParts,
+    articleScope,
+  );
+
+  return buildMechanismEvidence({
+    product: {
+      product_id: thread.productId,
+      article_id: thread.articleId,
+      order_id: thread.orderId,
+      build_ts: thread.buildTs,
+    },
+    defects: thread.defects,
+    claims: thread.claims,
+    tests: thread.tests,
+    rework: thread.rework,
+    actions: thread.actions,
+    installedParts: thread.installedParts,
+    weeklyQualitySnippets: thread.weeklyQualitySnippets,
+    summaryFeatures: thread.summaryFeatures,
+    traceabilityEvidence,
   });
 }
 
@@ -1280,12 +1701,26 @@ function hydrateArticleDossier(dossier: ClusteredArticleDossier | null) {
     return null;
   }
 
+  const articleScope = createTraceabilityScope(
+    dossier.rawEvidenceAppendix.installs.length
+      ? dossier.rawEvidenceAppendix.installs
+      : dossier.productThreads.flatMap((thread) => thread.installedParts),
+  );
+
   return {
     ...dossier,
-    productThreads: dossier.productThreads.map((thread) => ({
-      ...thread,
-      stage1Synthesis: ensureStage1Synthesis(thread),
-    })),
+    productThreads: dossier.productThreads.map((thread) => {
+      const mechanismEvidence = ensureMechanismEvidence(thread, articleScope);
+
+      return {
+        ...thread,
+        mechanismEvidence,
+        stage1Synthesis: ensureStage1Synthesis({
+          ...thread,
+          mechanismEvidence,
+        }),
+      };
+    }),
   } satisfies ClusteredArticleDossier;
 }
 
@@ -1583,6 +2018,8 @@ async function buildArticleDossier(
   const defectsByProduct = groupBy(defectResult.items, (item) => item.productId);
   const claimsByProduct = groupBy(claimResult.items, (item) => item.productId);
   const testsByProduct = groupBy(testResult.items, (item) => item.productId);
+  const allInstalledParts = [...installedPartsByProduct.values()].flat();
+  const articleTraceabilityScope = createTraceabilityScope(allInstalledParts);
   const productThreadDrafts = products.map((product) => {
       const installedParts = installedPartsByProduct.get(product.product_id) ?? [];
       const actions = actionsByProduct.get(product.product_id) ?? [];
@@ -1597,7 +2034,11 @@ async function buildArticleDossier(
         rework,
         actions,
       });
-      const traceabilitySnapshot = buildTraceabilitySnapshot(installedParts);
+      const traceabilityEvidence = buildProductTraceabilityEvidence(
+        installedParts,
+        articleTraceabilityScope,
+      );
+      const traceabilitySnapshot = buildTraceabilitySnapshot(traceabilityEvidence);
       const evidenceFrames = buildEvidenceFrames(defects, claims);
       const summaryFeatures = buildSummaryFeatures({
         product,
@@ -1612,6 +2053,18 @@ async function buildArticleDossier(
       const relevantWeeklySummaries = weeklyResult.items
         .filter((item) => item.articleId === normalizedArticleId)
         .slice(0, 6);
+      const mechanismEvidence = buildMechanismEvidence({
+        product,
+        defects,
+        claims,
+        tests,
+        rework,
+        actions,
+        installedParts,
+        weeklyQualitySnippets: relevantWeeklySummaries,
+        summaryFeatures,
+        traceabilityEvidence,
+      });
       const sourceCounts = {
         defects: defects.length,
         claims: claims.length,
@@ -1632,6 +2085,7 @@ async function buildArticleDossier(
         installedParts,
         signalTimeline,
         traceabilitySnapshot,
+        mechanismEvidence,
         evidenceFrames,
         summaryFeatures,
         relevantWeeklySummaries,
@@ -1657,6 +2111,7 @@ async function buildArticleDossier(
                 sourceCounts: draft.sourceCounts,
                 signalTimeline: draft.signalTimeline,
                 summaryFeatures: draft.summaryFeatures,
+                mechanismEvidence: draft.mechanismEvidence,
                 defects: draft.defects,
                 claims: draft.claims,
                 tests: draft.tests,
@@ -1670,6 +2125,7 @@ async function buildArticleDossier(
                 articleId: draft.product.article_id,
                 signalTimeline: draft.signalTimeline,
                 summaryFeatures: draft.summaryFeatures,
+                mechanismEvidence: draft.mechanismEvidence,
               }),
             )
           : buildFallbackProductThreadSynthesis({
@@ -1677,6 +2133,7 @@ async function buildArticleDossier(
               articleId: draft.product.article_id,
               signalTimeline: draft.signalTimeline,
               summaryFeatures: draft.summaryFeatures,
+              mechanismEvidence: draft.mechanismEvidence,
             });
 
       const payload = {
@@ -1698,6 +2155,7 @@ async function buildArticleDossier(
         evidenceFrames: draft.evidenceFrames,
         stage1Synthesis,
         traceabilitySnapshot: draft.traceabilitySnapshot,
+        mechanismEvidence: draft.mechanismEvidence,
         summaryFeatures: draft.summaryFeatures,
         existingSurfaceContext: {
           dossierSnapshot: {
@@ -1989,6 +2447,7 @@ function toPromptProductThread(thread: ClusteredProductDossier) {
     })),
     evidenceFrames: thread.evidenceFrames,
     traceabilitySnapshot: thread.traceabilitySnapshot,
+    mechanismEvidence: thread.mechanismEvidence,
     existingSurfaceContext: thread.existingSurfaceContext,
   };
 }
@@ -2243,6 +2702,7 @@ async function runProposalPass(
           productId: thread.productId,
           sourceCounts: thread.sourceCounts,
           summaryFeatures: thread.summaryFeatures,
+          mechanismEvidence: thread.mechanismEvidence,
         })),
         draftProposals: draft,
       }),

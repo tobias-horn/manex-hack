@@ -3,6 +3,20 @@ import {
   type ManexInstalledPart,
   type ManexSearchResult,
 } from "@/lib/manex-data-access";
+import {
+  buildBlastRadiusGraph,
+  buildProductTraceabilityGraph,
+  buildTraceabilityAssemblies,
+  buildTraceabilityRelatedProducts,
+  countUniqueTraceabilityValues,
+  pickDominantTraceabilityBatch,
+  sortTraceabilityPartsForDisplay,
+  uniqueTraceabilityValues,
+  type TraceabilityBlastRadiusSuspect,
+  type TraceabilityGraphEdge,
+  type TraceabilityGraphNode,
+  type TraceabilityRelatedProductSummary,
+} from "@/lib/manex-traceability-evidence";
 import { memoizeWithTtl } from "@/lib/server-cache";
 import { normalizeUiIdentifier } from "@/lib/ui-format";
 
@@ -14,26 +28,7 @@ export type TraceabilityFilterState = {
   partNumber: string | null;
 };
 
-export type TraceabilityGraphNode = {
-  id: string;
-  kind: "article" | "product" | "position" | "part" | "batch" | "supplier";
-  label: string;
-  caption: string | null;
-};
-
-export type TraceabilityGraphEdge = {
-  id: string;
-  source: string;
-  target: string;
-  kind:
-    | "built_as"
-    | "contains_position"
-    | "uses_part"
-    | "comes_from_batch"
-    | "supplied_by"
-    | "blast_radius";
-  label: string | null;
-};
+export type { TraceabilityGraphEdge, TraceabilityGraphNode };
 
 export type ProductTraceability = {
   product: {
@@ -60,20 +55,7 @@ export type ProductTraceability = {
   transport: TraceabilityTransport;
 };
 
-export type TraceabilityRelatedProduct = {
-  productId: string;
-  articleId: string | null;
-  articleName: string | null;
-  orderId: string | null;
-  buildTs: string | null;
-  sharedBatchIds: string[];
-  sharedBatchNumbers: string[];
-  sharedPartNumbers: string[];
-  sharedPositions: string[];
-  sharedFindNumbers: string[];
-  sharedSuppliers: string[];
-  matchedParts: ManexInstalledPart[];
-};
+export type TraceabilityRelatedProduct = TraceabilityRelatedProductSummary;
 
 export type TraceabilityBlastRadius = {
   suspect: {
@@ -127,28 +109,6 @@ const normalizeCode = (value: string | string[] | undefined) => {
   return normalizeUiIdentifier(input);
 };
 
-const sortPartsForDisplay = (items: ManexInstalledPart[]) =>
-  [...items].sort((left, right) => {
-    const leftAssembly = left.parentFindNumber ?? "ZZZ";
-    const rightAssembly = right.parentFindNumber ?? "ZZZ";
-
-    return (
-      leftAssembly.localeCompare(rightAssembly) ||
-      (left.positionCode ?? left.findNumber ?? left.partNumber).localeCompare(
-        right.positionCode ?? right.findNumber ?? right.partNumber,
-      ) ||
-      left.partNumber.localeCompare(right.partNumber)
-    );
-  });
-
-const uniqueValues = (values: Array<string | null | undefined>) =>
-  Array.from(
-    new Set(values.filter((value): value is string => Boolean(value))),
-  ).sort((left, right) => left.localeCompare(right));
-
-const uniqueCount = (values: Array<string | null | undefined>) =>
-  uniqueValues(values).length;
-
 const parseBatchReference = (value: string | null): BatchSelector => {
   const normalized = normalizeText(value)?.toUpperCase();
 
@@ -167,298 +127,6 @@ const formatBatchReference = (selection: {
   batchId: string | null;
   batchNumber: string | null;
 }) => selection.batchId ?? selection.batchNumber ?? null;
-
-const pickDominantBatch = (
-  items: ManexInstalledPart[],
-): { batchId: string | null; batchNumber: string | null } | null => {
-  const buckets = new Map<
-    string,
-    {
-      batchId: string | null;
-      batchNumber: string | null;
-      count: number;
-    }
-  >();
-
-  for (const item of items) {
-    const key = item.batchId ?? item.batchNumber;
-
-    if (!key) {
-      continue;
-    }
-
-    const current = buckets.get(key);
-
-    if (current) {
-      current.count += 1;
-      continue;
-    }
-
-    buckets.set(key, {
-      batchId: item.batchId,
-      batchNumber: item.batchNumber,
-      count: 1,
-    });
-  }
-
-  const winner = [...buckets.values()].sort(
-    (left, right) =>
-      right.count - left.count ||
-      (left.batchId ?? left.batchNumber ?? "").localeCompare(
-        right.batchId ?? right.batchNumber ?? "",
-      ),
-  )[0];
-
-  return winner
-    ? {
-        batchId: winner.batchId,
-        batchNumber: winner.batchNumber,
-      }
-    : null;
-};
-
-const buildProductTraceGraph = (items: ManexInstalledPart[]) => {
-  const nodes = new Map<string, TraceabilityGraphNode>();
-  const edges = new Map<string, TraceabilityGraphEdge>();
-
-  const addNode = (node: TraceabilityGraphNode) => {
-    if (!nodes.has(node.id)) {
-      nodes.set(node.id, node);
-    }
-  };
-
-  const addEdge = (edge: TraceabilityGraphEdge) => {
-    if (!edges.has(edge.id)) {
-      edges.set(edge.id, edge);
-    }
-  };
-
-  const head = items[0];
-
-  if (head?.articleId) {
-    addNode({
-      id: `article:${head.articleId}`,
-      kind: "article",
-      label: head.articleName ?? head.articleId,
-      caption: head.articleId,
-    });
-  }
-
-  if (head) {
-    addNode({
-      id: `product:${head.productId}`,
-      kind: "product",
-      label: head.productId,
-      caption: head.orderId ?? head.articleName ?? null,
-    });
-  }
-
-  if (head?.articleId) {
-    addEdge({
-      id: `edge:article:${head.articleId}:product:${head.productId}`,
-      source: `article:${head.articleId}`,
-      target: `product:${head.productId}`,
-      kind: "built_as",
-      label: "article build",
-    });
-  }
-
-  for (const item of items) {
-    const positionId = `position:${item.bomNodeId}`;
-    const partId = `part:${item.partId}`;
-
-    addNode({
-      id: positionId,
-      kind: "position",
-      label: item.positionCode ?? item.findNumber ?? item.bomNodeId,
-      caption: item.parentFindNumber ?? "Direct install",
-    });
-    addNode({
-      id: partId,
-      kind: "part",
-      label: item.partNumber,
-      caption: item.partTitle ?? item.serialNumber ?? null,
-    });
-
-    addEdge({
-      id: `edge:product:${item.productId}:${positionId}`,
-      source: `product:${item.productId}`,
-      target: positionId,
-      kind: "contains_position",
-      label: item.parentFindNumber ?? "installed position",
-    });
-    addEdge({
-      id: `edge:${positionId}:${partId}`,
-      source: positionId,
-      target: partId,
-      kind: "uses_part",
-      label: item.serialNumber ?? item.qualityStatus ?? null,
-    });
-
-    if (item.batchId ?? item.batchNumber) {
-      const batchId = `batch:${item.batchId ?? item.batchNumber}`;
-
-      addNode({
-        id: batchId,
-        kind: "batch",
-        label: item.batchId ?? item.batchNumber ?? "Unknown batch",
-        caption: item.batchNumber && item.batchId ? item.batchNumber : null,
-      });
-      addEdge({
-        id: `edge:${partId}:${batchId}`,
-        source: partId,
-        target: batchId,
-        kind: "comes_from_batch",
-        label: item.batchReceivedDate ?? null,
-      });
-
-      if (item.supplierId ?? item.supplierName) {
-        const supplierId = `supplier:${item.supplierId ?? item.supplierName}`;
-
-        addNode({
-          id: supplierId,
-          kind: "supplier",
-          label: item.supplierName ?? item.supplierId ?? "Unknown supplier",
-          caption: item.manufacturerName ?? null,
-        });
-        addEdge({
-          id: `edge:${batchId}:${supplierId}`,
-          source: batchId,
-          target: supplierId,
-          kind: "supplied_by",
-          label: "supplier batch",
-        });
-      }
-    }
-  }
-
-  return {
-    nodes: [...nodes.values()],
-    edges: [...edges.values()],
-  };
-};
-
-const buildBlastRadiusGraph = (
-  relatedProducts: TraceabilityRelatedProduct[],
-  suspect: TraceabilityBlastRadius["suspect"],
-) => {
-  const nodes = new Map<string, TraceabilityGraphNode>();
-  const edges = new Map<string, TraceabilityGraphEdge>();
-
-  const addNode = (node: TraceabilityGraphNode) => {
-    if (!nodes.has(node.id)) {
-      nodes.set(node.id, node);
-    }
-  };
-
-  const addEdge = (edge: TraceabilityGraphEdge) => {
-    if (!edges.has(edge.id)) {
-      edges.set(edge.id, edge);
-    }
-  };
-
-  const suspectNodeIds: string[] = [];
-
-  if (suspect.partNumber) {
-    const partNodeId = `part:${suspect.partNumber}`;
-
-    suspectNodeIds.push(partNodeId);
-    addNode({
-      id: partNodeId,
-      kind: "part",
-      label: suspect.partNumber,
-      caption: "suspect part master",
-    });
-  }
-
-  if (suspect.batchId ?? suspect.batchNumber) {
-    const batchNodeId = `batch:${suspect.batchId ?? suspect.batchNumber}`;
-
-    suspectNodeIds.push(batchNodeId);
-    addNode({
-      id: batchNodeId,
-      kind: "batch",
-      label: suspect.batchId ?? suspect.batchNumber ?? "Unknown batch",
-      caption:
-        suspect.batchId && suspect.batchNumber ? suspect.batchNumber : null,
-    });
-
-    for (const supplierName of suspect.supplierNames) {
-      const supplierNodeId = `supplier:${supplierName}`;
-
-      addNode({
-        id: supplierNodeId,
-        kind: "supplier",
-        label: supplierName,
-        caption: "shared supplier",
-      });
-      addEdge({
-        id: `edge:${batchNodeId}:${supplierNodeId}`,
-        source: batchNodeId,
-        target: supplierNodeId,
-        kind: "supplied_by",
-        label: "supplier batch",
-      });
-    }
-  }
-
-  if (suspectNodeIds.length === 2) {
-    addEdge({
-      id: `edge:${suspectNodeIds[0]}:${suspectNodeIds[1]}`,
-      source: suspectNodeIds[0],
-      target: suspectNodeIds[1],
-      kind: "comes_from_batch",
-      label: "suspect chain",
-    });
-  }
-
-  for (const product of relatedProducts) {
-    const productNodeId = `product:${product.productId}`;
-
-    addNode({
-      id: productNodeId,
-      kind: "product",
-      label: product.productId,
-      caption: product.orderId ?? product.articleName ?? null,
-    });
-
-    if (product.articleId) {
-      const articleNodeId = `article:${product.articleId}`;
-
-      addNode({
-        id: articleNodeId,
-        kind: "article",
-        label: product.articleName ?? product.articleId,
-        caption: product.articleId,
-      });
-      addEdge({
-        id: `edge:${articleNodeId}:${productNodeId}`,
-        source: articleNodeId,
-        target: productNodeId,
-        kind: "built_as",
-        label: "article track",
-      });
-    }
-
-    for (const suspectNodeId of suspectNodeIds) {
-      addEdge({
-        id: `edge:${suspectNodeId}:${productNodeId}`,
-        source: suspectNodeId,
-        target: productNodeId,
-        kind: "blast_radius",
-        label:
-          product.sharedPositions[0] ??
-          product.sharedFindNumbers[0] ??
-          `${product.matchedParts.length} shared installs`,
-      });
-    }
-  }
-
-  return {
-    nodes: [...nodes.values()],
-    edges: [...edges.values()],
-  };
-};
 
 export function parseTraceabilityFilters(
   params: Record<string, string | string[] | undefined>,
@@ -484,7 +152,7 @@ const loadProductTraceability = memoizeWithTtl(
     return null;
   }
 
-  const installedParts = sortPartsForDisplay(result.items);
+  const installedParts = sortTraceabilityPartsForDisplay(result.items);
   const head = installedParts[0];
 
   return {
@@ -495,28 +163,19 @@ const loadProductTraceability = memoizeWithTtl(
       orderId: head.orderId,
       buildTs: head.productBuiltAt,
       installedPartCount: installedParts.length,
-      uniqueBatchCount: uniqueCount(
+      uniqueBatchCount: countUniqueTraceabilityValues(
         installedParts.map((item) => item.batchId ?? item.batchNumber),
       ),
-      uniqueSupplierCount: uniqueCount(installedParts.map((item) => item.supplierName)),
-      uniquePartCount: uniqueCount(installedParts.map((item) => item.partNumber)),
+      uniqueSupplierCount: countUniqueTraceabilityValues(
+        installedParts.map((item) => item.supplierName),
+      ),
+      uniquePartCount: countUniqueTraceabilityValues(
+        installedParts.map((item) => item.partNumber),
+      ),
     },
-    assemblies: Array.from(
-      installedParts.reduce((groups, item) => {
-        const key = item.parentFindNumber ?? "Direct install";
-        const current = groups.get(key) ?? [];
-
-        current.push(item);
-        groups.set(key, current);
-        return groups;
-      }, new Map<string, ManexInstalledPart[]>()),
-    ).map(([assemblyLabel, items]) => ({
-      assemblyLabel,
-      partCount: items.length,
-      items,
-    })),
+    assemblies: buildTraceabilityAssemblies(installedParts),
     installedParts,
-    graph: buildProductTraceGraph(installedParts),
+    graph: buildProductTraceabilityGraph(installedParts),
     transport: result.transport,
   };
   },
@@ -554,51 +213,9 @@ const loadTraceabilityBlastRadius = memoizeWithTtl(
       limit: TRACEABILITY_LIMIT,
     });
 
-    const groupedProducts = Array.from(
-      result.items.reduce((groups, item) => {
-        const current = groups.get(item.productId) ?? [];
+    const groupedProducts = buildTraceabilityRelatedProducts(result.items);
 
-        current.push(item);
-        groups.set(item.productId, current);
-        return groups;
-      }, new Map<string, ManexInstalledPart[]>()),
-    )
-      .map(([productId, items]) => {
-        const sortedItems = sortPartsForDisplay(items);
-        const head = sortedItems[0];
-
-        return {
-          productId,
-          articleId: head.articleId,
-          articleName: head.articleName,
-          orderId: head.orderId,
-          buildTs: head.productBuiltAt,
-          sharedBatchIds: uniqueValues(sortedItems.map((item) => item.batchId)),
-          sharedBatchNumbers: uniqueValues(
-            sortedItems.map((item) => item.batchNumber),
-          ),
-          sharedPartNumbers: uniqueValues(
-            sortedItems.map((item) => item.partNumber),
-          ),
-          sharedPositions: uniqueValues(
-            sortedItems.map((item) => item.positionCode),
-          ),
-          sharedFindNumbers: uniqueValues(
-            sortedItems.map((item) => item.findNumber),
-          ),
-          sharedSuppliers: uniqueValues(
-            sortedItems.map((item) => item.supplierName),
-          ),
-          matchedParts: sortedItems,
-        } satisfies TraceabilityRelatedProduct;
-      })
-      .sort(
-        (left, right) =>
-          (right.buildTs ?? "").localeCompare(left.buildTs ?? "") ||
-          left.productId.localeCompare(right.productId),
-      );
-
-    const suspect = {
+    const suspect: TraceabilityBlastRadiusSuspect = {
       batchId:
         query.batchId ??
         groupedProducts[0]?.sharedBatchIds[0] ??
@@ -614,7 +231,9 @@ const loadTraceabilityBlastRadius = memoizeWithTtl(
         groupedProducts[0]?.sharedPartNumbers[0] ??
         result.items[0]?.partNumber ??
         null,
-      supplierNames: uniqueValues(result.items.map((item) => item.supplierName)),
+      supplierNames: uniqueTraceabilityValues(
+        result.items.map((item) => item.supplierName),
+      ),
       affectedProductCount: groupedProducts.length,
       matchedInstallCount: result.items.length,
     };
@@ -689,7 +308,7 @@ export async function getTraceabilityWorkbench(
   });
 
   if (!hasExplicitFilters && blastRadius) {
-    const dominantBatch = pickDominantBatch(
+    const dominantBatch = pickDominantTraceabilityBatch(
       blastRadius.relatedProducts.flatMap((product) => product.matchedParts),
     );
 

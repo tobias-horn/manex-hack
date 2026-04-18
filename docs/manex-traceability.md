@@ -27,7 +27,19 @@ That enrichment happens inside `src/lib/manex-data-access.ts`, so downstream fea
 
 ## Helper layer
 
-`src/lib/manex-traceability.ts` exposes deterministic helpers:
+The deterministic traceability shaping is now split in two layers:
+
+- `src/lib/manex-traceability-evidence.ts`
+  shared pure helpers for:
+  - product-level trace evidence
+  - assembly grouping
+  - graph shaping
+  - related-product grouping
+  - compact anchor-level blast-radius hints
+- `src/lib/manex-traceability.ts`
+  runtime read helpers that consume the shared evidence layer
+
+`src/lib/manex-traceability.ts` still exposes:
 
 - `getProductTraceability(productId)`
 - `getTraceabilityBlastRadius({ batchId?, batchNumber?, partNumber? })`
@@ -56,3 +68,7 @@ Later prompts can reuse the same deterministic chain for:
 - supplier incident workflows
 - article-level clustering
 - graph visualizations
+
+Stage 1 dossier building now also reuses this shared traceability-evidence
+module, so the case-clustering pipeline and the traceability UI no longer drift
+apart on part/batch/BOM anchor logic.

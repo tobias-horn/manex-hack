@@ -42,6 +42,21 @@ Each persisted `team_product_dossier` now includes:
 - installed parts, supplier batches, and BOM positions
 - tests, claims, defects, rework, and actions
 - summary features for later clustering
+- `mechanismEvidence`
+  - `traceabilityEvidence`
+    dominant installed parts, BOM positions, supplier batches, suppliers,
+    anchor candidates, and compact blast-radius hints
+  - `temporalProcessEvidence`
+    build week, defect/test weeks, occurrence-vs-detected mismatch, burst hints,
+    and post-window quiet hints
+  - `fieldLeakEvidence`
+    claim-only/no-prior-defect signals, lag buckets, and claim-to-BOM anchors
+  - `operatorHandlingEvidence`
+    order linkage, dominant rework users, cosmetic/low-severity patterns, and
+    handling hints
+  - `confounderEvidence`
+    false positives, marginal-only flags, detection-bias risk, low-volume risk,
+    and service/documentation clues
 - `stage1Synthesis`
   - `productSummary`
   - `timeline`
@@ -54,7 +69,7 @@ This gives Stage 2 a compact “story of this unit” without losing the raw evi
 
 Current schema version:
 
-- product dossier: `manex.product_dossier.v2`
+- product dossier: `manex.product_dossier.v3`
 
 ## Stage 2
 
@@ -67,6 +82,15 @@ The article dossier still contains:
 - enriched product threads
 - raw evidence appendix
 
+The product threads now carry the same deterministic trace anchors that drive
+the traceability UI, so Stage 2 can reason from:
+
+- shared supplier batches / part installs / BOM positions
+- occurrence-vs-detected section differences
+- claim-only latent field patterns
+- order / rework-user handling patterns
+- explicit confounders instead of just raw notes
+
 The article-local output is stored as an article case set and materialized into
 `team_case_candidate` plus `team_case_candidate_member`.
 
@@ -78,7 +102,7 @@ Important behaviors:
 
 Current schema versions:
 
-- article dossier: `manex.article_dossier.v2`
+- article dossier: `manex.article_dossier.v3`
 - article case set: `manex.article_case_set.v2`
 
 ## Stage 3
@@ -135,8 +159,8 @@ dashboard, with:
 ## Compatibility
 
 Older persisted article dossiers may still exist in the database without
-`stage1Synthesis`. The read layer hydrates those payloads with a deterministic
-fallback so the new workspace can render older runs safely.
+`stage1Synthesis` or `mechanismEvidence`. The read layer hydrates those payloads
+with deterministic fallbacks so the new workspace can render older runs safely.
 
 ## Performance notes
 
