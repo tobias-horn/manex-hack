@@ -30,6 +30,7 @@ import {
   type TeamCaseCandidateRecord,
   type TeamCaseRunSummary,
 } from "@/lib/manex-case-clustering-state";
+import { resolveManexImageUrl } from "@/lib/manex-images";
 import { queryPostgres } from "@/lib/postgres";
 import { memoizeWithTtl } from "@/lib/server-cache";
 import { normalizeUiIdentifier } from "@/lib/ui-format";
@@ -44,7 +45,29 @@ const MAX_RELATION_ROWS = 800;
 const SINGLE_PASS_PRODUCT_LIMIT = 18;
 const PRODUCT_CHUNK_SIZE = 12;
 const MAX_PROMPT_CHARS = 120_000;
-const STAGE1_PRODUCT_SYNTHESIS_CONCURRENCY = 4;
+
+const readPositiveInt = (value: string | undefined, fallback: number) => {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const MINI_MODEL_CONCURRENCY_MULTIPLIER = /mini/i.test(env.OPENAI_MODEL) ? 1 : 0;
+const STAGE1_PRODUCT_SYNTHESIS_CONCURRENCY = readPositiveInt(
+  process.env.MANEX_STAGE1_PRODUCT_SYNTHESIS_CONCURRENCY,
+  8 + MINI_MODEL_CONCURRENCY_MULTIPLIER * 4,
+);
+const STAGE2_CHUNK_PROPOSAL_CONCURRENCY = readPositiveInt(
+  process.env.MANEX_STAGE2_CHUNK_PROPOSAL_CONCURRENCY,
+  4 + MINI_MODEL_CONCURRENCY_MULTIPLIER * 2,
+);
+const STAGE3_ARTICLE_LOAD_CONCURRENCY = readPositiveInt(
+  process.env.MANEX_STAGE3_ARTICLE_LOAD_CONCURRENCY,
+  8,
+);
+const ARTICLE_PIPELINE_CONCURRENCY = readPositiveInt(
+  process.env.MANEX_ARTICLE_PIPELINE_CONCURRENCY,
+  3,
+);
 
 const productThreadSynthesisSchema = z.object({
   productSummary: z.string().trim().min(20).max(900),
@@ -210,6 +233,59 @@ type ProductRow = {
   article_id: string;
   order_id: string | null;
   build_ts: string | null;
+};
+
+type InstalledPartBatchRow = {
+  product_id: string;
+  install_id: string;
+  installed_ts: string | null;
+  installed_section_id: string | null;
+  position_code: string | null;
+  install_user_id: string | null;
+  bom_node_id: string;
+  find_number: string | null;
+  node_type: string | null;
+  parent_find_number: string | null;
+  parent_node_type: string | null;
+  part_number: string;
+  part_title: string | null;
+  commodity: string | null;
+  drawing_number: string | null;
+  part_id: string;
+  serial_number: string | null;
+  quality_status: string | null;
+  manufacturer_name: string | null;
+  batch_id: string | null;
+  batch_number: string | null;
+  supplier_name: string | null;
+  supplier_id: string | null;
+  batch_received_date: string | null;
+};
+
+type ActionBatchRow = {
+  action_id: string;
+  product_id: string;
+  ts: string;
+  action_type: string;
+  status: string;
+  user_id: string | null;
+  section_id: string | null;
+  comments: string | null;
+  defect_id: string | null;
+};
+
+type ReworkBatchRow = {
+  rework_id: string;
+  defect_id: string;
+  product_id: string;
+  ts: string;
+  rework_section_id: string | null;
+  action_text: string | null;
+  reported_part_number: string | null;
+  user_id: string | null;
+  image_url: string | null;
+  time_minutes: number | string | null;
+  cost: number | string | null;
 };
 
 type ProductSignalTimelineItem = {
@@ -1227,6 +1303,214 @@ async function loadArticleMeta(articleId: string) {
   };
 }
 
+function buildProductContextMap(products: ProductRow[], articleName: string | null) {
+  return new Map(
+    products.map((product) => [
+      product.product_id,
+      {
+        articleId: product.article_id,
+        articleName,
+        orderId: normalizeNullableText(product.order_id),
+        productBuiltAt: safeIso(product.build_ts),
+      },
+    ]),
+  );
+}
+
+function mapInstalledPartBatchRow(
+  row: InstalledPartBatchRow,
+  context?: {
+    articleId: string;
+    articleName: string | null;
+    orderId: string | null;
+    productBuiltAt: string | null;
+  },
+): ManexInstalledPart {
+  return {
+    productId: row.product_id,
+    articleId: context?.articleId ?? null,
+    articleName: context?.articleName ?? null,
+    orderId: context?.orderId ?? null,
+    productBuiltAt: context?.productBuiltAt ?? null,
+    installId: row.install_id,
+    installedAt: safeIso(row.installed_ts),
+    installedSectionId: normalizeNullableText(row.installed_section_id),
+    positionCode: normalizeNullableText(row.position_code),
+    installUserId: normalizeNullableText(row.install_user_id),
+    bomNodeId: row.bom_node_id,
+    findNumber: normalizeNullableText(row.find_number),
+    nodeType: normalizeNullableText(row.node_type),
+    parentFindNumber: normalizeNullableText(row.parent_find_number),
+    parentNodeType: normalizeNullableText(row.parent_node_type),
+    partNumber: row.part_number,
+    partTitle: normalizeNullableText(row.part_title),
+    commodity: normalizeNullableText(row.commodity),
+    drawingNumber: normalizeNullableText(row.drawing_number),
+    partId: row.part_id,
+    serialNumber: normalizeNullableText(row.serial_number),
+    qualityStatus: normalizeNullableText(row.quality_status),
+    manufacturerName: normalizeNullableText(row.manufacturer_name),
+    batchId: normalizeNullableText(row.batch_id),
+    batchNumber: normalizeNullableText(row.batch_number),
+    supplierName: normalizeNullableText(row.supplier_name),
+    supplierId: normalizeNullableText(row.supplier_id),
+    batchReceivedDate: safeIso(row.batch_received_date),
+  };
+}
+
+function mapActionBatchRow(row: ActionBatchRow): ManexWorkflowAction {
+  return {
+    id: row.action_id,
+    productId: row.product_id,
+    recordedAt: new Date(row.ts).toISOString(),
+    actionType: row.action_type,
+    status: row.status,
+    userId: normalizeNullableText(row.user_id),
+    sectionId: normalizeNullableText(row.section_id),
+    comments: normalizeText(row.comments),
+    defectId: normalizeNullableText(row.defect_id),
+  };
+}
+
+function mapReworkBatchRow(row: ReworkBatchRow): ManexReworkRecord {
+  return {
+    id: row.rework_id,
+    defectId: row.defect_id,
+    productId: row.product_id,
+    recordedAt: new Date(row.ts).toISOString(),
+    sectionId: normalizeNullableText(row.rework_section_id),
+    actionText: normalizeText(row.action_text),
+    reportedPartNumber: normalizeNullableText(row.reported_part_number),
+    userId: normalizeNullableText(row.user_id),
+    imageUrl: resolveManexImageUrl(row.image_url),
+    timeMinutes:
+      row.time_minutes === null || row.time_minutes === undefined
+        ? null
+        : Number(row.time_minutes),
+    cost:
+      row.cost === null || row.cost === undefined
+        ? null
+        : Number(row.cost),
+  };
+}
+
+async function loadInstalledPartsByProduct(
+  products: ProductRow[],
+  articleName: string | null,
+) {
+  if (!products.length) {
+    return new Map<string, ManexInstalledPart[]>();
+  }
+
+  const productIds = products.map((product) => product.product_id);
+  const contextByProduct = buildProductContextMap(products, articleName);
+  const rows =
+    (await queryPostgres<InstalledPartBatchRow>(
+      `
+        SELECT
+          product_id,
+          install_id,
+          installed_ts,
+          installed_section_id,
+          position_code,
+          install_user_id,
+          bom_node_id,
+          find_number,
+          node_type,
+          parent_find_number,
+          parent_node_type,
+          part_number,
+          part_title,
+          commodity,
+          drawing_number,
+          part_id,
+          serial_number,
+          quality_status,
+          manufacturer_name,
+          batch_id,
+          batch_number,
+          supplier_name,
+          supplier_id,
+          batch_received_date
+        FROM v_product_bom_parts
+        WHERE product_id = ANY($1::text[])
+        ORDER BY product_id ASC, installed_ts ASC NULLS LAST, install_id ASC
+      `,
+      [productIds],
+    )) ?? [];
+
+  return groupBy(
+    rows.map((row) => mapInstalledPartBatchRow(row, contextByProduct.get(row.product_id))),
+    (item) => item.productId,
+  );
+}
+
+async function loadActionsByProduct(products: ProductRow[]) {
+  if (!products.length) {
+    return new Map<string, ManexWorkflowAction[]>();
+  }
+
+  const productIds = products.map((product) => product.product_id);
+  const rows =
+    (await queryPostgres<ActionBatchRow>(
+      `
+        SELECT
+          action_id,
+          product_id,
+          ts,
+          action_type,
+          status,
+          user_id,
+          section_id,
+          comments,
+          defect_id
+        FROM product_action
+        WHERE product_id = ANY($1::text[])
+        ORDER BY product_id ASC, ts ASC NULLS LAST, action_id ASC
+      `,
+      [productIds],
+    )) ?? [];
+
+  return groupBy(
+    rows.map((row) => mapActionBatchRow(row)),
+    (item) => item.productId,
+  );
+}
+
+async function loadReworkByProduct(products: ProductRow[]) {
+  if (!products.length) {
+    return new Map<string, ManexReworkRecord[]>();
+  }
+
+  const productIds = products.map((product) => product.product_id);
+  const rows =
+    (await queryPostgres<ReworkBatchRow>(
+      `
+        SELECT
+          rework_id,
+          defect_id,
+          product_id,
+          ts,
+          rework_section_id,
+          action_text,
+          reported_part_number,
+          user_id,
+          image_url,
+          time_minutes,
+          cost
+        FROM rework
+        WHERE product_id = ANY($1::text[])
+        ORDER BY product_id ASC, ts ASC NULLS LAST, rework_id ASC
+      `,
+      [productIds],
+    )) ?? [];
+
+  return groupBy(
+    rows.map((row) => mapReworkBatchRow(row)),
+    (item) => item.productId,
+  );
+}
+
 async function buildArticleDossier(articleId: string): Promise<ClusteredArticleDossier> {
   if (!capabilities.hasPostgres) {
     throw new Error("Article dossier building requires DATABASE_URL.");
@@ -1244,7 +1528,15 @@ async function buildArticleDossier(articleId: string): Promise<ClusteredArticleD
   }
 
   const data = createManexDataAccess();
-  const [defectResult, claimResult, testResult, weeklyResult] = await Promise.all([
+  const [
+    defectResult,
+    claimResult,
+    testResult,
+    weeklyResult,
+    installedPartsByProduct,
+    actionsByProduct,
+    reworkByProduct,
+  ] = await Promise.all([
     data.investigation.findDefects({
       articleId: normalizedArticleId,
       limit: MAX_RELATION_ROWS,
@@ -1264,27 +1556,18 @@ async function buildArticleDossier(articleId: string): Promise<ClusteredArticleD
       limit: 64,
       sort: "newest",
     }),
+    loadInstalledPartsByProduct(products, article.name),
+    loadActionsByProduct(products),
+    loadReworkByProduct(products),
   ]);
 
   const defectsByProduct = groupBy(defectResult.items, (item) => item.productId);
   const claimsByProduct = groupBy(claimResult.items, (item) => item.productId);
   const testsByProduct = groupBy(testResult.items, (item) => item.productId);
-
-  const productThreadDrafts = await Promise.all(
-    products.map(async (product) => {
-      const [installedResult, actionResult, reworkResult] = await Promise.all([
-        data.traceability.findInstalledPartsForProduct(product.product_id, {
-          limit: MAX_RELATION_ROWS,
-        }),
-        data.workflow.findActionsForProduct(product.product_id, {
-          limit: 200,
-        }),
-        data.workflow.findRework({
-          productId: product.product_id,
-          limit: 200,
-        }),
-      ]);
-
+  const productThreadDrafts = products.map((product) => {
+      const installedParts = installedPartsByProduct.get(product.product_id) ?? [];
+      const actions = actionsByProduct.get(product.product_id) ?? [];
+      const rework = reworkByProduct.get(product.product_id) ?? [];
       const defects = defectsByProduct.get(product.product_id) ?? [];
       const claims = claimsByProduct.get(product.product_id) ?? [];
       const tests = testsByProduct.get(product.product_id) ?? [];
@@ -1292,19 +1575,19 @@ async function buildArticleDossier(articleId: string): Promise<ClusteredArticleD
         defects,
         claims,
         tests,
-        rework: reworkResult.items,
-        actions: actionResult.items,
+        rework,
+        actions,
       });
-      const traceabilitySnapshot = buildTraceabilitySnapshot(installedResult.items);
+      const traceabilitySnapshot = buildTraceabilitySnapshot(installedParts);
       const evidenceFrames = buildEvidenceFrames(defects, claims);
       const summaryFeatures = buildSummaryFeatures({
         product,
         defects,
         claims,
         tests,
-        rework: reworkResult.items,
-        actions: actionResult.items,
-        installedParts: installedResult.items,
+        rework,
+        actions,
+        installedParts,
         signalTimeline,
       });
       const relevantWeeklySummaries = weeklyResult.items
@@ -1315,9 +1598,9 @@ async function buildArticleDossier(articleId: string): Promise<ClusteredArticleD
         claims: claims.length,
         badTests: tests.filter((item) => item.overallResult === "FAIL").length,
         marginalTests: tests.filter((item) => item.overallResult === "MARGINAL").length,
-        rework: reworkResult.items.length,
-        actions: actionResult.items.length,
-        installedParts: installedResult.items.length,
+        rework: rework.length,
+        actions: actions.length,
+        installedParts: installedParts.length,
       };
 
       return {
@@ -1325,9 +1608,9 @@ async function buildArticleDossier(articleId: string): Promise<ClusteredArticleD
         defects,
         claims,
         tests,
-        rework: reworkResult.items,
-        actions: actionResult.items,
-        installedParts: installedResult.items,
+        rework,
+        actions,
+        installedParts,
         signalTimeline,
         traceabilitySnapshot,
         evidenceFrames,
@@ -1335,8 +1618,7 @@ async function buildArticleDossier(articleId: string): Promise<ClusteredArticleD
         relevantWeeklySummaries,
         sourceCounts,
       };
-    }),
-  );
+    });
 
   const productThreads = await mapWithConcurrency(
     productThreadDrafts,
@@ -1973,8 +2255,10 @@ async function runProposalPass(
   }
 
   const chunks = chunkProductThreads(dossier.productThreads);
-  const chunkDrafts = await Promise.all(
-    chunks.map(async (chunk, index) => {
+  const chunkDrafts = await mapWithConcurrency(
+    chunks,
+    STAGE2_CHUNK_PROPOSAL_CONCURRENCY,
+    async (chunk, index) => {
       const chunkProductIds = new Set(chunk.map((item) => item.productId));
       const chunkPayload = {
         ...toPromptArticlePayload(dossier, chunkProductIds),
@@ -1989,7 +2273,7 @@ async function runProposalPass(
         system: buildPassASystemPrompt(),
         prompt: buildPassAUserPrompt(chunkPayload),
       });
-    }),
+    },
   );
 
   const draft: ProposalOutput = {
@@ -2473,38 +2757,38 @@ async function runGlobalReconciliation(input: {
   currentCandidates: TeamCaseCandidateRecord[];
 }) {
   const latestCompletedRuns = await loadLatestCompletedArticleRuns();
-  const persistedEntries = await Promise.all(
-    latestCompletedRuns
-      .filter((row) => row.article_id !== input.currentArticleId)
-      .map(async (row) => {
-        const stage2 = parseStage2FromReviewPayload(row.review_payload);
+  const persistedEntries = await mapWithConcurrency(
+    latestCompletedRuns.filter((row) => row.article_id !== input.currentArticleId),
+    STAGE3_ARTICLE_LOAD_CONCURRENCY,
+    async (row) => {
+      const stage2 = parseStage2FromReviewPayload(row.review_payload);
 
-        if (!stage2) {
-          return null;
-        }
+      if (!stage2) {
+        return null;
+      }
 
-        const [dossierRecord, candidates] = await Promise.all([
-          getTeamArticleDossierRecord<ClusteredArticleDossier>(row.article_id),
-          listTeamCaseCandidatesForRun(row.run_id),
-        ]);
+      const [dossierRecord, candidates] = await Promise.all([
+        getTeamArticleDossierRecord<ClusteredArticleDossier>(row.article_id),
+        listTeamCaseCandidatesForRun(row.run_id),
+      ]);
 
-        const hydratedDossier = hydrateArticleDossier(dossierRecord?.payload ?? null);
+      const hydratedDossier = hydrateArticleDossier(dossierRecord?.payload ?? null);
 
-        if (!hydratedDossier) {
-          return null;
-        }
+      if (!hydratedDossier) {
+        return null;
+      }
 
-        return {
+      return {
+        dossier: hydratedDossier,
+        caseSet: buildArticleCaseSetSummary({
+          articleId: row.article_id,
+          articleName: dossierRecord?.articleName ?? row.article_name,
           dossier: hydratedDossier,
-          caseSet: buildArticleCaseSetSummary({
-            articleId: row.article_id,
-            articleName: dossierRecord?.articleName ?? row.article_name,
-            dossier: hydratedDossier,
-            stage2,
-            candidates,
-          }),
-        };
-      }),
+          stage2,
+          candidates,
+        }),
+      };
+    },
   );
 
   const currentCaseSet = buildArticleCaseSetSummary({
@@ -2683,6 +2967,78 @@ export async function runArticleCaseClustering(articleId: string) {
 
     throw error;
   }
+}
+
+async function loadAllClusterableArticleIds() {
+  const rows =
+    (await queryPostgres<{ article_id: string }>(
+      `
+        SELECT DISTINCT p.article_id
+        FROM product p
+        ORDER BY p.article_id ASC
+      `,
+    )) ?? [];
+
+  return rows.map((row) => row.article_id);
+}
+
+export async function runArticleCaseClusteringBatch(articleIds?: string[]) {
+  if (!capabilities.hasPostgres) {
+    throw new Error("Case clustering requires DATABASE_URL.");
+  }
+
+  if (!capabilities.hasAi || !env.OPENAI_API_KEY) {
+    throw new Error("Case clustering requires OPENAI_API_KEY.");
+  }
+
+  const requestedIds =
+    articleIds?.map((articleId) => normalizeUiIdentifier(articleId)).filter(Boolean) ?? [];
+  const targetArticleIds = requestedIds.length
+    ? uniqueValues(requestedIds)
+    : await loadAllClusterableArticleIds();
+
+  const results = await mapWithConcurrency(
+    targetArticleIds,
+    ARTICLE_PIPELINE_CONCURRENCY,
+    async (articleId) => {
+      try {
+        const result = await runArticleCaseClustering(articleId);
+        return {
+          articleId,
+          ok: true as const,
+          runId: result.latestRun?.id ?? null,
+          caseCount: result.proposedCases.length,
+          validatedCount: result.globalInventory?.validatedCases.length ?? 0,
+          watchlistCount: result.globalInventory?.watchlists.length ?? 0,
+          noiseCount: result.globalInventory?.noiseBuckets.length ?? 0,
+          error: null,
+        };
+      } catch (error) {
+        return {
+          articleId,
+          ok: false as const,
+          runId: null,
+          caseCount: 0,
+          validatedCount: 0,
+          watchlistCount: 0,
+          noiseCount: 0,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+  );
+
+  const latestGlobalSnapshot = await getLatestGlobalRunWithInventory();
+
+  return {
+    requestedArticleIds: targetArticleIds,
+    concurrency: ARTICLE_PIPELINE_CONCURRENCY,
+    okCount: results.filter((item) => item.ok).length,
+    errorCount: results.filter((item) => !item.ok).length,
+    results,
+    latestGlobalRun: latestGlobalSnapshot.latestGlobalRun,
+    globalInventory: latestGlobalSnapshot.globalInventory,
+  };
 }
 
 export const listArticleClusteringDashboard = memoizeWithTtl(

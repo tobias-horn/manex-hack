@@ -25,6 +25,8 @@ The result is a simpler UI shape:
   Opens one article workspace with case selection, evidence spine, and action lane.
 - `src/app/api/articles/[articleId]/cluster/route.ts`
   Triggers the end-to-end pipeline and returns article plus global counts.
+- `src/app/api/articles/cluster-all/route.ts`
+  Runs multiple article pipelines concurrently for faster full-dataset refreshes.
 
 ## Stage 1
 
@@ -134,5 +136,15 @@ fallback so the new workspace can render older runs safely.
 ## Performance notes
 
 - The default model is `gpt-5.4-mini`.
-- Stage 1 product synthesis runs with bounded concurrency.
+- Stage 1 now batch-loads installed parts, actions, and rework at the article
+  level instead of firing those queries separately for every product.
+- Stage 1 product synthesis runs with bounded concurrency and is configurable
+  through `MANEX_STAGE1_PRODUCT_SYNTHESIS_CONCURRENCY`.
+- Stage 2 chunk proposals run concurrently in chunked mode and are configurable
+  through `MANEX_STAGE2_CHUNK_PROPOSAL_CONCURRENCY`.
+- Stage 3 cross-article dossier loading is bounded and configurable through
+  `MANEX_STAGE3_ARTICLE_LOAD_CONCURRENCY`.
+- Full article runs can now be executed concurrently through
+  `/api/articles/cluster-all`, with concurrency controlled by
+  `MANEX_ARTICLE_PIPELINE_CONCURRENCY`.
 - Prompt payloads stay more compact than the persisted dossier payloads.
