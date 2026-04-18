@@ -15,6 +15,8 @@ The exported API is investigation-oriented:
 - `investigation.findDefectsForProduct(productId, ...)`
 - `investigation.findClaims(...)`
 - `investigation.findClaimsForArticle(articleId, ...)`
+- `investigation.findTestSignals(...)`
+- `investigation.findTestSignalsForProduct(productId, ...)`
 - `traceability.findInstalledParts(...)`
 - `traceability.findInstalledPartsForProduct(productId, ...)`
 - `quality.findWeeklySummaries(...)`

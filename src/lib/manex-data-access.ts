@@ -13,6 +13,10 @@ type RelationName =
   | "v_field_claim_detail"
   | "v_product_bom_parts"
   | "v_quality_summary"
+  | "test_result"
+  | "product"
+  | "article"
+  | "section"
   | "product_action"
   | "rework";
 
@@ -140,6 +144,38 @@ type QualitySummaryRow = {
   top_defect_code_count: number | string | null;
 };
 
+type TestResultRow = {
+  test_result_id: string;
+  test_run_id: string;
+  test_id: string;
+  product_id: string;
+  section_id: string | null;
+  ts: string;
+  test_time_ms: number | string | null;
+  overall_result: string;
+  test_key: string;
+  test_value: string | null;
+  unit: string | null;
+  notes: string | null;
+};
+
+type ProductLookupRow = {
+  product_id: string;
+  article_id: string;
+  order_id: string | null;
+  build_ts: string | null;
+};
+
+type ArticleLookupRow = {
+  article_id: string;
+  name: string | null;
+};
+
+type SectionLookupRow = {
+  section_id: string;
+  name: string | null;
+};
+
 type ActionRow = {
   action_id: string;
   product_id: string;
@@ -262,6 +298,27 @@ export type ManexWeeklyQualitySummary = {
   topDefectCodeCount: number | null;
 };
 
+export type ManexTestSignal = {
+  id: string;
+  runId: string;
+  testId: string;
+  productId: string;
+  articleId: string | null;
+  articleName: string | null;
+  orderId: string | null;
+  buildTs: string | null;
+  sectionId: string | null;
+  sectionName: string | null;
+  occurredAt: string;
+  overallResult: string;
+  testKey: string;
+  testValue: string | null;
+  unit: string | null;
+  durationMs: number | null;
+  notes: string;
+  severity: string | null;
+};
+
 export type ManexWorkflowAction = {
   id: string;
   productId: string;
@@ -357,6 +414,17 @@ export type ManexQualitySummaryQuery = {
   sort?: "newest" | "oldest";
 };
 
+export type ManexTestSignalQuery = {
+  productId?: string;
+  articleId?: string;
+  outcomes?: string[];
+  testKeys?: string[];
+  observedAfter?: string;
+  observedBefore?: string;
+  limit?: number;
+  sort?: "newest" | "oldest";
+};
+
 export type ManexActionQuery = {
   productId?: string;
   defectId?: string;
@@ -385,6 +453,13 @@ export type ManexDataAccess = {
       articleId: string,
       query?: Omit<ManexClaimQuery, "articleId">,
     ): Promise<ManexSearchResult<ManexFieldClaim>>;
+    findTestSignals(
+      query?: ManexTestSignalQuery,
+    ): Promise<ManexSearchResult<ManexTestSignal>>;
+    findTestSignalsForProduct(
+      productId: string,
+      query?: Omit<ManexTestSignalQuery, "productId">,
+    ): Promise<ManexSearchResult<ManexTestSignal>>;
   };
   traceability: {
     findInstalledParts(
@@ -820,6 +895,35 @@ const mapWeeklySummary = (row: QualitySummaryRow): ManexWeeklyQualitySummary => 
   topDefectCodeCount: normalizeInteger(row.top_defect_code_count),
 });
 
+const testSeverityFromResult = (value: string) =>
+  value === "FAIL" ? "high" : value === "MARGINAL" ? "medium" : null;
+
+const mapTestSignal = (
+  row: TestResultRow,
+  product?: ProductLookupRow,
+  article?: ArticleLookupRow,
+  section?: SectionLookupRow,
+): ManexTestSignal => ({
+  id: row.test_result_id,
+  runId: row.test_run_id,
+  testId: row.test_id,
+  productId: row.product_id,
+  articleId: normalizeNullableText(product?.article_id),
+  articleName: normalizeNullableText(article?.name),
+  orderId: normalizeNullableText(product?.order_id),
+  buildTs: normalizeIso(product?.build_ts),
+  sectionId: normalizeNullableText(row.section_id),
+  sectionName: normalizeNullableText(section?.name),
+  occurredAt: new Date(row.ts).toISOString(),
+  overallResult: row.overall_result,
+  testKey: row.test_key,
+  testValue: normalizeNullableText(row.test_value),
+  unit: normalizeNullableText(row.unit),
+  durationMs: normalizeInteger(row.test_time_ms),
+  notes: normalizeText(row.notes),
+  severity: testSeverityFromResult(row.overall_result),
+});
+
 const mapAction = (row: ActionRow): ManexWorkflowAction => ({
   id: row.action_id,
   productId: row.product_id,
@@ -903,6 +1007,23 @@ const createQualityFilters = (
     query.articleId ? createFilter("article_id", "eq", query.articleId) : null,
     query.weekStartAfter
       ? createFilter("week_start", "gte", query.weekStartAfter)
+      : null,
+  ].filter(isPresent);
+
+const createTestSignalFilters = (
+  query: ManexTestSignalQuery = {},
+): QueryFilter[] =>
+  [
+    query.productId ? createFilter("product_id", "eq", query.productId) : null,
+    query.outcomes?.length
+      ? createFilter("overall_result", "in", query.outcomes)
+      : null,
+    query.testKeys?.length ? createFilter("test_key", "in", query.testKeys) : null,
+    query.observedAfter
+      ? createFilter("ts", "gte", query.observedAfter)
+      : null,
+    query.observedBefore
+      ? createFilter("ts", "lte", query.observedBefore)
       : null,
   ].filter(isPresent);
 
@@ -1014,6 +1135,32 @@ const defaultQualitySelect = [
   "top_defect_code_count",
 ];
 
+const defaultTestSignalSelect = [
+  "test_result_id",
+  "test_run_id",
+  "test_id",
+  "product_id",
+  "section_id",
+  "ts",
+  "test_time_ms",
+  "overall_result",
+  "test_key",
+  "test_value",
+  "unit",
+  "notes",
+];
+
+const defaultProductLookupSelect = [
+  "product_id",
+  "article_id",
+  "order_id",
+  "build_ts",
+];
+
+const defaultArticleLookupSelect = ["article_id", "name"];
+
+const defaultSectionLookupSelect = ["section_id", "name"];
+
 const defaultActionSelect = [
   "action_id",
   "product_id",
@@ -1096,6 +1243,279 @@ async function insertWithFallback<T extends QueryResultRow>(
   throw lastError ?? new Error(`No configured write transport for ${relation}.`);
 }
 
+async function findTestSignalsViaRest(
+  query: ManexTestSignalQuery,
+): Promise<ManexSearchResult<ManexTestSignal>> {
+  const rest = createRestTransport();
+
+  if (!rest) {
+    throw new Error("REST transport is not configured.");
+  }
+
+  let scopedProductIds: string[] | undefined;
+
+  if (query.articleId && !query.productId) {
+    const productScope = await rest.read<ProductLookupRow>("product", {
+      select: defaultProductLookupSelect,
+      filters: [createFilter("article_id", "eq", query.articleId)],
+      count: false,
+    });
+
+    scopedProductIds = productScope.rows.map((row) => row.product_id);
+
+    if (!scopedProductIds.length) {
+      return {
+        items: [],
+        total: 0,
+        transport: "rest",
+      };
+    }
+  }
+
+  const testResult = await rest.read<TestResultRow>("test_result", {
+    select: defaultTestSignalSelect,
+    filters: [
+      ...createTestSignalFilters({
+        ...query,
+        productId: query.productId,
+      }),
+      scopedProductIds?.length
+        ? createFilter("product_id", "in", scopedProductIds)
+        : null,
+    ].filter(isPresent),
+    orderBy: {
+      field: "ts",
+      direction: query.sort === "oldest" ? "asc" : "desc",
+    },
+    limit: query.limit,
+    count: true,
+  });
+
+  if (!testResult.rows.length) {
+    return {
+      items: [],
+      total: testResult.total ?? 0,
+      transport: "rest",
+    };
+  }
+
+  const productIds = Array.from(
+    new Set(testResult.rows.map((row) => row.product_id)),
+  );
+  const sectionIds = Array.from(
+    new Set(
+      testResult.rows
+        .map((row) => row.section_id)
+        .filter((value): value is string => Boolean(value)),
+    ),
+  );
+
+  const [products, sections] = await Promise.all([
+    rest.read<ProductLookupRow>("product", {
+      select: defaultProductLookupSelect,
+      filters: [createFilter("product_id", "in", productIds)],
+      count: false,
+    }),
+    sectionIds.length
+      ? rest.read<SectionLookupRow>("section", {
+          select: defaultSectionLookupSelect,
+          filters: [createFilter("section_id", "in", sectionIds)],
+          count: false,
+        })
+      : Promise.resolve({ rows: [] as SectionLookupRow[], total: null }),
+  ]);
+
+  const articleIds = Array.from(
+    new Set(
+      products.rows
+        .map((row) => row.article_id)
+        .filter((value): value is string => Boolean(value)),
+    ),
+  );
+
+  const articles = articleIds.length
+    ? await rest.read<ArticleLookupRow>("article", {
+        select: defaultArticleLookupSelect,
+        filters: [createFilter("article_id", "in", articleIds)],
+        count: false,
+      })
+    : { rows: [] as ArticleLookupRow[], total: null };
+
+  const productMap = new Map(products.rows.map((row) => [row.product_id, row]));
+  const articleMap = new Map(articles.rows.map((row) => [row.article_id, row]));
+  const sectionMap = new Map(sections.rows.map((row) => [row.section_id, row]));
+
+  const items = testResult.rows
+    .map((row) => {
+      const product = productMap.get(row.product_id);
+      const article = product ? articleMap.get(product.article_id) : undefined;
+      const section = row.section_id
+        ? sectionMap.get(row.section_id)
+        : undefined;
+
+      return mapTestSignal(row, product, article, section);
+    })
+    .filter((row) => !query.articleId || row.articleId === query.articleId);
+
+  return {
+    items,
+    total: testResult.total ?? items.length,
+    transport: "rest",
+  };
+}
+
+type PostgresTestSignalRow = TestResultRow &
+  QueryResultRow & {
+    article_id: string | null;
+    article_name: string | null;
+    order_id: string | null;
+    build_ts: string | null;
+    section_name: string | null;
+  };
+
+async function findTestSignalsViaPostgres(
+  query: ManexTestSignalQuery,
+): Promise<ManexSearchResult<ManexTestSignal>> {
+  if (!env.DATABASE_URL) {
+    throw new Error("Postgres transport is not configured.");
+  }
+
+  const values: unknown[] = [];
+  const clauses: string[] = [];
+
+  if (query.productId) {
+    values.push(query.productId);
+    clauses.push(`tr.product_id = $${values.length}`);
+  }
+
+  if (query.articleId) {
+    values.push(query.articleId);
+    clauses.push(`p.article_id = $${values.length}`);
+  }
+
+  if (query.outcomes?.length) {
+    values.push(query.outcomes);
+    clauses.push(`tr.overall_result = ANY($${values.length})`);
+  }
+
+  if (query.testKeys?.length) {
+    values.push(query.testKeys);
+    clauses.push(`tr.test_key = ANY($${values.length})`);
+  }
+
+  if (query.observedAfter) {
+    values.push(query.observedAfter);
+    clauses.push(`tr.ts >= $${values.length}`);
+  }
+
+  if (query.observedBefore) {
+    values.push(query.observedBefore);
+    clauses.push(`tr.ts <= $${values.length}`);
+  }
+
+  const whereClause = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const orderDirection = query.sort === "oldest" ? "ASC" : "DESC";
+  const limitSql =
+    typeof query.limit === "number" ? `LIMIT ${Math.max(0, query.limit)}` : "";
+
+  const baseJoin = `
+    FROM test_result tr
+    JOIN product p ON p.product_id = tr.product_id
+    LEFT JOIN article a ON a.article_id = p.article_id
+    LEFT JOIN section s ON s.section_id = tr.section_id
+    ${whereClause}
+  `;
+
+  const [rows, countRows] = await Promise.all([
+    queryPostgres<PostgresTestSignalRow>(
+      `
+        SELECT
+          tr.test_result_id,
+          tr.test_run_id,
+          tr.test_id,
+          tr.product_id,
+          tr.section_id,
+          tr.ts,
+          tr.test_time_ms,
+          tr.overall_result,
+          tr.test_key,
+          tr.test_value,
+          tr.unit,
+          tr.notes,
+          p.article_id,
+          p.order_id,
+          p.build_ts,
+          a.name AS article_name,
+          s.name AS section_name
+        ${baseJoin}
+        ORDER BY tr.ts ${orderDirection}
+        ${limitSql}
+      `,
+      values,
+    ),
+    queryPostgres<{ total_count: number | string }>(
+      `SELECT COUNT(*)::int AS total_count ${baseJoin}`,
+      values,
+    ),
+  ]);
+
+  const items = (rows ?? []).map((row) =>
+    mapTestSignal(
+      row,
+      {
+        product_id: row.product_id,
+        article_id: row.article_id ?? "",
+        order_id: row.order_id,
+        build_ts: row.build_ts,
+      },
+      row.article_id
+        ? {
+            article_id: row.article_id,
+            name: row.article_name,
+          }
+        : undefined,
+      row.section_id
+        ? {
+            section_id: row.section_id,
+            name: row.section_name,
+          }
+        : undefined,
+    ),
+  );
+
+  return {
+    items,
+    total: normalizeInteger(countRows?.[0]?.total_count) ?? items.length,
+    transport: "postgres",
+  };
+}
+
+async function findTestSignalsWithFallback(
+  query: ManexTestSignalQuery,
+): Promise<ManexSearchResult<ManexTestSignal>> {
+  let lastError: unknown;
+
+  try {
+    return await findTestSignalsViaRest(query);
+  } catch (error) {
+    lastError = error;
+    console.error("Manex test-signal read failed via rest", {
+      error: formatError(error),
+    });
+  }
+
+  try {
+    return await findTestSignalsViaPostgres(query);
+  } catch (error) {
+    lastError = error;
+    console.error("Manex test-signal read failed via postgres", {
+      error: formatError(error),
+    });
+  }
+
+  throw lastError ?? new Error("No configured transport for test signals.");
+}
+
 export function createManexDataAccess(): ManexDataAccess {
   return {
     investigation: {
@@ -1145,6 +1565,15 @@ export function createManexDataAccess(): ManexDataAccess {
         return this.findClaims({
           ...query,
           articleId,
+        });
+      },
+      async findTestSignals(query = {}) {
+        return findTestSignalsWithFallback(query);
+      },
+      async findTestSignalsForProduct(productId, query = {}) {
+        return this.findTestSignals({
+          ...query,
+          productId,
         });
       },
     },
