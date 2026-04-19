@@ -71,6 +71,32 @@ function getConflictingEvidence(candidate: Record<string, unknown> | null) {
     : [];
 }
 
+function getSuggestedActionType(candidate: Record<string, unknown> | null) {
+  if (
+    candidate?.payload &&
+    typeof candidate.payload === "object" &&
+    typeof (candidate.payload as { recommendedActionType?: unknown }).recommendedActionType ===
+      "string"
+  ) {
+    return (candidate.payload as { recommendedActionType: string }).recommendedActionType;
+  }
+
+  return "supplier_containment";
+}
+
+function getSuggestedActionComment(candidate: Record<string, unknown> | null) {
+  if (!candidate) {
+    return "Contain the signal, attach traceability evidence, and assign an owner for the next verification step.";
+  }
+
+  const title = typeof candidate.title === "string" ? candidate.title : "Selected investigation";
+  const evidence = Array.isArray(candidate.strongestEvidence)
+    ? candidate.strongestEvidence.filter((item): item is string => typeof item === "string").slice(0, 2)
+    : [];
+
+  return `${title}: ${evidence.join(" ")} Capture the owner, containment step, and verification exit criteria.`;
+}
+
 function mapActionsToFeed(
   actions: Array<{
     id: string;
@@ -180,6 +206,10 @@ export default async function ArticleCaseboardPage({
   ).slice(0, 8);
   const standaloneSignals =
     "standaloneSignals" in caseboard ? caseboard.standaloneSignals : [];
+  const leadingIndicators =
+    "leadingIndicators" in caseboard ? caseboard.leadingIndicators : [];
+  const evaluationSummary =
+    "evaluationSummary" in caseboard ? caseboard.evaluationSummary : null;
   const selectedNoiseFlags = uniqueStrings([
     ...selectedThreads.flatMap((thread) => thread.stage1Synthesis.possibleNoiseFlags),
     ...standaloneSignals
@@ -247,6 +277,8 @@ export default async function ArticleCaseboardPage({
         ? `${standaloneSignals.length} faults stayed real but non-clustered.`
         : "No standalone faults were emitted in the latest run.";
   const conflictingEvidence = getConflictingEvidence(selectedCase as Record<string, unknown> | null);
+  const suggestedActionType = getSuggestedActionType(selectedCase as Record<string, unknown> | null);
+  const suggestedActionComment = getSuggestedActionComment(selectedCase as Record<string, unknown> | null);
 
   return (
     <main className="min-h-screen">
@@ -274,6 +306,9 @@ export default async function ArticleCaseboardPage({
                   </Badge>
                 ) : null}
                 <Badge variant="outline">{proposedCases.length} proposed cases</Badge>
+                {mode === "hypothesis" ? (
+                  <Badge variant="outline">{leadingIndicators.length} leading indicators</Badge>
+                ) : null}
                 {caseboard.globalInventory ? (
                   <Badge variant="outline">
                     {caseboard.globalInventory.validatedCases.length} validated globally
@@ -419,6 +454,16 @@ export default async function ArticleCaseboardPage({
                         : mode === "hypothesis"
                           ? "No hypothesis watchlists were emitted in the latest run."
                           : "No deterministic watchlists were emitted in the latest run."}
+                    </p>
+                  </div>
+                ) : null}
+                {mode === "hypothesis" ? (
+                  <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
+                    <div className="eyebrow">Leading indicators</div>
+                    <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
+                      {leadingIndicators.length
+                        ? `${leadingIndicators.length} near-limit or marginal patterns stayed visible as early warnings instead of becoming cases.`
+                        : "No leading indicators were emitted in the latest hypothesis run."}
                     </p>
                   </div>
                 ) : null}
@@ -660,14 +705,33 @@ export default async function ArticleCaseboardPage({
                     )}
                   </div>
                 </div>
+                {mode === "hypothesis" && evaluationSummary ? (
+                  <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
+                    <div className="eyebrow">Benchmark evaluation</div>
+                    <div className="mt-2 space-y-2 text-sm leading-6 text-[var(--muted-foreground)]">
+                      <p>{evaluationSummary.summaryLine}</p>
+                      {evaluationSummary.rows
+                        .filter((row) => row.applicable)
+                        .slice(0, 4)
+                        .map((row) => (
+                          <p key={row.truthId}>
+                            {row.label}: {row.surfaced ? `surfaced at rank ${row.rankPosition ?? "n/a"}` : "not surfaced"}
+                          </p>
+                        ))}
+                    </div>
+                  </div>
+                ) : null}
               </CardContent>
             </Card>
 
             {defaultProductId ? (
               <ProductActionPanel
+                key={`${defaultProductId}:${defaultDefectId}:${suggestedActionType}:${selectedCase?.id ?? "none"}`}
                 initialActions={selectedActions}
                 defaultProductId={defaultProductId}
                 defaultDefectId={defaultDefectId}
+                defaultActionType={suggestedActionType}
+                defaultComments={suggestedActionComment}
               />
             ) : (
               <Card className="surface-panel rounded-[30px] px-0 py-0">
@@ -700,6 +764,17 @@ export default async function ArticleCaseboardPage({
                       {caseboard.globalInventory.watchlists.length} watchlists kept visible without opening an investigation.
                     </p>
                   </div>
+                  {mode === "hypothesis" ? (
+                    <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
+                      <div className="eyebrow">Leading indicators</div>
+                      <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
+                        {"leadingIndicators" in caseboard.globalInventory
+                          ? caseboard.globalInventory.leadingIndicators.length
+                          : 0}{" "}
+                        early-warning patterns stayed separate from validated cases.
+                      </p>
+                    </div>
+                  ) : null}
                   <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
                     <div className="eyebrow">Noise buckets</div>
                     <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">

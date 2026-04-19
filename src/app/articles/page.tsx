@@ -195,9 +195,13 @@ export default async function ArticlesPage({ searchParams }: ArticlesPageProps) 
   const crossArticleCases =
     dashboard.globalInventory?.validatedCases.filter((item) => item.articleIds.length > 1) ?? [];
   const watchlists = dashboard.globalInventory?.watchlists ?? [];
+  const leadingIndicators =
+    mode === "hypothesis" && dashboard.globalInventory && "leadingIndicators" in dashboard.globalInventory
+      ? dashboard.globalInventory.leadingIndicators
+      : [];
   const noiseBuckets = dashboard.globalInventory?.noiseBuckets ?? [];
   const rejectedCases = dashboard.globalInventory?.rejectedCases ?? [];
-  const globalPatterns = [...crossArticleCases, ...watchlists, ...noiseBuckets, ...rejectedCases];
+  const globalPatterns = [...crossArticleCases, ...watchlists, ...leadingIndicators, ...noiseBuckets, ...rejectedCases];
   const articleQueues = dashboard.articleQueues;
   const activeRuns = dashboard.activeRuns;
   const toggleItems = [
@@ -289,7 +293,7 @@ export default async function ArticlesPage({ searchParams }: ArticlesPageProps) 
               <Metric
                 label="Patterns"
                 value={globalPatterns.length}
-                caption="Global watchlists, noise, and cross-article anomalies."
+                caption="Global watchlists, leading indicators, noise, and cross-article anomalies."
               />
               <Metric
                 label="Watchlists"
@@ -338,6 +342,15 @@ export default async function ArticlesPage({ searchParams }: ArticlesPageProps) 
                   mode={mode}
                   emptyText="No watchlists were emitted in the latest global pass."
                 />
+                {mode === "hypothesis" ? (
+                  <GlobalPatternSection
+                    title="Leading Indicators"
+                    description="Near-limit and marginal patterns that stayed visible as early warnings instead of becoming active investigations."
+                    items={leadingIndicators}
+                    mode={mode}
+                    emptyText="No leading indicators were emitted in the latest global pass."
+                  />
+                ) : null}
                 <GlobalPatternSection
                   title="Noise and distractors"
                   description="False positives, weak-only patterns, and suspected detection bias the system wants you to ignore or down-rank."

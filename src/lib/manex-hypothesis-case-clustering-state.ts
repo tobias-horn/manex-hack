@@ -64,6 +64,9 @@ export type HypothesisClusteringResetSummary = {
   batches: number;
   candidates: number;
   candidateMembers: number;
+  evalTruths: number;
+  evalPredictions: number;
+  evalMetrics: number;
 };
 
 export type HypothesisClusteringStopSummary = {
@@ -334,6 +337,52 @@ CREATE INDEX IF NOT EXISTS idx_team_hyp_case_candidate_member_candidate_id
 
 CREATE INDEX IF NOT EXISTS idx_team_hyp_case_candidate_member_product_id
   ON team_hyp_case_candidate_member (product_id);
+
+CREATE TABLE IF NOT EXISTS team_hyp_eval_case_truth (
+  truth_id TEXT PRIMARY KEY,
+  label TEXT NOT NULL,
+  family TEXT NOT NULL,
+  expected_kind TEXT NOT NULL,
+  article_id TEXT,
+  anchor_tokens JSONB NOT NULL DEFAULT '[]'::jsonb,
+  notes TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS team_hyp_eval_case_prediction (
+  prediction_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES team_hyp_case_run(run_id) ON DELETE CASCADE,
+  article_id TEXT NOT NULL,
+  truth_id TEXT NOT NULL REFERENCES team_hyp_eval_case_truth(truth_id) ON DELETE CASCADE,
+  applicable BOOLEAN NOT NULL DEFAULT FALSE,
+  surfaced BOOLEAN NOT NULL DEFAULT FALSE,
+  rank_position INTEGER,
+  matched_candidate_id TEXT,
+  matched_title TEXT,
+  matched_anchor TEXT,
+  false_merge_count INTEGER NOT NULL DEFAULT 0,
+  false_neighbor_count INTEGER NOT NULL DEFAULT 0,
+  top_evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
+  notes JSONB NOT NULL DEFAULT '[]'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_team_hyp_eval_case_prediction_run_id
+  ON team_hyp_eval_case_prediction (run_id, truth_id);
+
+CREATE TABLE IF NOT EXISTS team_hyp_eval_case_metrics (
+  run_id TEXT PRIMARY KEY REFERENCES team_hyp_case_run(run_id) ON DELETE CASCADE,
+  article_id TEXT NOT NULL,
+  applicable_truth_count INTEGER NOT NULL DEFAULT 0,
+  surfaced_truth_count INTEGER NOT NULL DEFAULT 0,
+  leading_indicator_count INTEGER NOT NULL DEFAULT 0,
+  false_merge_count INTEGER NOT NULL DEFAULT 0,
+  false_neighbor_count INTEGER NOT NULL DEFAULT 0,
+  summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 `;
 
 let ensurePromise: Promise<void> | null = null;
@@ -508,13 +557,19 @@ export async function resetHypothesisCaseClusteringState() {
           (SELECT COUNT(*)::int FROM team_hyp_case_run) AS runs,
           (SELECT COUNT(*)::int FROM team_hyp_case_batch) AS batches,
           (SELECT COUNT(*)::int FROM team_hyp_case_candidate) AS candidates,
-          (SELECT COUNT(*)::int FROM team_hyp_case_candidate_member) AS candidate_members
+          (SELECT COUNT(*)::int FROM team_hyp_case_candidate_member) AS candidate_members,
+          (SELECT COUNT(*)::int FROM team_hyp_eval_case_truth) AS eval_truths,
+          (SELECT COUNT(*)::int FROM team_hyp_eval_case_prediction) AS eval_predictions,
+          (SELECT COUNT(*)::int FROM team_hyp_eval_case_metrics) AS eval_metrics
       `);
 
       const counts = countRows.rows[0];
 
       await client.query("DELETE FROM team_hyp_case_candidate_member");
       await client.query("DELETE FROM team_hyp_case_candidate");
+      await client.query("DELETE FROM team_hyp_eval_case_prediction");
+      await client.query("DELETE FROM team_hyp_eval_case_metrics");
+      await client.query("DELETE FROM team_hyp_eval_case_truth");
       await client.query("DELETE FROM team_hyp_case_batch");
       await client.query("DELETE FROM team_hyp_case_run");
 
@@ -525,6 +580,9 @@ export async function resetHypothesisCaseClusteringState() {
         batches: normalizeInteger(counts?.batches),
         candidates: normalizeInteger(counts?.candidates),
         candidateMembers: normalizeInteger(counts?.candidate_members),
+        evalTruths: normalizeInteger((counts as QueryResultRow & { eval_truths?: number | string | null })?.eval_truths),
+        evalPredictions: normalizeInteger((counts as QueryResultRow & { eval_predictions?: number | string | null })?.eval_predictions),
+        evalMetrics: normalizeInteger((counts as QueryResultRow & { eval_metrics?: number | string | null })?.eval_metrics),
       };
     } catch (error) {
       await client.query("ROLLBACK");

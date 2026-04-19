@@ -20,6 +20,8 @@ type ProductActionPanelProps = {
   initialActions: Initiative[];
   defaultProductId: string;
   defaultDefectId: string;
+  defaultActionType?: string;
+  defaultComments?: string;
 };
 
 type ActionResponse = {
@@ -45,15 +47,15 @@ export function ProductActionPanel({
   initialActions,
   defaultProductId,
   defaultDefectId,
+  defaultActionType = "supplier_containment",
+  defaultComments = "Contain the signal, attach traceability evidence, and assign an owner for the next verification step.",
 }: ProductActionPanelProps) {
   const [actions, setActions] = useState(initialActions);
   const [runtimeMode, setRuntimeMode] = useState<"live" | "demo">("live");
   const [defectId, setDefectId] = useState(defaultDefectId);
-  const [actionType, setActionType] = useState("supplier_containment");
+  const [actionType, setActionType] = useState(defaultActionType);
   const [status, setStatus] = useState("open");
-  const [comments, setComments] = useState(
-    "Contain the signal, attach traceability evidence, and assign an owner for the next verification step.",
-  );
+  const [comments, setComments] = useState(defaultComments);
   const [feedback, setFeedback] = useState<FeedbackState | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 

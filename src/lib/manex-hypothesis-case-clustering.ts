@@ -80,6 +80,11 @@ const GLOBAL_CASE_EDGE_THRESHOLD = readPositiveInt(
   2,
 );
 const GLOBAL_KEEP_CONFIDENCE_THRESHOLD = 0.62;
+const CASE_OVERLAP_MARGIN = readPositiveInt(process.env.MANEX_HYP_CASE_OVERLAP_MARGIN, 3);
+const LEADING_INDICATOR_THRESHOLD = readPositiveInt(
+  process.env.MANEX_HYP_LEADING_INDICATOR_THRESHOLD,
+  4,
+);
 const STOPPED_PIPELINE_MESSAGE = "Pipeline stopped by user.";
 
 const prioritySchema = z.enum(["low", "medium", "high", "critical"]);
@@ -144,6 +149,17 @@ const localInventoryWatchlistSchema = z.object({
   strongestEvidence: z.array(z.string().trim().min(1).max(240)).max(8),
 });
 
+const localLeadingIndicatorSchema = z.object({
+  indicatorTempId: z.string().trim().min(1).max(48),
+  indicatorKind: z.enum(["near_limit", "marginal_drift", "screening_echo"]),
+  title: z.string().trim().min(8).max(180),
+  summary: z.string().trim().min(10).max(1200),
+  confidence: z.number().min(0).max(1),
+  linkedProductIds: z.array(z.string().trim().min(1).max(80)).min(1).max(96),
+  linkedSignalIds: z.array(z.string().trim().min(1).max(80)).max(260),
+  strongestEvidence: z.array(z.string().trim().min(1).max(240)).max(8),
+});
+
 const localInventoryNoiseSchema = z.object({
   noiseTempId: z.string().trim().min(1).max(48),
   title: z.string().trim().min(8).max(180),
@@ -162,12 +178,40 @@ const localInventoryRejectedSchema = z.object({
   linkedProductIds: z.array(z.string().trim().min(1).max(80)).max(96),
 });
 
+const hypothesisEvaluationRowSchema = z.object({
+  truthId: z.string().trim().min(1).max(80),
+  label: z.string().trim().min(1).max(180),
+  family: z.string().trim().min(1).max(80),
+  expectedKind: z.string().trim().min(1).max(80),
+  applicable: z.boolean(),
+  surfaced: z.boolean(),
+  rankPosition: z.number().int().positive().nullable(),
+  matchedCandidateId: z.string().trim().min(1).max(80).nullable(),
+  matchedTitle: z.string().trim().min(1).max(180).nullable(),
+  matchedAnchor: z.string().trim().min(1).max(220).nullable(),
+  falseMergeCount: z.number().int().min(0),
+  falseNeighborCount: z.number().int().min(0),
+  topEvidence: z.array(z.string().trim().min(1).max(240)).max(6),
+  notes: z.array(z.string().trim().min(1).max(240)).max(8),
+});
+
+const hypothesisEvaluationSummarySchema = z.object({
+  applicableTruthCount: z.number().int().min(0),
+  surfacedTruthCount: z.number().int().min(0),
+  leadingIndicatorCount: z.number().int().min(0),
+  falseMergeCount: z.number().int().min(0),
+  falseNeighborCount: z.number().int().min(0),
+  summaryLine: z.string().trim().min(1).max(320),
+  rows: z.array(hypothesisEvaluationRowSchema).max(12),
+});
+
 const hypothesisLocalInventorySchema = z.object({
   contractVersion: z.literal(HYP_LOCAL_INVENTORY_SCHEMA_VERSION),
   reviewSummary: z.string().trim().min(1).max(1400),
   cases: z.array(localInventoryCaseSchema).max(40),
   incidents: z.array(localInventoryIncidentSchema).max(80),
   watchlists: z.array(localInventoryWatchlistSchema).max(40),
+  leadingIndicators: z.array(localLeadingIndicatorSchema).max(40).default([]),
   noise: z.array(localInventoryNoiseSchema).max(40),
   rejectedCases: z.array(localInventoryRejectedSchema).max(32),
   unassignedProducts: z
@@ -180,6 +224,7 @@ const hypothesisLocalInventorySchema = z.object({
     .max(120),
   globalObservations: z.array(z.string().trim().min(1).max(240)).max(20),
   caseMergeLog: z.array(z.string().trim().min(1).max(240)).max(24),
+  evaluationSummary: hypothesisEvaluationSummarySchema.optional(),
 });
 
 const hypothesisGlobalInventoryItemSchema = z.object({
@@ -201,6 +246,7 @@ const hypothesisGlobalInventorySchema = z.object({
   inventorySummary: z.string().trim().min(1).max(1400),
   validatedCases: z.array(hypothesisGlobalInventoryItemSchema).max(40),
   watchlists: z.array(hypothesisGlobalInventoryItemSchema).max(40),
+  leadingIndicators: z.array(hypothesisGlobalInventoryItemSchema).max(40).default([]),
   noiseBuckets: z.array(hypothesisGlobalInventoryItemSchema).max(40),
   rejectedCases: z.array(hypothesisGlobalInventoryItemSchema).max(40),
   caseMergeLog: z.array(z.string().trim().min(1).max(240)).max(24),
@@ -211,9 +257,11 @@ type HypothesisNarrative = z.infer<typeof hypothesisNarrativeSchema>;
 type HypothesisLocalInventory = z.infer<typeof hypothesisLocalInventorySchema>;
 type HypothesisLocalIncident = z.infer<typeof localInventoryIncidentSchema>;
 type HypothesisLocalWatchlist = z.infer<typeof localInventoryWatchlistSchema>;
+type HypothesisLocalLeadingIndicator = z.infer<typeof localLeadingIndicatorSchema>;
 type HypothesisLocalNoise = z.infer<typeof localInventoryNoiseSchema>;
 type HypothesisGlobalInventory = z.infer<typeof hypothesisGlobalInventorySchema>;
 export type HypothesisGlobalInventoryItem = z.infer<typeof hypothesisGlobalInventoryItemSchema>;
+type HypothesisEvaluationSummary = z.infer<typeof hypothesisEvaluationSummarySchema>;
 
 type HypothesisReviewPayload = {
   contractVersion: typeof HYP_RUN_REVIEW_SCHEMA_VERSION;
@@ -233,9 +281,18 @@ type ScoreBreakdown = {
   impact: number;
   coherence: number;
   causalSupport: number;
+  uplift: number;
+  specificityBonus: number;
   noisePenalty: number;
+  negativeEvidencePenalty: number;
   overlapPenalty: number;
   total: number;
+};
+
+type TextFeatureTags = {
+  symptomTags: string[];
+  timingTags: string[];
+  dispositionTags: string[];
 };
 
 type ThreadFacts = {
@@ -264,11 +321,13 @@ type ThreadFacts = {
   fieldImpactPresent: boolean;
   detectionBias: boolean;
   lowVolumeRisk: boolean;
+  nearLimitSignals: string[];
   buildWeek: string | null;
   defectCount: number;
   claimCount: number;
   badTestCount: number;
   marginalTestCount: number;
+  textTags: TextFeatureTags;
 };
 
 type HypothesisSeed = {
@@ -288,6 +347,7 @@ type HypothesisSeed = {
   fingerprintTokens: string[];
   score: ScoreBreakdown;
   articleWideAnchorRisk: boolean;
+  recommendedActionType: string;
 };
 
 type PersistableHypothesisCandidate = {
@@ -325,6 +385,7 @@ export type HypothesisArticleCaseboardReadModel = {
   proposedCases: HypothesisCaseCandidateRecord[];
   incidents: HypothesisLocalIncident[];
   watchlists: HypothesisLocalWatchlist[];
+  leadingIndicators: HypothesisLocalLeadingIndicator[];
   noise: HypothesisLocalNoise[];
   unassignedProducts: Array<{
     productId: string;
@@ -332,6 +393,7 @@ export type HypothesisArticleCaseboardReadModel = {
   }>;
   globalObservations: string[];
   globalInventory: HypothesisGlobalInventory | null;
+  evaluationSummary: HypothesisEvaluationSummary | null;
 };
 
 export type HypothesisProposedCasesDashboardReadModel = {
@@ -350,6 +412,16 @@ export type HypothesisProposedCasesDashboardReadModel = {
   }>;
   latestGlobalRun: HypothesisCaseRunSummary | null;
   globalInventory: HypothesisGlobalInventory | null;
+};
+
+type HypothesisTruthDefinition = {
+  truthId: string;
+  label: string;
+  family: HypothesisFamily | "leading_indicator";
+  expectedKind: HypothesisKind | "leading_indicator";
+  articleId: string | null;
+  anchorTokens: string[];
+  notes: string;
 };
 
 type LatestCompletedHypothesisRunRow = {
@@ -391,6 +463,164 @@ function uniqueValues(values: Array<string | null | undefined>) {
 function clampScore(value: number, min = 0, max = 24) {
   return Math.max(min, Math.min(max, value));
 }
+
+function rate(count: number, total: number) {
+  return total > 0 ? count / total : 0;
+}
+
+function scoreRateUplift(observed: number, baseline: number) {
+  const stabilizedObserved = observed + 0.02;
+  const stabilizedBaseline = baseline + 0.02;
+  const ratio = stabilizedObserved / stabilizedBaseline;
+
+  if (!Number.isFinite(ratio) || ratio <= 1.05) {
+    return 0;
+  }
+
+  return clampScore(Math.round(Math.log2(ratio) * 3), 0, 6);
+}
+
+function scoreSpecificity(sharedAnchorCount: number, productCount: number, articleProductCount: number) {
+  if (productCount <= 0 || articleProductCount <= 0) {
+    return 0;
+  }
+
+  const concentration = productCount / Math.max(1, articleProductCount);
+
+  if (concentration >= 0.75) {
+    return 0;
+  }
+
+  return clampScore(Math.min(sharedAnchorCount, 3) + (concentration <= 0.4 ? 2 : 1), 0, 5);
+}
+
+function estimateSmallSamplePenalty(productCount: number) {
+  if (productCount >= 6) {
+    return 0;
+  }
+
+  if (productCount >= 4) {
+    return 1;
+  }
+
+  return 2;
+}
+
+function matchesAnyPattern(text: string, patterns: RegExp[]) {
+  return patterns.some((pattern) => pattern.test(text));
+}
+
+function extractTextTags(thread: ClusteredProductDossier): TextFeatureTags {
+  const texts = [
+    ...thread.claims.flatMap((item) => [item.complaintText, item.notes]),
+    ...thread.rework.map((item) => item.actionText),
+    ...thread.defects.map((item) => item.notes),
+    ...thread.tests.map((item) => item.notes),
+  ]
+    .map((value) => normalizeNullableText(value)?.toLowerCase() ?? "")
+    .filter(Boolean);
+
+  const symptomTags = uniqueValues([
+    texts.some((text) => matchesAnyPattern(text, [/totalausfall|total failure|complete failure/i]))
+      ? "total_failure"
+      : null,
+    texts.some((text) => matchesAnyPattern(text, [/drift|schleichender ausfall/i])) ? "drift" : null,
+    texts.some((text) => matchesAnyPattern(text, [/temperatur|thermal|hot/i])) ? "thermal" : null,
+    texts.some((text) => matchesAnyPattern(text, [/vib|vibration/i])) ? "vibration" : null,
+    texts.some((text) => matchesAnyPattern(text, [/scratch|label|cosmetic|surface|appearance/i]))
+      ? "cosmetic"
+      : null,
+  ]);
+  const timingTags = uniqueValues([
+    texts.some((text) => matchesAnyPattern(text, [/few weeks|wochen|after weeks|8-12/i]))
+      ? "after_weeks"
+      : null,
+    texts.some((text) => matchesAnyPattern(text, [/immediate|sofort|upon start/i])) ? "immediate" : null,
+    texts.some((text) => matchesAnyPattern(text, [/intermittent|sporadic|gelegentlich/i]))
+      ? "intermittent"
+      : null,
+  ]);
+  const dispositionTags = uniqueValues([
+    texts.some((text) => matchesAnyPattern(text, [/false positive|false alarm|kein fehler/i]))
+      ? "false_positive"
+      : null,
+    texts.some((text) => matchesAnyPattern(text, [/schraubmoment|torque/i])) ? "torque_adjust" : null,
+    texts.some((text) => matchesAnyPattern(text, [/label|relabel/i])) ? "relabel" : null,
+    texts.some((text) => matchesAnyPattern(text, [/cosmetic only|rein optisch/i]))
+      ? "cosmetic_only"
+      : null,
+  ]);
+
+  return {
+    symptomTags,
+    timingTags,
+    dispositionTags,
+  };
+}
+
+const HYPOTHESIS_TRUTH_DEFINITIONS: HypothesisTruthDefinition[] = [
+  {
+    truthId: "story_supplier_batch",
+    label: "Story 1 supplier batch",
+    family: "supplier_batch",
+    expectedKind: "case",
+    articleId: null,
+    anchorTokens: ["supplier_batch:SB-00007", "part:PM-00008", "defect:SOLDER_COLD"],
+    notes: "Bad capacitor batch should surface as a supplier/material case.",
+  },
+  {
+    truthId: "story_process_window",
+    label: "Story 2 process drift",
+    family: "process_window",
+    expectedKind: "case",
+    articleId: null,
+    anchorTokens: ["occurrence:Montage Linie 1", "test:VIB_TEST", "defect:VIB_FAIL"],
+    notes: "Contained vibration failures should stay process-window specific.",
+  },
+  {
+    truthId: "story_latent_design",
+    label: "Story 3 latent design",
+    family: "latent_design",
+    expectedKind: "case",
+    articleId: "ART-00001",
+    anchorTokens: ["part:PM-00015", "bom:R33", "claim_lag:medium", "claim_lag:long"],
+    notes: "Claim-only field lag on ART-00001 should stay article-local unless traceability proves otherwise.",
+  },
+  {
+    truthId: "story_handling_cluster",
+    label: "Story 4 handling cluster",
+    family: "handling_cluster",
+    expectedKind: "case",
+    articleId: null,
+    anchorTokens: [
+      "order:PO-00012",
+      "order:PO-00018",
+      "order:PO-00024",
+      "user:user_042",
+      "defect:VISUAL_SCRATCH",
+      "defect:LABEL_MISALIGN",
+    ],
+    notes: "Cosmetic handling pattern should be distinct from process and supplier stories.",
+  },
+  {
+    truthId: "story_detection_bias",
+    label: "Noise: detected-section hotspot",
+    family: "noise_watchlist",
+    expectedKind: "noise",
+    articleId: null,
+    anchorTokens: ["detected:Pruefung Linie 2"],
+    notes: "Detected-section hotspots should stay suppressed as noise, not validated cases.",
+  },
+  {
+    truthId: "story_leading_indicator",
+    label: "Leading indicator: near-limit tests",
+    family: "leading_indicator",
+    expectedKind: "leading_indicator",
+    articleId: null,
+    anchorTokens: ["leading_indicator:near_limit"],
+    notes: "Near-limit tests should surface as leading indicators instead of cases.",
+  },
+];
 
 function createPipelineStopError(reason = STOPPED_PIPELINE_MESSAGE) {
   const error = new Error(reason);
@@ -510,6 +740,7 @@ function buildThreadFacts(thread: ClusteredProductDossier): ThreadFacts {
   const nonActionSignalIds = thread.signals
     .filter((signal) => signal.signalType !== "product_action")
     .map((signal) => signal.signalId);
+  const textTags = extractTextTags(thread);
 
   return {
     productId: thread.productId,
@@ -549,11 +780,13 @@ function buildThreadFacts(thread: ClusteredProductDossier): ThreadFacts {
     detectionBias:
       thread.mechanismEvidence.confounderEvidence.detectionBiasRisk.length > 0,
     lowVolumeRisk: thread.mechanismEvidence.confounderEvidence.lowVolumePeriodRisk.length > 0,
+    nearLimitSignals: thread.mechanismEvidence.confounderEvidence.nearLimitTestSignals.slice(0, 8),
     buildWeek: thread.mechanismEvidence.temporalProcessEvidence.buildWeek,
     defectCount: thread.sourceCounts.defects,
     claimCount: thread.sourceCounts.claims,
     badTestCount: thread.sourceCounts.badTests,
     marginalTestCount: thread.sourceCounts.marginalTests,
+    textTags,
   };
 }
 
@@ -574,6 +807,9 @@ function buildScore(input: {
   products: ThreadFacts[];
   coherence: number;
   causalSupport: number;
+  uplift?: number;
+  specificityBonus?: number;
+  negativeEvidencePenalty?: number;
   overlapPenalty?: number;
 }) {
   const productCount = input.products.length;
@@ -591,16 +827,34 @@ function buildScore(input: {
     0,
   );
 
-  const impact = clampScore(productCount * 2 + claimProducts + failureProducts, 0, 10);
-  const noisePenalty = clampScore(noiseFlags, 0, 8);
+  const uplift = input.uplift ?? 0;
+  const specificityBonus = input.specificityBonus ?? 0;
+  const negativeEvidencePenalty = input.negativeEvidencePenalty ?? 0;
+  const impact = clampScore(
+    productCount + claimProducts + failureProducts + Math.ceil(uplift / 2) + specificityBonus,
+    0,
+    10,
+  );
+  const noisePenalty = clampScore(noiseFlags + estimateSmallSamplePenalty(productCount), 0, 8);
   const overlapPenalty = input.overlapPenalty ?? 0;
-  const total = input.coherence + input.causalSupport + impact - noisePenalty - overlapPenalty;
+  const total =
+    input.coherence +
+    input.causalSupport +
+    uplift +
+    specificityBonus +
+    impact -
+    noisePenalty -
+    negativeEvidencePenalty -
+    overlapPenalty;
 
   return {
     impact,
     coherence: input.coherence,
     causalSupport: input.causalSupport,
+    uplift,
+    specificityBonus,
     noisePenalty,
+    negativeEvidencePenalty,
     overlapPenalty,
     total,
   } satisfies ScoreBreakdown;
@@ -620,8 +874,12 @@ function makeSeed(input: {
   recommendedNextTraceChecks: Array<string | null | undefined>;
   coherence: number;
   causalSupport: number;
+  uplift?: number;
+  specificityBonus?: number;
+  negativeEvidencePenalty?: number;
   articleWideAnchorRisk?: boolean;
   fingerprintTokens: Array<string | null | undefined>;
+  recommendedActionType: string;
 }) {
   const includedProductIds = uniqueValues(input.products.map((product) => product.productId));
   const includedSignalIds = uniqueValues(
@@ -633,6 +891,9 @@ function makeSeed(input: {
     products: input.products,
     coherence: input.coherence,
     causalSupport: input.causalSupport,
+    uplift: input.uplift,
+    specificityBonus: input.specificityBonus,
+    negativeEvidencePenalty: input.negativeEvidencePenalty,
   });
 
   return {
@@ -659,6 +920,7 @@ function makeSeed(input: {
     fingerprintTokens: uniqueValues(input.fingerprintTokens).slice(0, 32),
     score,
     articleWideAnchorRisk: Boolean(input.articleWideAnchorRisk),
+    recommendedActionType: input.recommendedActionType,
   } satisfies HypothesisSeed;
 }
 
@@ -670,6 +932,8 @@ function generateSupplierBatchSeeds(
     .filter((entry) => entry.productIds.length >= 2)
     .map((entry) => {
       const products = collectProducts(entry.productIds, factsByProduct);
+      const productIds = new Set(products.map((product) => product.productId));
+      const outsideProducts = [...factsByProduct.values()].filter((product) => !productIds.has(product.productId));
       const corroboratingParts = uniqueValues([
         ...entry.partNumbers,
         ...products.flatMap((product) => product.reportedParts),
@@ -679,6 +943,20 @@ function generateSupplierBatchSeeds(
         ...products.flatMap((product) => product.bomFindNumbers),
       ]).slice(0, 4);
       const claimLagProducts = products.filter((product) => product.hasClaimOnlyLag).length;
+      const affectedProducts = products.filter(
+        (product) => product.defectCount > 0 || product.badTestCount > 0 || product.claimCount > 0,
+      ).length;
+      const outsideAffected = outsideProducts.filter(
+        (product) => product.defectCount > 0 || product.badTestCount > 0 || product.claimCount > 0,
+      ).length;
+      const observedRate = rate(affectedProducts, products.length);
+      const baselineRate = rate(outsideAffected, outsideProducts.length);
+      const uplift = scoreRateUplift(observedRate, baselineRate);
+      const specificityBonus = scoreSpecificity(
+        corroboratingParts.length + corroboratingFinds.length,
+        products.length,
+        dossier.article.productCount,
+      );
       const coherence =
         5 +
         Math.min(2, corroboratingParts.length) +
@@ -688,9 +966,17 @@ function generateSupplierBatchSeeds(
         3 +
         Math.min(2, claimLagProducts) +
         (products.some((product) => product.badTestCount > 0) ? 1 : 0) +
-        (products.some((product) => product.claimCount > 0) ? 1 : 0);
+        (products.some((product) => product.claimCount > 0) ? 1 : 0) +
+        (products.some((product) => product.textTags.symptomTags.includes("total_failure")) ? 1 : 0);
       const articleWideAnchorRisk =
         products.length >= Math.max(4, Math.ceil(dossier.article.productCount * 0.7));
+      const defectConsistencyPenalty =
+        uniqueValues(products.flatMap((product) => product.defectCodes)).length > 4 ? 2 : 0;
+      const negativeEvidencePenalty =
+        (articleWideAnchorRisk ? 2 : 0) +
+        (corroboratingParts.length === 0 ? 2 : 0) +
+        defectConsistencyPenalty +
+        (products.every((product) => product.claimCount === 0 && product.badTestCount === 0) ? 1 : 0);
 
       return makeSeed({
         family: "supplier_batch",
@@ -703,6 +989,7 @@ function generateSupplierBatchSeeds(
         products,
         strongestEvidence: [
           `${products.length} products share supplier batch ${entry.batchRef}.`,
+          `Affected-product rate is ${Math.round(observedRate * 100)}% versus ${Math.round(baselineRate * 100)}% outside the batch anchor.`,
           corroboratingParts.length
             ? `Repeated material anchors: ${corroboratingParts.join(", ")}.`
             : "Traceability points back to the same batch family.",
@@ -720,6 +1007,9 @@ function generateSupplierBatchSeeds(
           products.some((product) => product.falsePositive)
             ? "Some linked products still carry false-positive markers."
             : null,
+          defectConsistencyPenalty
+            ? "Defect signatures are broader than expected for one material mechanism."
+            : null,
           products.every((product) => product.claimCount === 0 && product.badTestCount === 0)
             ? "Factory defects dominate without strong field or test corroboration."
             : null,
@@ -733,13 +1023,18 @@ function generateSupplierBatchSeeds(
         ],
         coherence,
         causalSupport,
+        uplift,
+        specificityBonus,
+        negativeEvidencePenalty,
         articleWideAnchorRisk,
         fingerprintTokens: [
           `family:supplier_batch`,
           `supplier_batch:${entry.batchRef}`,
           ...corroboratingParts.map((value) => `part:${value}`),
           ...corroboratingFinds.map((value) => `bom:${value}`),
+          ...uniqueValues(products.flatMap((value) => value.defectCodes)).slice(0, 3).map((value) => `defect:${value}`),
         ],
+        recommendedActionType: "supplier_containment",
       });
     });
 }
@@ -806,6 +1101,22 @@ function generateProcessWindowSeeds(
       const earliestWeek = cluster[0]?.firstFactorySignalWeek;
       const latestWeek = cluster[cluster.length - 1]?.lastFactorySignalWeek;
       const detectionOnlyRisk = cluster.every((product) => product.occurrenceSections.length === 0);
+      const clusterIds = new Set(cluster.map((product) => product.productId));
+      const sectionOutsideWindow = products.filter((product) => !clusterIds.has(product.productId));
+      const clusterFailureRate = rate(
+        cluster.filter((product) => product.defectCount > 0 || product.badTestCount > 0).length,
+        cluster.length,
+      );
+      const outsideFailureRate = rate(
+        sectionOutsideWindow.filter((product) => product.defectCount > 0 || product.badTestCount > 0).length,
+        sectionOutsideWindow.length,
+      );
+      const uplift = scoreRateUplift(clusterFailureRate, outsideFailureRate);
+      const specificityBonus = scoreSpecificity(
+        sharedDefectCodes.length + sharedTestKeys.length + 1,
+        cluster.length,
+        dossier.article.productCount,
+      );
       const coherence =
         5 +
         Math.min(2, sharedDefectCodes.length) +
@@ -819,7 +1130,13 @@ function generateProcessWindowSeeds(
         (cluster.some((product) => product.badTestCount > 0) ? 2 : 0) +
         (cluster.some((product) => product.thread.mechanismEvidence.temporalProcessEvidence.postWindowQuietHints.length > 0)
           ? 2
-          : 0);
+          : 0) +
+        (cluster.some((product) => product.textTags.symptomTags.includes("vibration")) ? 1 : 0) +
+        (cluster.some((product) => product.textTags.dispositionTags.includes("torque_adjust")) ? 1 : 0);
+      const negativeEvidencePenalty =
+        (detectionOnlyRisk ? 2 : 0) +
+        (cluster.every((product) => product.cosmeticOnly || product.lowSeverityOnly) ? 2 : 0) +
+        (earliestWeek && latestWeek && (weekDistance(earliestWeek, latestWeek) ?? 999) > 8 ? 2 : 0);
 
       seeds.push(
         makeSeed({
@@ -836,6 +1153,7 @@ function generateProcessWindowSeeds(
             earliestWeek && latestWeek
               ? `Factory signals stay contained between ${earliestWeek} and ${latestWeek}.`
               : "Factory signals stay temporally concentrated.",
+            `Failure/test rate in the window is ${Math.round(clusterFailureRate * 100)}% versus ${Math.round(outsideFailureRate * 100)}% outside the same section window.`,
             sharedDefectCodes.length
               ? `Recurring defect signatures: ${sharedDefectCodes.join(", ")}.`
               : null,
@@ -859,6 +1177,9 @@ function generateProcessWindowSeeds(
           ],
           coherence,
           causalSupport,
+          uplift,
+          specificityBonus,
+          negativeEvidencePenalty,
           articleWideAnchorRisk: false,
           fingerprintTokens: [
             `family:process_window`,
@@ -867,6 +1188,7 @@ function generateProcessWindowSeeds(
             ...sharedDefectCodes.map((value) => `defect:${value}`),
             ...sharedTestKeys.map((value) => `test:${value}`),
           ],
+          recommendedActionType: "verify_fix",
         }),
       );
     }
@@ -876,6 +1198,7 @@ function generateProcessWindowSeeds(
 }
 
 function generateLatentDesignSeeds(
+  dossier: ClusteredArticleDossier,
   factsByProduct: Map<string, ThreadFacts>,
 ) {
   const grouped = new Map<string, ThreadFacts[]>();
@@ -905,11 +1228,28 @@ function generateLatentDesignSeeds(
     .map(([anchor, products]) => {
       const lagBuckets = uniqueValues(products.map((product) => product.claimLagBucket));
       const bomFinds = uniqueValues(products.flatMap((product) => product.bomFindNumbers)).slice(0, 4);
+      const claimOnlyArticleRate = rate(
+        [...factsByProduct.values()].filter((product) => product.hasClaimOnlyLag).length,
+        factsByProduct.size,
+      );
+      const observedRate = rate(products.filter((product) => product.hasClaimOnlyLag).length, products.length);
+      const uplift = scoreRateUplift(observedRate, claimOnlyArticleRate);
+      const specificityBonus = scoreSpecificity(
+        1 + bomFinds.length + (lagBuckets.length === 1 ? 1 : 0),
+        products.length,
+        dossier.article.productCount,
+      );
       const coherence = 6 + Math.min(2, bomFinds.length) + Math.min(2, lagBuckets.length === 1 ? 2 : 1);
       const causalSupport =
         5 +
         Math.min(2, products.filter((product) => product.claimCount > 0).length) +
-        (products.every((product) => product.defectCount === 0 && product.badTestCount === 0) ? 2 : 0);
+        (products.every((product) => product.defectCount === 0 && product.badTestCount === 0) ? 2 : 0) +
+        (products.some((product) => product.textTags.symptomTags.includes("drift")) ? 1 : 0) +
+        (products.some((product) => product.textTags.symptomTags.includes("thermal")) ? 1 : 0);
+      const negativeEvidencePenalty =
+        (products.some((product) => product.defectCount > 0 || product.badTestCount > 0) ? 2 : 0) +
+        (lagBuckets.length > 2 ? 1 : 0) +
+        (products.some((product) => product.serviceDocumentation) ? 1 : 0);
 
       return makeSeed({
         family: "latent_design",
@@ -923,10 +1263,14 @@ function generateLatentDesignSeeds(
         strongestEvidence: [
           `${products.length} products show field claims without a prior factory failure trail.`,
           `Shared claim anchor: ${anchor}.`,
+          `Claim-only lag rate is ${Math.round(observedRate * 100)}% for this anchor versus ${Math.round(claimOnlyArticleRate * 100)}% across the article.`,
           lagBuckets.length ? `Lag pattern stays in ${lagBuckets.join(", ")} bucket(s).` : null,
           bomFinds.length ? `Repeated BOM positions: ${bomFinds.join(", ")}.` : null,
         ],
         conflictingEvidence: [
+          products.some((product) => product.defectCount > 0 || product.badTestCount > 0)
+            ? "A stronger in-factory failure trail exists on part of the cluster."
+            : null,
           products.some((product) => product.serviceDocumentation)
             ? "Some claim notes still look service- or documentation-heavy."
             : null,
@@ -941,6 +1285,9 @@ function generateLatentDesignSeeds(
         ],
         coherence,
         causalSupport,
+        uplift,
+        specificityBonus,
+        negativeEvidencePenalty,
         articleWideAnchorRisk: false,
         fingerprintTokens: [
           `family:latent_design`,
@@ -948,6 +1295,7 @@ function generateLatentDesignSeeds(
           ...bomFinds.map((value) => `bom:${value}`),
           ...lagBuckets.map((value) => `claim_lag:${value}`),
         ],
+        recommendedActionType: "initiate_8d",
       });
     });
 }
@@ -979,13 +1327,34 @@ function generateHandlingSeeds(
     .map(([anchor, products]) => {
       const orders = uniqueValues(products.map((product) => product.orderId)).slice(0, 4);
       const cosmeticCodes = uniqueValues(products.flatMap((product) => product.defectCodes)).slice(0, 4);
+      const productIds = new Set(products.map((product) => product.productId));
+      const outsideProducts = [...factsByProduct.values()].filter((product) => !productIds.has(product.productId));
       const articleWideAnchorRisk =
         products.length >= Math.max(4, Math.ceil(dossier.article.productCount * 0.7));
+      const observedCosmeticRate = rate(
+        products.filter((product) => product.cosmeticOnly || product.lowSeverityOnly).length,
+        products.length,
+      );
+      const baselineCosmeticRate = rate(
+        outsideProducts.filter((product) => product.cosmeticOnly || product.lowSeverityOnly).length,
+        outsideProducts.length,
+      );
+      const uplift = scoreRateUplift(observedCosmeticRate, baselineCosmeticRate);
+      const specificityBonus = scoreSpecificity(
+        cosmeticCodes.length + (products.some((product) => product.reworkUsers.length > 0) ? 1 : 0),
+        products.length,
+        dossier.article.productCount,
+      );
       const coherence = 5 + Math.min(2, orders.length) + Math.min(2, cosmeticCodes.length);
       const causalSupport =
         3 +
         (products.every((product) => product.claimCount === 0) ? 2 : 0) +
-        (products.some((product) => product.reworkUsers.length > 0) ? 2 : 0);
+        (products.some((product) => product.reworkUsers.length > 0) ? 2 : 0) +
+        (products.some((product) => product.textTags.dispositionTags.includes("relabel")) ? 1 : 0);
+      const negativeEvidencePenalty =
+        (articleWideAnchorRisk ? 2 : 0) +
+        (products.some((product) => product.badTestCount > 0 || product.fieldImpactPresent) ? 2 : 0) +
+        (products.some((product) => product.supplierBatches.length > 0 && product.claimCount > 0) ? 1 : 0);
 
       return makeSeed({
         family: "handling_cluster",
@@ -998,6 +1367,7 @@ function generateHandlingSeeds(
         products,
         strongestEvidence: [
           `${products.length} low-severity or cosmetic threads concentrate around ${anchor}.`,
+          `Cosmetic/low-severity concentration is ${Math.round(observedCosmeticRate * 100)}% versus ${Math.round(baselineCosmeticRate * 100)}% outside the anchor.`,
           cosmeticCodes.length
             ? `Repeated cosmetic signatures: ${cosmeticCodes.join(", ")}.`
             : "The pattern stays cosmetic or low-severity rather than functional.",
@@ -1018,6 +1388,9 @@ function generateHandlingSeeds(
         ],
         coherence,
         causalSupport,
+        uplift,
+        specificityBonus,
+        negativeEvidencePenalty,
         articleWideAnchorRisk,
         fingerprintTokens: [
           `family:handling_cluster`,
@@ -1025,8 +1398,58 @@ function generateHandlingSeeds(
           ...orders.map((value) => `order:${value}`),
           ...cosmeticCodes.map((value) => `defect:${value}`),
         ],
+        recommendedActionType: "corrective",
       });
     });
+}
+
+function generateLeadingIndicators(factsByProduct: Map<string, ThreadFacts>) {
+  const grouped = new Map<string, ThreadFacts[]>();
+
+  for (const facts of factsByProduct.values()) {
+    if (!facts.marginalOnly && facts.nearLimitSignals.length === 0) {
+      continue;
+    }
+
+    const anchor = facts.testKeys[0] ?? facts.detectedSections[0] ?? "near-limit";
+    const key = facts.nearLimitSignals.length > 0 ? `near_limit:${anchor}` : `marginal:${anchor}`;
+    const current = grouped.get(key) ?? [];
+    current.push(facts);
+    grouped.set(key, current);
+  }
+
+  return [...grouped.entries()]
+    .map(([key, products]) => {
+      const linkedSignalIds = uniqueValues(products.flatMap((product) => product.nonActionSignalIds)).slice(
+        0,
+        260,
+      );
+      const strongestEvidence = uniqueValues([
+        products.some((product) => product.nearLimitSignals.length > 0)
+          ? "Near-limit test evidence repeats without enough closure for a case."
+          : null,
+        products.some((product) => product.marginalOnly)
+          ? "Marginal-only tests are recurring and may become an early warning signal."
+          : null,
+        ...products.flatMap((product) => product.nearLimitSignals.slice(0, 2)),
+      ]).slice(0, 8);
+      const confidence = Math.max(
+        0.28,
+        Math.min(0.76, 0.3 + products.length * 0.08 + strongestEvidence.length * 0.03),
+      );
+
+      return {
+        indicatorTempId: createId("LIND"),
+        indicatorKind: key.startsWith("near_limit:") ? "near_limit" : key.startsWith("marginal:") ? "marginal_drift" : "screening_echo",
+        title: key.startsWith("near_limit:") ? `Near-limit indicator ${key.replace("near_limit:", "")}` : `Marginal drift indicator ${key.replace("marginal:", "")}`,
+        summary: `${products.length} products share near-limit or marginal test evidence without enough causal closure for a case.`,
+        confidence,
+        linkedProductIds: uniqueValues(products.map((product) => product.productId)),
+        linkedSignalIds,
+        strongestEvidence,
+      } satisfies HypothesisLocalLeadingIndicator;
+    })
+    .filter((indicator) => indicator.linkedProductIds.length >= 2 || indicator.strongestEvidence.length >= LEADING_INDICATOR_THRESHOLD);
 }
 
 function generateNoiseSeeds(factsByProduct: Map<string, ThreadFacts>) {
@@ -1099,12 +1522,17 @@ function generateNoiseSeeds(factsByProduct: Map<string, ThreadFacts>) {
       ],
       coherence: 3,
       causalSupport: 1,
+      uplift: 0,
+      specificityBonus: products.some((product) => product.detectionBias) ? 2 : 1,
+      negativeEvidencePenalty: 0,
       articleWideAnchorRisk: false,
       fingerprintTokens: [
         `family:noise_watchlist`,
         anchorKey,
+        ...uniqueValues(products.flatMap((product) => product.detectedSections)).map((value) => `detected:${value}`),
         ...uniqueValues(products.flatMap((product) => product.testKeys)).map((value) => `test:${value}`),
       ],
+      recommendedActionType: "verify_fix",
     });
   });
 }
@@ -1176,6 +1604,59 @@ function convertSeedToNoise(seed: HypothesisSeed, note?: string): HypothesisLoca
   };
 }
 
+function seedAnchorSpecificity(seed: HypothesisSeed) {
+  const tokens = new Set(seed.fingerprintTokens);
+  let specificity = seed.score.specificityBonus;
+
+  if (tokens.has("family:supplier_batch")) {
+    specificity +=
+      (Array.from(tokens).some((token) => token.startsWith("supplier_batch:")) ? 3 : 0) +
+      (Array.from(tokens).some((token) => token.startsWith("part:") || token.startsWith("bom:"))
+        ? 2
+        : 0);
+  }
+
+  if (tokens.has("family:process_window")) {
+    specificity +=
+      (Array.from(tokens).some((token) => token.startsWith("occurrence:")) ? 3 : 0) +
+      (Array.from(tokens).some((token) => token.startsWith("week:")) ? 2 : 0);
+  }
+
+  if (tokens.has("family:latent_design")) {
+    specificity +=
+      (Array.from(tokens).some((token) => token.startsWith("claim_lag:")) ? 3 : 0) +
+      (Array.from(tokens).some((token) => token.startsWith("part:") || token.startsWith("bom:"))
+        ? 2
+        : 0);
+  }
+
+  if (tokens.has("family:handling_cluster")) {
+    specificity +=
+      (Array.from(tokens).some((token) => token.startsWith("order:") || token.startsWith("user:"))
+        ? 3
+        : 0) +
+      (Array.from(tokens).some((token) => token.startsWith("defect:")) ? 1 : 0);
+  }
+
+  return specificity - (seed.articleWideAnchorRisk ? 2 : 0);
+}
+
+function compareSeedStrength(left: HypothesisSeed, right: HypothesisSeed) {
+  const specificityDelta = seedAnchorSpecificity(left) - seedAnchorSpecificity(right);
+
+  if (specificityDelta !== 0) {
+    return specificityDelta;
+  }
+
+  const upliftDelta = left.score.uplift - right.score.uplift;
+
+  if (upliftDelta !== 0) {
+    return upliftDelta;
+  }
+
+  return left.score.total - right.score.total;
+}
+
 function resolveLocalInventory(input: {
   dossier: ClusteredArticleDossier;
   factsByProduct: Map<string, ThreadFacts>;
@@ -1183,6 +1664,7 @@ function resolveLocalInventory(input: {
 }) {
   const caseSeeds: HypothesisSeed[] = [];
   const watchlists: HypothesisLocalWatchlist[] = [];
+  const leadingIndicators = generateLeadingIndicators(input.factsByProduct);
   const noise: HypothesisLocalNoise[] = [];
   const rejectedCases: HypothesisLocalInventory["rejectedCases"] = [];
   const caseMergeLog: string[] = [];
@@ -1223,20 +1705,46 @@ function resolveLocalInventory(input: {
     });
 
     if (strongerOverlap) {
+      const relativeStrength = compareSeedStrength(seed, strongerOverlap);
+
       if (
-        strongerOverlap.family === seed.family ||
-        strongerOverlap.score.total - seed.score.total >= 4 ||
-        seed.articleWideAnchorRisk
+        relativeStrength <= 0 &&
+        (strongerOverlap.family === seed.family ||
+          strongerOverlap.score.total - seed.score.total >= CASE_OVERLAP_MARGIN ||
+          strongerOverlap.score.specificityBonus >= seed.score.specificityBonus ||
+          seed.articleWideAnchorRisk)
       ) {
         watchlists.push(
           convertSeedToWatchlist(
             seed,
-            `Overlaps strongly with higher-ranked case ${strongerOverlap.anchorLabel}.`,
+            `Overlaps strongly with more specific case ${strongerOverlap.anchorLabel}.`,
           ),
         );
         caseMergeLog.push(
           `${seed.titleSeed} was demoted behind stronger hypothesis ${strongerOverlap.titleSeed}.`,
         );
+        continue;
+      }
+
+      if (relativeStrength > 0) {
+        const previousIndex = caseSeeds.findIndex((existing) => existing.tempId === strongerOverlap.tempId);
+
+        if (previousIndex >= 0) {
+          const displaced = caseSeeds.splice(previousIndex, 1)[0];
+          watchlists.push(
+            convertSeedToWatchlist(
+              displaced,
+              `A more specific overlapping hypothesis ${seed.anchorLabel} replaced it during arbitration.`,
+            ),
+          );
+          caseMergeLog.push(
+            `${seed.titleSeed} displaced ${displaced.titleSeed} because its causal anchor was more specific.`,
+          );
+        }
+      } else if (
+        seed.articleWideAnchorRisk
+      ) {
+        watchlists.push(convertSeedToWatchlist(seed, "The anchor remained too article-wide during arbitration."));
         continue;
       }
     }
@@ -1267,6 +1775,7 @@ function resolveLocalInventory(input: {
   const assignedProducts = new Set(caseSeeds.flatMap((seed) => seed.includedProductIds));
   const typedProducts = new Set([
     ...watchlists.flatMap((item) => item.linkedProductIds),
+    ...leadingIndicators.flatMap((item) => item.linkedProductIds),
     ...noise.flatMap((item) => item.linkedProductIds),
   ]);
 
@@ -1317,12 +1826,16 @@ function resolveLocalInventory(input: {
     })),
     incidents,
     watchlists,
+    leadingIndicators,
     noise,
     rejectedCases,
     unassignedProducts,
     globalObservations: uniqueValues([
       caseSeeds.length ? `${caseSeeds.length} case hypotheses survived local ranking.` : null,
       watchlists.length ? `${watchlists.length} weaker patterns remain on watchlist.` : null,
+      leadingIndicators.length
+        ? `${leadingIndicators.length} leading indicators stayed separate from active cases.`
+        : null,
       noise.length ? `${noise.length} patterns were classified as noise or detection artifacts.` : null,
     ]).slice(0, 12),
     caseMergeLog: uniqueValues(caseMergeLog).slice(0, 24),
@@ -1363,7 +1876,7 @@ function deterministicNarrative(seed: HypothesisSeed): HypothesisNarrative {
       seed.conflictingEvidence[0] ??
       "Similar records were excluded when they lacked the same mechanism-specific anchors.",
     recommendedActions: [
-      "Open a focused engineering investigation for the shared mechanism hypothesis.",
+      `Recommended workflow lane: ${seed.recommendedActionType}.`,
       seed.family === "supplier_batch"
         ? "Compare suspect installs against unaffected neighboring batches."
         : seed.family === "process_window"
@@ -1471,6 +1984,7 @@ async function buildPersistableCandidates(input: {
       oneLineWhyGrouped: narrative.oneLineWhyGrouped,
       oneLineWhyExcluded: narrative.oneLineWhyExcluded,
       recommendedActions: narrative.recommendedActions,
+      recommendedActionType: seed.recommendedActionType,
       articleWideAnchorRisk: seed.articleWideAnchorRisk,
     };
 
@@ -1633,6 +2147,55 @@ function buildCandidateEdgeCount(left: HypothesisCaseCandidateRecord, right: Hyp
   return shared;
 }
 
+function sharedTokens(left: HypothesisCaseCandidateRecord, right: HypothesisCaseCandidateRecord, prefix: string) {
+  const rightTokens = new Set(extractFingerprintTokens(right).filter((token) => token.startsWith(prefix)));
+  return extractFingerprintTokens(left).filter(
+    (token) => token.startsWith(prefix) && rightTokens.has(token),
+  );
+}
+
+function canMergeGlobalCandidates(left: HypothesisCaseCandidateRecord, right: HypothesisCaseCandidateRecord) {
+  const leftType = candidateCaseTypeHint(left);
+  const rightType = candidateCaseTypeHint(right);
+
+  if (leftType !== rightType) {
+    return false;
+  }
+
+  const edgeCount = buildCandidateEdgeCount(left, right);
+
+  if (edgeCount < GLOBAL_CASE_EDGE_THRESHOLD) {
+    return false;
+  }
+
+  const sameArticle = left.articleId === right.articleId;
+  const sharedSupplierBatches = sharedTokens(left, right, "supplier_batch:");
+  const sharedParts = [...sharedTokens(left, right, "part:"), ...sharedTokens(left, right, "bom:")];
+  const sharedOccurrence = sharedTokens(left, right, "occurrence:");
+  const sharedWeeks = sharedTokens(left, right, "week:");
+  const sharedDiagnostics = [...sharedTokens(left, right, "defect:"), ...sharedTokens(left, right, "test:")];
+  const sharedLag = sharedTokens(left, right, "claim_lag:");
+  const sharedHandling = [...sharedTokens(left, right, "order:"), ...sharedTokens(left, right, "user:")];
+
+  if (leftType === "supplier") {
+    return sharedSupplierBatches.length > 0 && sharedParts.length > 0;
+  }
+
+  if (leftType === "process") {
+    return sharedOccurrence.length > 0 && sharedWeeks.length > 0 && sharedDiagnostics.length > 0;
+  }
+
+  if (leftType === "design") {
+    return sharedParts.length > 0 && sharedLag.length > 0 && (sameArticle || sharedParts.length > 1);
+  }
+
+  if (leftType === "handling") {
+    return sameArticle && sharedHandling.length > 0 && sharedDiagnostics.length > 0;
+  }
+
+  return sameArticle && edgeCount >= GLOBAL_CASE_EDGE_THRESHOLD + 1;
+}
+
 async function loadLatestCompletedHypothesisRuns() {
   const rows =
     (await queryPostgres<LatestCompletedHypothesisRunRow>(
@@ -1728,6 +2291,9 @@ async function runHypothesisGlobalReconciliation(input: {
     candidate: HypothesisCaseCandidateRecord;
   }> = [];
   const localWatchlists: HypothesisLocalWatchlist[] = [...input.currentReviewPayload.watchlists];
+  const localLeadingIndicators: HypothesisLocalLeadingIndicator[] = [
+    ...input.currentReviewPayload.leadingIndicators,
+  ];
   const localNoise: HypothesisLocalNoise[] = [...input.currentReviewPayload.noise];
   const localRejected: HypothesisLocalInventory["rejectedCases"] = [...input.currentReviewPayload.rejectedCases];
 
@@ -1759,6 +2325,7 @@ async function runHypothesisGlobalReconciliation(input: {
     }
 
     localWatchlists.push(...parsed.localInventory.watchlists);
+    localLeadingIndicators.push(...parsed.localInventory.leadingIndicators);
     localNoise.push(...parsed.localInventory.noise);
     localRejected.push(...parsed.localInventory.rejectedCases);
   }
@@ -1788,6 +2355,10 @@ async function runHypothesisGlobalReconciliation(input: {
         const edgeCount = buildCandidateEdgeCount(current.candidate, neighbor.candidate);
 
         if (edgeCount < GLOBAL_CASE_EDGE_THRESHOLD) {
+          continue;
+        }
+
+        if (!canMergeGlobalCandidates(current.candidate, neighbor.candidate)) {
           continue;
         }
 
@@ -1831,7 +2402,7 @@ async function runHypothesisGlobalReconciliation(input: {
         title: lead.candidate.title,
         oneLineExplanation:
           articleIds.length > 1
-            ? `${articleIds.length} articles share the same mechanism-specific anchor set.`
+            ? `${articleIds.length} articles share the same traceability- or mechanism-specific anchor set.`
             : "This article-level hypothesis remains strong in the latest snapshot.",
         summary: lead.candidate.summary,
         confidence: Math.max(confidence, GLOBAL_KEEP_CONFIDENCE_THRESHOLD),
@@ -1852,6 +2423,20 @@ async function runHypothesisGlobalReconciliation(input: {
       summary: item.summary,
       confidence: item.confidence,
       priority: item.priority,
+      articleIds: [],
+      linkedCandidateIds: [],
+      strongestEvidence: item.strongestEvidence,
+    }),
+  );
+  const groupedLeadingIndicators = localLeadingIndicators.slice(0, 24).map((item) =>
+    buildGlobalItem({
+      inventoryKind: "watchlist",
+      caseTypeHint: "watchlist",
+      title: item.title,
+      oneLineExplanation: item.strongestEvidence[0] ?? item.summary,
+      summary: item.summary,
+      confidence: item.confidence,
+      priority: "low",
       articleIds: [],
       linkedCandidateIds: [],
       strongestEvidence: item.strongestEvidence,
@@ -1888,18 +2473,320 @@ async function runHypothesisGlobalReconciliation(input: {
 
   return hypothesisGlobalInventorySchema.parse({
     contractVersion: HYP_GLOBAL_INVENTORY_SCHEMA_VERSION,
-    inventorySummary: `${validatedCases.length} validated hypotheses, ${groupedWatchlists.length} watchlists, and ${groupedNoise.length} noise buckets are visible in the latest snapshot.`,
+    inventorySummary: `${validatedCases.length} validated hypotheses, ${groupedWatchlists.length} watchlists, ${groupedLeadingIndicators.length} leading indicators, and ${groupedNoise.length} noise buckets are visible in the latest snapshot.`,
     validatedCases: validatedCases.slice(0, 40),
     watchlists: groupedWatchlists.slice(0, 40),
+    leadingIndicators: groupedLeadingIndicators.slice(0, 40),
     noiseBuckets: groupedNoise.slice(0, 40),
     rejectedCases: groupedRejected.slice(0, 40),
     caseMergeLog: uniqueValues(caseMergeLog).slice(0, 24),
     confidenceNotes: [
-      "The hypothesis engine prefers mechanism-specific anchors over generic similarity.",
+      "The hypothesis engine now keeps cases article-local by default unless physical traceability or family-specific closure supports a broader merge.",
       "Supplier, process, latent-field, and handling families are scored separately before any narrative is generated.",
-      "Watchlists and noise remain visible so detection hotspots and marginal-only artifacts do not inflate active cases.",
+      "Leading indicators, watchlists, and noise remain visible so detection hotspots and marginal-only artifacts do not inflate active cases.",
     ],
   });
+}
+
+function buildArticleTokenUniverse(input: {
+  dossier: ClusteredArticleDossier;
+  factsByProduct: Map<string, ThreadFacts>;
+  localInventory: HypothesisLocalInventory;
+}) {
+  return new Set(
+    uniqueValues([
+      ...input.dossier.crossProductSummaries.sharedSupplierBatches.map(
+        (item) => `supplier_batch:${item.batchRef}`,
+      ),
+      ...input.dossier.crossProductSummaries.sharedReportedPartNumbers.map(
+        (item) => `part:${item.partNumber}`,
+      ),
+      ...input.dossier.crossProductSummaries.sharedBomFindNumbers.map(
+        (item) => `bom:${item.findNumber}`,
+      ),
+      ...input.dossier.crossProductSummaries.sharedOccurrenceSections.map(
+        (item) => `occurrence:${item.section}`,
+      ),
+      ...input.dossier.crossProductSummaries.sharedSections.map((item) => `detected:${item.section}`),
+      ...input.dossier.crossProductSummaries.sharedTestHotspots.map((item) => `test:${item.testKey}`),
+      ...[...input.factsByProduct.values()].flatMap((facts) => [
+        ...facts.defectCodes.map((value) => `defect:${value}`),
+        ...facts.reworkUsers.map((value) => `user:${value}`),
+        ...(facts.orderId ? [`order:${facts.orderId}`] : []),
+        ...(facts.claimLagBucket !== "none" ? [`claim_lag:${facts.claimLagBucket}`] : []),
+        ...(facts.nearLimitSignals.length > 0 ? ["leading_indicator:near_limit"] : []),
+      ]),
+      ...input.localInventory.leadingIndicators.map((indicator) =>
+        indicator.indicatorKind === "near_limit"
+          ? "leading_indicator:near_limit"
+          : indicator.indicatorKind === "marginal_drift"
+            ? "leading_indicator:marginal_drift"
+            : "leading_indicator:screening_echo",
+      ),
+    ]),
+  );
+}
+
+function deriveNoiseTokens(item: HypothesisLocalNoise) {
+  return new Set(
+    uniqueValues([
+      item.family === "noise_watchlist" ? "family:noise_watchlist" : null,
+      ...item.strongestEvidence
+        .filter((line) => /detected-section|detected section|hotspot/i.test(line))
+        .flatMap(() => [`detected:${item.title.replace(/^[^:]*\s/, "")}`]),
+      ...item.strongestEvidence
+        .filter((line) => /false-positive/i.test(line))
+        .map(() => "noise:false_positive"),
+      ...item.strongestEvidence
+        .filter((line) => /marginal/i.test(line))
+        .map(() => "leading_indicator:marginal_drift"),
+      ...item.strongestEvidence
+        .flatMap((line) => (line.match(/[A-Z]+[_-][A-Z0-9-]+/g) ?? []).map((token) => `test:${token}`)),
+    ]),
+  );
+}
+
+function deriveLeadingIndicatorTokens(item: HypothesisLocalLeadingIndicator) {
+  return new Set(
+    uniqueValues([
+      item.indicatorKind === "near_limit"
+        ? "leading_indicator:near_limit"
+        : item.indicatorKind === "marginal_drift"
+          ? "leading_indicator:marginal_drift"
+          : "leading_indicator:screening_echo",
+      ...item.strongestEvidence
+        .flatMap((line) => (line.match(/[A-Z]+[_-][A-Z0-9-]+/g) ?? []).map((token) => `test:${token}`)),
+    ]),
+  );
+}
+
+function evaluateHypothesisRun(input: {
+  dossier: ClusteredArticleDossier;
+  factsByProduct: Map<string, ThreadFacts>;
+  persistedCandidates: HypothesisCaseCandidateRecord[];
+  localInventory: HypothesisLocalInventory;
+}) {
+  const candidateRanks = sortCandidatesForArticleQueue(input.persistedCandidates);
+  const tokenUniverse = buildArticleTokenUniverse(input);
+  const rows = HYPOTHESIS_TRUTH_DEFINITIONS.map((truth) => {
+    const applicable =
+      (truth.articleId ? truth.articleId === input.dossier.article.articleId : true) &&
+      truth.anchorTokens.some((token) => tokenUniverse.has(token));
+    const matchingCandidate = candidateRanks.find((candidate) =>
+      truth.expectedKind === "case"
+        ? truth.anchorTokens.filter((token) => extractFingerprintTokens(candidate).includes(token)).length >=
+          Math.min(2, truth.anchorTokens.length)
+        : false,
+    );
+    const matchingNoise =
+      truth.expectedKind === "noise"
+        ? input.localInventory.noise.find((item) =>
+            truth.anchorTokens.some((token) => deriveNoiseTokens(item).has(token)),
+          )
+        : null;
+    const matchingIndicator =
+      truth.expectedKind === "leading_indicator"
+        ? input.localInventory.leadingIndicators.find((item) =>
+            truth.anchorTokens.some((token) => deriveLeadingIndicatorTokens(item).has(token)),
+          )
+        : null;
+    const surfaced = Boolean(matchingCandidate || matchingNoise || matchingIndicator);
+    const rankPosition = matchingCandidate
+      ? candidateRanks.findIndex((candidate) => candidate.id === matchingCandidate.id) + 1
+      : null;
+    const falseNeighbors = candidateRanks.filter((candidate) => {
+      if (matchingCandidate?.id === candidate.id) {
+        return false;
+      }
+
+      return (
+        truth.anchorTokens.some((token) => extractFingerprintTokens(candidate).includes(token)) &&
+        candidateCaseTypeHint(candidate) !==
+          (truth.family === "latent_design"
+            ? "design"
+            : truth.family === "process_window"
+              ? "process"
+              : truth.family === "supplier_batch"
+                ? "supplier"
+                : truth.family === "handling_cluster"
+                  ? "handling"
+                  : "noise")
+      );
+    }).length;
+    const falseMerges =
+      matchingCandidate && matchingCandidate.includedProductIds.length > 10 && truth.family !== "supplier_batch"
+        ? 1
+        : 0;
+
+    return hypothesisEvaluationRowSchema.parse({
+      truthId: truth.truthId,
+      label: truth.label,
+      family: truth.family,
+      expectedKind: truth.expectedKind,
+      applicable,
+      surfaced,
+      rankPosition,
+      matchedCandidateId: matchingCandidate?.id ?? null,
+      matchedTitle: matchingCandidate?.title ?? matchingNoise?.title ?? matchingIndicator?.title ?? null,
+      matchedAnchor:
+        (matchingCandidate?.payload &&
+        typeof matchingCandidate.payload === "object" &&
+        typeof (matchingCandidate.payload as { anchorLabel?: unknown }).anchorLabel === "string"
+          ? ((matchingCandidate.payload as { anchorLabel: string }).anchorLabel ?? null)
+          : null) ??
+        matchingNoise?.title ??
+        matchingIndicator?.title ??
+        null,
+      falseMergeCount: falseMerges,
+      falseNeighborCount: falseNeighbors,
+      topEvidence:
+        matchingCandidate?.strongestEvidence.slice(0, 3) ??
+        matchingNoise?.strongestEvidence.slice(0, 3) ??
+        matchingIndicator?.strongestEvidence.slice(0, 3) ??
+        [],
+      notes: uniqueValues([
+        applicable && !surfaced ? `Expected pattern was applicable but did not surface for ${truth.label}.` : null,
+        falseNeighbors > 0 ? `${falseNeighbors} nearby candidates reused the truth anchors with the wrong family.` : null,
+        falseMerges > 0 ? "Matched case still looks broader than the canonical story should be." : null,
+      ]).slice(0, 6),
+    });
+  });
+  const applicableTruthCount = rows.filter((row) => row.applicable).length;
+  const surfacedTruthCount = rows.filter((row) => row.applicable && row.surfaced).length;
+  const falseMergeCount = rows.reduce((sum, row) => sum + row.falseMergeCount, 0);
+  const falseNeighborCount = rows.reduce((sum, row) => sum + row.falseNeighborCount, 0);
+
+  return hypothesisEvaluationSummarySchema.parse({
+    applicableTruthCount,
+    surfacedTruthCount,
+    leadingIndicatorCount: input.localInventory.leadingIndicators.length,
+    falseMergeCount,
+    falseNeighborCount,
+    summaryLine: `${surfacedTruthCount}/${Math.max(1, applicableTruthCount)} applicable benchmark stories surfaced; ${falseNeighborCount} false neighbors and ${falseMergeCount} false merges remain.`,
+    rows,
+  });
+}
+
+async function persistHypothesisEvaluation(input: {
+  runId: string;
+  articleId: string;
+  summary: HypothesisEvaluationSummary;
+}) {
+  for (const truth of HYPOTHESIS_TRUTH_DEFINITIONS) {
+    await queryPostgres(
+      `
+        INSERT INTO team_hyp_eval_case_truth (
+          truth_id,
+          label,
+          family,
+          expected_kind,
+          article_id,
+          anchor_tokens,
+          notes,
+          updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, NOW())
+        ON CONFLICT (truth_id)
+        DO UPDATE SET
+          label = EXCLUDED.label,
+          family = EXCLUDED.family,
+          expected_kind = EXCLUDED.expected_kind,
+          article_id = EXCLUDED.article_id,
+          anchor_tokens = EXCLUDED.anchor_tokens,
+          notes = EXCLUDED.notes,
+          updated_at = NOW()
+      `,
+      [
+        truth.truthId,
+        truth.label,
+        truth.family,
+        truth.expectedKind,
+        truth.articleId,
+        JSON.stringify(truth.anchorTokens),
+        truth.notes,
+      ],
+    );
+  }
+
+  await queryPostgres(`DELETE FROM team_hyp_eval_case_prediction WHERE run_id = $1`, [input.runId]);
+
+  for (const row of input.summary.rows) {
+    await queryPostgres(
+      `
+        INSERT INTO team_hyp_eval_case_prediction (
+          prediction_id,
+          run_id,
+          article_id,
+          truth_id,
+          applicable,
+          surfaced,
+          rank_position,
+          matched_candidate_id,
+          matched_title,
+          matched_anchor,
+          false_merge_count,
+          false_neighbor_count,
+          top_evidence,
+          notes
+        )
+        VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14::jsonb
+        )
+      `,
+      [
+        createId("HEVAL"),
+        input.runId,
+        input.articleId,
+        row.truthId,
+        row.applicable,
+        row.surfaced,
+        row.rankPosition,
+        row.matchedCandidateId,
+        row.matchedTitle,
+        row.matchedAnchor,
+        row.falseMergeCount,
+        row.falseNeighborCount,
+        JSON.stringify(row.topEvidence),
+        JSON.stringify(row.notes),
+      ],
+    );
+  }
+
+  await queryPostgres(
+    `
+      INSERT INTO team_hyp_eval_case_metrics (
+        run_id,
+        article_id,
+        applicable_truth_count,
+        surfaced_truth_count,
+        leading_indicator_count,
+        false_merge_count,
+        false_neighbor_count,
+        summary,
+        updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, NOW())
+      ON CONFLICT (run_id)
+      DO UPDATE SET
+        applicable_truth_count = EXCLUDED.applicable_truth_count,
+        surfaced_truth_count = EXCLUDED.surfaced_truth_count,
+        leading_indicator_count = EXCLUDED.leading_indicator_count,
+        false_merge_count = EXCLUDED.false_merge_count,
+        false_neighbor_count = EXCLUDED.false_neighbor_count,
+        summary = EXCLUDED.summary,
+        updated_at = NOW()
+    `,
+    [
+      input.runId,
+      input.articleId,
+      input.summary.applicableTruthCount,
+      input.summary.surfacedTruthCount,
+      input.summary.leadingIndicatorCount,
+      input.summary.falseMergeCount,
+      input.summary.falseNeighborCount,
+      JSON.stringify(input.summary),
+    ],
+  );
 }
 
 function toPersistableCaseKind(seed: HypothesisSeed) {
@@ -2022,7 +2909,7 @@ export async function runHypothesisArticleCaseClustering(
     const seeds = [
       ...generateSupplierBatchSeeds(dossier, factsByProduct),
       ...generateProcessWindowSeeds(dossier, factsByProduct),
-      ...generateLatentDesignSeeds(factsByProduct),
+      ...generateLatentDesignSeeds(dossier, factsByProduct),
       ...generateHandlingSeeds(dossier, factsByProduct),
       ...generateNoiseSeeds(factsByProduct),
     ];
@@ -2087,9 +2974,30 @@ export async function runHypothesisArticleCaseClustering(
       abortSignal: options?.abortSignal,
     });
 
+    const evaluationSummary = evaluateHypothesisRun({
+      dossier,
+      factsByProduct,
+      persistedCandidates,
+      localInventory,
+    });
+    const enrichedLocalInventory = hypothesisLocalInventorySchema.parse({
+      ...localInventory,
+      globalObservations: uniqueValues([
+        ...localInventory.globalObservations,
+        evaluationSummary.summaryLine,
+      ]).slice(0, 20),
+      evaluationSummary,
+    });
+
+    await persistHypothesisEvaluation({
+      runId,
+      articleId: dossier.article.articleId,
+      summary: evaluationSummary,
+    });
+
     const reviewPayload: HypothesisReviewPayload = {
       contractVersion: HYP_RUN_REVIEW_SCHEMA_VERSION,
-      localInventory,
+      localInventory: enrichedLocalInventory,
       globalInventory,
     };
 
@@ -2101,6 +3009,7 @@ export async function runHypothesisArticleCaseClustering(
         contractVersion: HYP_LOCAL_INVENTORY_SCHEMA_VERSION,
         seedCount: seeds.length,
         caseSeedCount: caseSeeds.length,
+        leadingIndicatorCount: enrichedLocalInventory.leadingIndicators.length,
         seeds: seeds.map((seed) => ({
           tempId: seed.tempId,
           family: seed.family,
@@ -2378,10 +3287,12 @@ export const getHypothesisArticleCaseboard = memoizeWithTtl(
       proposedCases,
       incidents: parsedReview?.localInventory.incidents ?? [],
       watchlists: parsedReview?.localInventory.watchlists ?? [],
+      leadingIndicators: parsedReview?.localInventory.leadingIndicators ?? [],
       noise: parsedReview?.localInventory.noise ?? [],
       unassignedProducts: parsedReview?.localInventory.unassignedProducts ?? [],
       globalObservations: parsedReview?.localInventory.globalObservations ?? [],
       globalInventory: parsedReview?.globalInventory ?? null,
+      evaluationSummary: parsedReview?.localInventory.evaluationSummary ?? null,
     };
   },
 );
