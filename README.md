@@ -1,5 +1,7 @@
 # Manex Forensic Lens
 
+[Pitch deck](./pitchdeck.pdf)
+
 Tracis allows you to trace all production information, from each supplier to
 field claims long after the sale, in order to find systematic errors in the
 value chain.
