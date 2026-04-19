@@ -28,10 +28,15 @@ import {
 } from "@/lib/manex-case-clustering";
 import { getDummyProposedCasesDashboard } from "@/lib/manex-dummy-clustering";
 import {
+  buildCaseViewerHref,
   buildClusteringModeHref,
   parseClusteringMode,
   type ClusteringMode,
 } from "@/lib/manex-clustering-mode";
+import {
+  buildCaseInventoryItems,
+  loadArticleCaseboard,
+} from "@/lib/manex-case-viewer";
 import {
   getDeterministicProposedCasesDashboard,
   type DeterministicGlobalInventoryItem,
@@ -88,8 +93,8 @@ function inventoryHref(
 
   const candidateId = item.linkedCandidateIds[0];
   return candidateId
-    ? buildClusteringModeHref(`/articles/${articleId}?case=${candidateId}`, mode)
-    : buildClusteringModeHref(`/articles/${articleId}`, mode);
+    ? buildCaseViewerHref(candidateId, articleId, mode)
+    : buildClusteringModeHref("/articles", mode);
 }
 
 function GlobalPatternSection({
@@ -170,7 +175,7 @@ function GlobalPatternSection({
                     render={
                       <Link href={inventoryHref(item, mode)}>
                         <CircuitBoard className="size-4" />
-                        Open article
+                        Open case
                       </Link>
                     }
                   />
@@ -230,6 +235,9 @@ export default async function ArticlesPage({ searchParams }: ArticlesPageProps) 
     mode === "investigate"
       ? investigateDashboard?.articleQueues ?? []
       : dashboard.articleQueues;
+  const caseInventory = buildCaseInventoryItems(
+    await Promise.all(articleQueues.map((article) => loadArticleCaseboard(article.articleId, mode))),
+  );
   const activeRuns =
     mode === "investigate" ? investigateDashboard?.activeRuns ?? [] : dashboard.activeRuns;
   const toggleItems = [
@@ -331,7 +339,7 @@ export default async function ArticlesPage({ searchParams }: ArticlesPageProps) 
   return (
     <main className="min-h-screen">
       <div className="mx-auto flex w-full max-w-[1680px] flex-col gap-6 px-4 py-4 sm:px-6 lg:px-10 lg:py-8">
-        <header className="glass-panel ghost-border rounded-[30px] px-5 py-5 sm:px-6">
+        <header className="glass-panel ghost-border spec-grid overflow-hidden rounded-[30px] px-5 py-5 sm:px-6">
           <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
             <div className="space-y-3">
               <Badge variant="outline">
@@ -382,9 +390,9 @@ export default async function ArticlesPage({ searchParams }: ArticlesPageProps) 
                 caption="Distractors and down-ranked patterns."
               />
               <Metric
-                label="Article queues"
-                value={articleQueues.length}
-                caption="Articles currently carrying proposed cases."
+                label="Cases"
+                value={caseInventory.length}
+                caption="Ranked cases ready to open directly in the dedicated viewer."
               />
             </div>
 
@@ -400,7 +408,7 @@ export default async function ArticlesPage({ searchParams }: ArticlesPageProps) 
                 <CardDescription className="mt-2 max-w-3xl leading-6">
                   This is not the main case list for the whole system. It is the
                   global intelligence layer: things to monitor, suppress, or compare
-                  across articles before opening an article workspace.
+                  across articles before opening a focused case viewer.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-6 px-5 pb-5">
@@ -478,59 +486,66 @@ export default async function ArticlesPage({ searchParams }: ArticlesPageProps) 
               <CardHeader className="px-6 pt-6">
                 <Badge variant="outline">
                   <FolderKanban className="size-3.5" />
-                  Articles with proposed cases
+                  Ranked cases
                 </Badge>
                 <CardTitle className="section-title mt-3">
-                  Article investigation inventory
+                  Case investigation inventory
                 </CardTitle>
                 <CardDescription className="mt-2 max-w-3xl leading-6">
-                  This is the investigation entry point. Open an article to compare its
-                  top competing hypotheses before diving into raw evidence.
+                  This is the investigation entry point. Open a case directly, keep one explanation in focus, and avoid bouncing through an article-wide board first.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3 px-5 pb-5">
-                {articleQueues.length ? (
-                  articleQueues.map((article) => (
+                {caseInventory.length ? (
+                  caseInventory.map((item) => (
                     <article
-                      key={article.articleId}
+                      key={item.caseId}
                       className="rounded-[24px] border border-white/10 bg-black/8 p-4"
                     >
                       <div className="flex flex-wrap items-center gap-2">
-                        <Badge>{article.articleId}</Badge>
+                        <Badge>{item.articleId}</Badge>
                         <Badge variant="outline">
-                          {article.proposedCaseCount} proposed cases
+                          {item.caseKind}
                         </Badge>
                         <Badge variant="outline">
-                          {article.affectedProductCount} affected products
+                          {item.affectedProductCount} affected products
                         </Badge>
-                        {article.highestPriority ? (
+                        <Badge variant="outline">{item.priority}</Badge>
+                        {item.confidence !== null ? (
                           <Badge variant="outline">
-                            Highest priority: {article.highestPriority}
+                            {Math.round(item.confidence * 100)}% confidence
                           </Badge>
                         ) : null}
                       </div>
                       <div className="mt-3 font-medium">
-                        {article.articleName ?? "Unnamed article"}
+                        {item.title}
                       </div>
                       <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                        {article.leadingCaseTitle
-                          ? `${article.leadingCaseTitle}${
-                              article.topConfidence !== null
-                                ? ` · ${Math.round(article.topConfidence * 100)}% confidence`
-                                : ""
-                            }`
-                          : "Proposed cases are available for review."}
+                        {item.summary}
                       </p>
-                      <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                        {article.summary ?? "No article summary available yet."}
-                      </p>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {item.articleName ? (
+                          <Badge variant="secondary">{item.articleName}</Badge>
+                        ) : null}
+                        <Badge variant="secondary">
+                          {item.signalCount} signals in case
+                        </Badge>
+                        <Badge variant="secondary">
+                          {item.articleCaseCount} ranked cases in article
+                        </Badge>
+                        {item.strongestEvidence.slice(0, 2).map((evidence) => (
+                          <Badge key={evidence} variant="secondary">
+                            {evidence}
+                          </Badge>
+                        ))}
+                      </div>
                       <div className="mt-3">
                         <Button
                           size="sm"
                           variant="outline"
                           render={
-                            <Link href={buildClusteringModeHref(`/articles/${article.articleId}`, mode)}>
-                              Review hypotheses
+                            <Link href={buildCaseViewerHref(item.caseId, item.articleId, mode)}>
+                              Open case viewer
                             </Link>
                           }
                         />
@@ -539,7 +554,7 @@ export default async function ArticlesPage({ searchParams }: ArticlesPageProps) 
                   ))
                 ) : (
                   <div className="rounded-[24px] border border-dashed border-white/10 bg-black/8 px-4 py-5 text-sm leading-6 text-[var(--muted-foreground)]">
-                    No article currently has proposed cases to review.
+                    No ranked cases are available to open yet.
                   </div>
                 )}
               </CardContent>

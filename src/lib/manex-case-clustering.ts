@@ -185,9 +185,20 @@ const productThreadSynthesisSchema = z.object({
   suspiciousPatterns: z.array(z.string().trim().min(1).max(220)).max(10),
   possibleNoiseFlags: z.array(z.string().trim().min(1).max(220)).max(10),
   openQuestions: z.array(z.string().trim().min(1).max(220)).max(10),
+  strongestExplanation: z.string().trim().min(10).max(240),
+  strongestCompetingExplanation: z.string().trim().min(10).max(240),
 });
 
 const proposalPrioritySchema = z.enum(["low", "medium", "high", "critical"]);
+const mechanismFamilySchema = z.enum([
+  "supplier_batch_material",
+  "process_window_calibration",
+  "latent_design_escape",
+  "operator_handling_order_cluster",
+  "detector_hotspot_noise",
+  "false_positive_noise",
+  "near_limit_leading_indicator",
+]);
 const proposalCaseKindSchema = z.enum([
   "functional_failure",
   "process_drift",
@@ -210,6 +221,7 @@ const proposalSignalTypeSchema = z.enum([
 
 const proposalCaseSchema = z.object({
   proposalTempId: z.string().trim().min(1).max(48),
+  family: mechanismFamilySchema,
   title: z.string().trim().min(8).max(160),
   caseKind: proposalCaseKindSchema,
   summary: z.string().trim().min(20).max(1500),
@@ -227,6 +239,24 @@ const proposalCaseSchema = z.object({
     .array(z.string().trim().min(1).max(280))
     .min(1)
     .max(8),
+  requiredEvidencePresent: z.array(z.string().trim().min(1).max(220)).min(1).max(8),
+  requiredEvidenceMissing: z.array(z.string().trim().min(1).max(220)).max(8),
+  dominantAnchor: z.string().trim().min(1).max(180),
+  discriminativeScore: z.number().min(0).max(1),
+  backgroundPrevalencePenalty: z.number().min(0).max(1),
+  bestCompetingFamily: mechanismFamilySchema.nullable(),
+  shouldValidate: z.boolean(),
+  strongestCounterevidence: z.array(z.string().trim().min(1).max(220)).max(6),
+  affectedProductCount: z.number().int().min(1).max(512),
+  articleBackgroundCount: z.number().int().min(0).max(512),
+  lift: z.number().min(0).max(100),
+  weekConcentrationScore: z.number().min(0).max(1),
+  orderConcentrationScore: z.number().min(0).max(1),
+  reworkUserConcentrationScore: z.number().min(0).max(1),
+  claimOnlyRatio: z.number().min(0).max(1),
+  preClaimFactoryDefectRatio: z.number().min(0).max(1),
+  detectedVsOccurrenceMismatchRate: z.number().min(0).max(1),
+  sourceCandidateFamilyIds: z.array(z.string().trim().min(1).max(80)).min(1).max(12),
   signalTypesPresent: z.array(z.string().trim().min(1).max(40)).max(8),
   defectCodesPresent: z.array(z.string().trim().min(1).max(80)).max(24),
   testKeysPresent: z.array(z.string().trim().min(1).max(80)).max(24),
@@ -265,6 +295,8 @@ const proposalIncidentSchema = z.object({
   includedSignalIds: z.array(z.string().trim().min(1).max(80)).max(120),
   strongestEvidence: z.array(z.string().trim().min(1).max(280)).min(1).max(8),
   conflictingEvidence: z.array(z.string().trim().min(1).max(280)).max(8),
+  strongestCounterevidence: z.array(z.string().trim().min(1).max(220)).max(6),
+  bestCompetingFamily: mechanismFamilySchema.nullable(),
   recommendedNextTraceChecks: z.array(z.string().trim().min(1).max(280)).max(8),
   reasonNotCase: z.string().trim().min(1).max(280),
   signalTypesPresent: z.array(z.string().trim().min(1).max(40)).max(8),
@@ -296,6 +328,8 @@ const proposalWatchlistSchema = z.object({
   linkedProductIds: z.array(z.string().trim().min(1).max(80)).min(1).max(64),
   linkedSignalIds: z.array(z.string().trim().min(1).max(80)).max(240),
   strongestEvidence: z.array(z.string().trim().min(1).max(280)).min(1).max(8),
+  strongestCounterevidence: z.array(z.string().trim().min(1).max(220)).max(6),
+  bestCompetingFamily: mechanismFamilySchema.nullable(),
   confounders: z.array(z.string().trim().min(1).max(280)).max(8),
   recommendedNextTraceChecks: z.array(z.string().trim().min(1).max(280)).max(8),
 });
@@ -318,6 +352,8 @@ const proposalNoiseSchema = z.object({
   linkedProductIds: z.array(z.string().trim().min(1).max(80)).max(64),
   linkedSignalIds: z.array(z.string().trim().min(1).max(80)).max(240),
   strongestEvidence: z.array(z.string().trim().min(1).max(280)).max(8),
+  strongestCounterevidence: z.array(z.string().trim().min(1).max(220)).max(6),
+  bestCompetingFamily: mechanismFamilySchema.nullable(),
 });
 
 const clusteringProposalSchema = z.object({
@@ -600,6 +636,60 @@ type ProductMechanismEvidence = {
 };
 
 export type ProductThreadSynthesis = z.infer<typeof productThreadSynthesisSchema>;
+type MechanismFamily = z.infer<typeof mechanismFamilySchema>;
+
+type CandidateFamilyDisposition = "case" | "watchlist" | "noise" | "incident";
+
+type ProductHypothesisSignals = {
+  candidateFamilyVotes: Array<{
+    family: MechanismFamily;
+    score: number;
+    reasons: string[];
+  }>;
+  negativeEvidence: string[];
+  discriminativeAnchors: string[];
+  broadContextAnchors: string[];
+  claimLagDays: number[];
+  hasFactoryDefectBeforeClaim: boolean;
+  sameOrderClusterHint: boolean;
+  sameReworkUserHint: boolean;
+  sameOccurrenceWindowHint: boolean;
+  sameBatchSamePartHint: boolean;
+  detectorHotspotOnly: boolean;
+  falsePositiveFlag: boolean;
+  claimOnlyThread: boolean;
+  occurrenceDetectedMismatch: boolean;
+};
+
+type Stage2CandidateFamily = {
+  candidateFamilyId: string;
+  family: MechanismFamily;
+  title: string;
+  shouldReviewAs: CandidateFamilyDisposition;
+  dominantAnchor: string;
+  supportingProductIds: string[];
+  supportingSignalIds: string[];
+  signalTypesPresent: string[];
+  discriminativeAnchors: string[];
+  broadContextAnchors: string[];
+  requiredEvidencePresent: string[];
+  requiredEvidenceMissing: string[];
+  strongestEvidence: string[];
+  strongestCounterevidence: string[];
+  bestCompetingFamilies: MechanismFamily[];
+  statistics: {
+    affectedProductCount: number;
+    articleBackgroundCount: number;
+    lift: number;
+    backgroundPrevalencePenalty: number;
+    weekConcentrationScore: number;
+    orderConcentrationScore: number;
+    reworkUserConcentrationScore: number;
+    claimOnlyRatio: number;
+    preClaimFactoryDefectRatio: number;
+    detectedVsOccurrenceMismatchRate: number;
+  };
+};
 
 export type ClusteredProductDossier = {
   contractVersion: typeof PRODUCT_DOSSIER_SCHEMA_VERSION;
@@ -636,6 +726,7 @@ export type ClusteredProductDossier = {
   stage1Synthesis: ProductThreadSynthesis;
   traceabilitySnapshot: ProductTraceabilitySnapshot;
   mechanismEvidence: ProductMechanismEvidence;
+  hypothesisSignals?: ProductHypothesisSignals;
   summaryFeatures: {
     signalTypesPresent: string[];
     defectCodesPresent: string[];
@@ -744,6 +835,7 @@ export type ClusteredArticleDossier = {
       count: number;
     }>;
   };
+  candidateFamilies?: Stage2CandidateFamily[];
   productThreads: ClusteredProductDossier[];
   weeklyQualitySummaries: ManexWeeklyQualitySummary[];
   rawEvidenceAppendix: {
@@ -1992,6 +2084,1262 @@ const buildCrossProductSummary = (
     sharedTestHotspots,
   };
 };
+
+type ArticleMechanismContext = {
+  totalProducts: number;
+  batchProductCounts: Map<string, number>;
+  partProductCounts: Map<string, number>;
+  partBatchProductCounts: Map<string, number>;
+  occurrenceSectionProductCounts: Map<string, number>;
+  detectedSectionProductCounts: Map<string, number>;
+  orderProductCounts: Map<string, number>;
+  reworkUserProductCounts: Map<string, number>;
+  testKeyProductCounts: Map<string, number>;
+};
+
+const roundMetric = (value: number, digits = 2) =>
+  Number(value.toFixed(digits));
+
+const clamp01 = (value: number) => Math.max(0, Math.min(1, roundMetric(value, 3)));
+
+const safeRatio = (numerator: number, denominator: number) =>
+  denominator > 0 ? numerator / denominator : 0;
+
+function toStableToken(value: string) {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 28);
+
+  return normalized || "item";
+}
+
+function buildProductCountMap(
+  threads: ClusteredProductDossier[],
+  getter: (thread: ClusteredProductDossier) => Array<string | null | undefined>,
+) {
+  const productIdsByKey = new Map<string, Set<string>>();
+
+  for (const thread of threads) {
+    for (const key of uniqueValues(
+      getter(thread).map((value) => normalizeNullableText(value)),
+    )) {
+      const current = productIdsByKey.get(key) ?? new Set<string>();
+      current.add(thread.productId);
+      productIdsByKey.set(key, current);
+    }
+  }
+
+  return new Map(
+    [...productIdsByKey.entries()].map(([key, productIds]) => [key, productIds.size]),
+  );
+}
+
+function buildArticleMechanismContext(dossier: ClusteredArticleDossier): ArticleMechanismContext {
+  return {
+    totalProducts: dossier.productThreads.length,
+    batchProductCounts: buildProductCountMap(dossier.productThreads, (thread) =>
+      thread.installedParts.map((item) => item.batchId ?? item.batchNumber),
+    ),
+    partProductCounts: buildProductCountMap(dossier.productThreads, (thread) => [
+      ...thread.summaryFeatures.reportedPartNumbers,
+      ...thread.installedParts.map((item) => item.partNumber),
+    ]),
+    partBatchProductCounts: buildProductCountMap(dossier.productThreads, (thread) =>
+      thread.installedParts
+        .filter((item) => item.partNumber && (item.batchId ?? item.batchNumber))
+        .map((item) => `${item.partNumber}|${item.batchId ?? item.batchNumber}`),
+    ),
+    occurrenceSectionProductCounts: buildProductCountMap(dossier.productThreads, (thread) =>
+      thread.mechanismEvidence.temporalProcessEvidence.dominantOccurrenceSections.map(
+        (item) => item.value,
+      ),
+    ),
+    detectedSectionProductCounts: buildProductCountMap(dossier.productThreads, (thread) =>
+      thread.mechanismEvidence.temporalProcessEvidence.dominantDetectedSections.map(
+        (item) => item.value,
+      ),
+    ),
+    orderProductCounts: buildProductCountMap(dossier.productThreads, (thread) => [thread.orderId]),
+    reworkUserProductCounts: buildProductCountMap(dossier.productThreads, (thread) =>
+      thread.mechanismEvidence.operatorHandlingEvidence.dominantReworkUsers.map(
+        (item) => item.userId,
+      ),
+    ),
+    testKeyProductCounts: buildProductCountMap(dossier.productThreads, (thread) =>
+      thread.summaryFeatures.testKeysMarginalFail,
+    ),
+  };
+}
+
+function calculateLift(input: {
+  anchorOnAffectedCount: number;
+  affectedProductCount: number;
+  articleBackgroundCount: number;
+  totalProducts: number;
+}) {
+  const affectedPrevalence = safeRatio(
+    input.anchorOnAffectedCount,
+    input.affectedProductCount,
+  );
+  const articlePrevalence = safeRatio(
+    input.articleBackgroundCount,
+    input.totalProducts,
+  );
+
+  if (articlePrevalence <= 0) {
+    return affectedPrevalence > 0 ? 10 : 0;
+  }
+
+  return roundMetric(affectedPrevalence / articlePrevalence);
+}
+
+function calculateBackgroundPrevalencePenalty(input: {
+  articleBackgroundCount: number;
+  totalProducts: number;
+  lift: number;
+}) {
+  const articlePrevalence = safeRatio(
+    input.articleBackgroundCount,
+    input.totalProducts,
+  );
+
+  return clamp01(
+    articlePrevalence - Math.max(0, input.lift - 1) * 0.45 + (articlePrevalence >= 0.75 ? 0.15 : 0),
+  );
+}
+
+function pickDominantValue(values: Array<string | null | undefined>) {
+  const counts = new Map<string, number>();
+
+  for (const value of values) {
+    const normalized = normalizeNullableText(value);
+
+    if (!normalized) {
+      continue;
+    }
+
+    counts.set(normalized, (counts.get(normalized) ?? 0) + 1);
+  }
+
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0]?.[0] ?? null;
+}
+
+function buildCandidateStatistics(input: {
+  threads: ClusteredProductDossier[];
+  context: ArticleMechanismContext;
+  articleBackgroundCount: number;
+  anchorOnAffectedCount?: number;
+}) {
+  const affectedProductCount = input.threads.length;
+  const anchorOnAffectedCount = input.anchorOnAffectedCount ?? affectedProductCount;
+  const dominantWeek = pickDominantValue(
+    input.threads.map((thread) => thread.mechanismEvidence.temporalProcessEvidence.firstFactorySignalWeek),
+  );
+  const dominantOrder = pickDominantValue(input.threads.map((thread) => thread.orderId));
+  const dominantUser = pickDominantValue(
+    input.threads.map(
+      (thread) => thread.mechanismEvidence.operatorHandlingEvidence.dominantReworkUsers[0]?.userId,
+    ),
+  );
+  const claimBearingThreads = input.threads.filter((thread) => thread.claims.length > 0);
+  const lift = calculateLift({
+    anchorOnAffectedCount,
+    affectedProductCount,
+    articleBackgroundCount: input.articleBackgroundCount,
+    totalProducts: input.context.totalProducts,
+  });
+
+  return {
+    affectedProductCount,
+    articleBackgroundCount: input.articleBackgroundCount,
+    lift,
+    backgroundPrevalencePenalty: calculateBackgroundPrevalencePenalty({
+      articleBackgroundCount: input.articleBackgroundCount,
+      totalProducts: input.context.totalProducts,
+      lift,
+    }),
+    weekConcentrationScore: clamp01(
+      safeRatio(
+        input.threads.filter(
+          (thread) =>
+            thread.mechanismEvidence.temporalProcessEvidence.firstFactorySignalWeek === dominantWeek,
+        ).length,
+        affectedProductCount,
+      ),
+    ),
+    orderConcentrationScore: clamp01(
+      safeRatio(
+        input.threads.filter((thread) => thread.orderId === dominantOrder).length,
+        affectedProductCount,
+      ),
+    ),
+    reworkUserConcentrationScore: clamp01(
+      safeRatio(
+        input.threads.filter(
+          (thread) =>
+            thread.mechanismEvidence.operatorHandlingEvidence.dominantReworkUsers[0]?.userId ===
+            dominantUser,
+        ).length,
+        affectedProductCount,
+      ),
+    ),
+    claimOnlyRatio: clamp01(
+      safeRatio(
+        input.threads.filter((thread) => thread.mechanismEvidence.fieldLeakEvidence.claimOnlyThread)
+          .length,
+        affectedProductCount,
+      ),
+    ),
+    preClaimFactoryDefectRatio: clamp01(
+      safeRatio(
+        claimBearingThreads.filter(
+          (thread) => thread.mechanismEvidence.fieldLeakEvidence.hasPriorFactoryDefect,
+        ).length,
+        claimBearingThreads.length,
+      ),
+    ),
+    detectedVsOccurrenceMismatchRate: clamp01(
+      safeRatio(
+        input.threads.filter(
+          (thread) => thread.mechanismEvidence.temporalProcessEvidence.occurrenceDetectedMismatch.present,
+        ).length,
+        affectedProductCount,
+      ),
+    ),
+  };
+}
+
+function buildThreadHypothesisSignals(
+  thread: ClusteredProductDossier,
+  dossier: ClusteredArticleDossier,
+  context = buildArticleMechanismContext(dossier),
+): ProductHypothesisSignals {
+  const sameBatchSamePartHint = thread.mechanismEvidence.traceabilityEvidence.partBatchAnchors.some(
+    (item) => item.relatedProductCount >= 2,
+  );
+  const sameOccurrenceWindowHint =
+    Boolean(thread.mechanismEvidence.temporalProcessEvidence.dominantOccurrenceSections[0]) &&
+    (thread.mechanismEvidence.temporalProcessEvidence.temporalBurstHints.length > 0 ||
+      thread.mechanismEvidence.temporalProcessEvidence.temporalContainmentHints.length > 0);
+  const sameOrderClusterHint =
+    Boolean(thread.orderId) && (context.orderProductCounts.get(thread.orderId ?? "") ?? 0) > 1;
+  const primaryReworkUser =
+    thread.mechanismEvidence.operatorHandlingEvidence.dominantReworkUsers[0]?.userId ?? null;
+  const sameReworkUserHint =
+    Boolean(primaryReworkUser) && (context.reworkUserProductCounts.get(primaryReworkUser ?? "") ?? 0) > 1;
+  const detectorHotspotOnly =
+    thread.mechanismEvidence.confounderEvidence.marginalOnlySignals ||
+    (thread.mechanismEvidence.confounderEvidence.detectionBiasRisk.length > 0 &&
+      thread.mechanismEvidence.temporalProcessEvidence.dominantOccurrenceSections.length === 0);
+  const falsePositiveFlag =
+    thread.mechanismEvidence.confounderEvidence.falsePositiveMarkers.length > 0;
+  const claimOnlyThread = thread.mechanismEvidence.fieldLeakEvidence.claimOnlyThread;
+  const hasFactoryDefectBeforeClaim =
+    thread.mechanismEvidence.fieldLeakEvidence.hasPriorFactoryDefect;
+  const discriminativeAnchors = uniqueValues([
+    ...thread.mechanismEvidence.traceabilityEvidence.anchorSpecificity
+      .filter((item) => item.specificity !== "article_wide")
+      .slice(0, 3)
+      .map((item) => `${item.anchorType}:${item.anchorValue}`),
+    ...thread.mechanismEvidence.traceabilityEvidence.partBatchAnchors
+      .slice(0, 2)
+      .map((item) => item.anchorValue),
+    thread.mechanismEvidence.temporalProcessEvidence.dominantOccurrenceSections[0]?.value ?? null,
+  ]).slice(0, 6);
+  const broadContextAnchors = uniqueValues([
+    ...thread.mechanismEvidence.traceabilityEvidence.anchorSpecificity
+      .filter((item) => item.specificity === "article_wide")
+      .slice(0, 3)
+      .map((item) => `${item.anchorType}:${item.anchorValue}`),
+    ...thread.mechanismEvidence.traceabilityEvidence.blastRadiusHints
+      .slice(0, 2)
+      .map((item) => `${item.anchorType}:${item.anchorValue}`),
+  ]).slice(0, 6);
+  const votes = [
+    sameBatchSamePartHint
+      ? {
+          family: "supplier_batch_material" as const,
+          score: clamp01(
+            0.48 +
+              (thread.summaryFeatures.defectCodesPresent.length > 0 ? 0.18 : 0) +
+              (thread.summaryFeatures.testKeysMarginalFail.length > 0 ? 0.1 : 0) +
+              (thread.mechanismEvidence.fieldLeakEvidence.claimLagBucket === "short" ? 0.08 : 0) +
+              (discriminativeAnchors.length > 0 ? 0.08 : 0),
+          ),
+          reasons: uniqueValues([
+            "Same part plus batch anchor recurs across products.",
+            thread.summaryFeatures.defectCodesPresent[0]
+              ? `Repeated defect mode ${thread.summaryFeatures.defectCodesPresent[0]}.`
+              : null,
+            thread.summaryFeatures.testKeysMarginalFail[0]
+              ? `Test behavior includes ${thread.summaryFeatures.testKeysMarginalFail[0]}.`
+              : null,
+          ]),
+        }
+      : null,
+    sameOccurrenceWindowHint
+      ? {
+          family: "process_window_calibration" as const,
+          score: clamp01(
+            0.5 +
+              (thread.mechanismEvidence.temporalProcessEvidence.temporalBurstHints.length > 0
+                ? 0.15
+                : 0) +
+              (thread.mechanismEvidence.temporalProcessEvidence.postWindowQuietHints.length > 0
+                ? 0.1
+                : 0) +
+              (thread.rework.length > 0 || thread.actions.length > 0 ? 0.08 : 0),
+          ),
+          reasons: uniqueValues([
+            "Occurrence section and time window line up.",
+            ...thread.mechanismEvidence.temporalProcessEvidence.temporalBurstHints.slice(0, 1),
+            ...thread.mechanismEvidence.operatorHandlingEvidence.handlingPatternHints.slice(0, 1),
+          ]),
+        }
+      : null,
+    claimOnlyThread &&
+    ["medium", "long"].includes(thread.mechanismEvidence.fieldLeakEvidence.claimLagBucket)
+      ? {
+          family: "latent_design_escape" as const,
+          score: clamp01(
+            0.58 +
+              (thread.mechanismEvidence.fieldLeakEvidence.dominantClaimReportedParts.length > 0
+                ? 0.12
+                : 0) +
+              (thread.mechanismEvidence.fieldLeakEvidence.dominantClaimBomPositions.length > 0
+                ? 0.12
+                : 0) +
+              (!hasFactoryDefectBeforeClaim ? 0.08 : -0.08),
+          ),
+          reasons: uniqueValues([
+            "Claim-only leakage appears without a factory defect trail.",
+            `Claim lag is ${thread.mechanismEvidence.fieldLeakEvidence.claimLagBucket}.`,
+            thread.mechanismEvidence.fieldLeakEvidence.dominantClaimReportedParts[0]
+              ? `Reported part focus on ${thread.mechanismEvidence.fieldLeakEvidence.dominantClaimReportedParts[0].value}.`
+              : null,
+          ]),
+        }
+      : null,
+    sameOrderClusterHint &&
+    sameReworkUserHint &&
+    thread.mechanismEvidence.operatorHandlingEvidence.cosmeticOnlySignals
+      ? {
+          family: "operator_handling_order_cluster" as const,
+          score: clamp01(
+            0.6 +
+              (thread.mechanismEvidence.operatorHandlingEvidence.lowSeverityOnly ? 0.12 : 0) +
+              (thread.mechanismEvidence.operatorHandlingEvidence.fieldImpactPresent ? -0.08 : 0) +
+              (thread.rework.length > 0 ? 0.08 : 0),
+          ),
+          reasons: uniqueValues([
+            "Order concentration and rework-user concentration line up.",
+            ...thread.mechanismEvidence.operatorHandlingEvidence.handlingPatternHints.slice(0, 2),
+          ]),
+        }
+      : null,
+    detectorHotspotOnly
+      ? {
+          family: "detector_hotspot_noise" as const,
+          score: clamp01(
+            0.6 +
+              (thread.mechanismEvidence.confounderEvidence.detectionBiasRisk.length > 0 ? 0.12 : 0) +
+              (thread.mechanismEvidence.confounderEvidence.marginalOnlySignals ? 0.12 : 0),
+          ),
+          reasons: uniqueValues([
+            "Detected-section-only or marginal-only evidence dominates.",
+            ...thread.mechanismEvidence.confounderEvidence.detectionBiasRisk.slice(0, 2),
+          ]),
+        }
+      : null,
+    falsePositiveFlag
+      ? {
+          family: "false_positive_noise" as const,
+          score: clamp01(0.72 + thread.mechanismEvidence.confounderEvidence.falsePositiveMarkers.length * 0.02),
+          reasons: uniqueValues([
+            ...thread.mechanismEvidence.confounderEvidence.falsePositiveMarkers.slice(0, 2),
+            "False-positive language appears directly in the evidence.",
+          ]),
+        }
+      : null,
+    thread.mechanismEvidence.confounderEvidence.marginalOnlySignals
+      ? {
+          family: "near_limit_leading_indicator" as const,
+          score: clamp01(
+            0.58 +
+              (thread.mechanismEvidence.confounderEvidence.nearLimitTestSignals.length > 0 ? 0.12 : 0),
+          ),
+          reasons: uniqueValues([
+            "Only marginal or near-limit test signals are present.",
+            ...thread.mechanismEvidence.confounderEvidence.nearLimitTestSignals.slice(0, 2),
+          ]),
+        }
+      : null,
+  ].filter(
+    (
+      value,
+    ): value is {
+      family: MechanismFamily;
+      score: number;
+      reasons: string[];
+    } => Boolean(value),
+  );
+
+  return {
+    candidateFamilyVotes: votes
+      .sort((left, right) => right.score - left.score || left.family.localeCompare(right.family))
+      .slice(0, 4),
+    negativeEvidence: uniqueValues([
+      !thread.claims.length ? "No field claim evidence is present." : null,
+      !thread.defects.length ? "No factory defect row is present." : null,
+      !thread.rework.length ? "No rework closure is recorded." : null,
+      !thread.mechanismEvidence.temporalProcessEvidence.dominantOccurrenceSections.length
+        ? "No dominant occurrence section is surfaced."
+        : null,
+      broadContextAnchors.length > 0
+        ? `Broad context anchors present: ${broadContextAnchors.slice(0, 2).join(", ")}.`
+        : null,
+    ]).slice(0, 6),
+    discriminativeAnchors,
+    broadContextAnchors,
+    claimLagDays: thread.mechanismEvidence.fieldLeakEvidence.buildToClaimDays.slice(0, 8),
+    hasFactoryDefectBeforeClaim,
+    sameOrderClusterHint,
+    sameReworkUserHint,
+    sameOccurrenceWindowHint,
+    sameBatchSamePartHint,
+    detectorHotspotOnly,
+    falsePositiveFlag,
+    claimOnlyThread,
+    occurrenceDetectedMismatch:
+      thread.mechanismEvidence.temporalProcessEvidence.occurrenceDetectedMismatch.present,
+  };
+}
+
+function ensureThreadHypothesisSignals(
+  thread: ClusteredProductDossier,
+  dossier: ClusteredArticleDossier,
+  context = buildArticleMechanismContext(dossier),
+) {
+  return thread.hypothesisSignals ?? buildThreadHypothesisSignals(thread, dossier, context);
+}
+
+function buildSupplierBatchCandidates(
+  dossier: ClusteredArticleDossier,
+  context: ArticleMechanismContext,
+) {
+  const buckets = new Map<
+    string,
+    {
+      family: MechanismFamily;
+      partNumber: string;
+      batchRef: string;
+      mode: string;
+      threads: ClusteredProductDossier[];
+    }
+  >();
+
+  for (const thread of dossier.productThreads) {
+    const partBatchAnchors = thread.mechanismEvidence.traceabilityEvidence.partBatchAnchors.slice(0, 3);
+    const modes = uniqueValues([
+      ...thread.summaryFeatures.defectCodesPresent.slice(0, 2),
+      ...thread.summaryFeatures.testKeysMarginalFail.slice(0, 2),
+    ]);
+
+    if (!partBatchAnchors.length || !modes.length) {
+      continue;
+    }
+
+    for (const anchor of partBatchAnchors) {
+      for (const mode of modes.slice(0, 2)) {
+        const key = `${anchor.partNumber}|${anchor.batchRef}|${mode}`;
+        const current =
+          buckets.get(key) ??
+          {
+            family: "supplier_batch_material" as const,
+            partNumber: anchor.partNumber,
+            batchRef: anchor.batchRef,
+            mode,
+            threads: [],
+          };
+
+        current.threads.push(thread);
+        buckets.set(key, current);
+      }
+    }
+  }
+
+  return [...buckets.values()]
+    .map((bucket) => ({
+      ...bucket,
+      threads: uniqueBy(bucket.threads, (thread) => thread.productId),
+    }))
+    .filter((bucket) => bucket.threads.length >= 2)
+    .map((bucket) => {
+      const articleBackgroundCount =
+        context.partBatchProductCounts.get(`${bucket.partNumber}|${bucket.batchRef}`) ??
+        bucket.threads.length;
+      const stats = buildCandidateStatistics({
+        threads: bucket.threads,
+        context,
+        articleBackgroundCount,
+      });
+      const hasShortLag = bucket.threads.some((thread) =>
+        ["same_week", "short"].includes(thread.mechanismEvidence.fieldLeakEvidence.claimLagBucket),
+      );
+      const hasReworkOnPart = bucket.threads.some((thread) =>
+        thread.rework.some((item) => item.reportedPartNumber === bucket.partNumber),
+      );
+      const requiredEvidencePresent = uniqueValues([
+        `Same part number ${bucket.partNumber}.`,
+        `Same supplier batch ${bucket.batchRef}.`,
+        `Repeated defect/test mode ${bucket.mode}.`,
+        hasShortLag ? "Short-lag claim behavior appears in the affected slice." : null,
+        hasReworkOnPart ? "Rework touches the same part family." : null,
+      ]);
+      const requiredEvidenceMissing = uniqueValues([
+        !hasShortLag && !hasReworkOnPart
+          ? "No short-lag claim behavior or same-part rework signal backs the batch story."
+          : null,
+        stats.backgroundPrevalencePenalty >= 0.7
+          ? "The part+batch anchor is broad article context rather than discriminative."
+          : null,
+      ]);
+
+      return {
+        candidateFamilyId: `CFAM-${toStableToken(bucket.partNumber)}-${toStableToken(
+          bucket.batchRef,
+        )}-${toStableToken(bucket.mode)}`,
+        family: "supplier_batch_material" as const,
+        title: `${bucket.partNumber} / ${bucket.batchRef} / ${bucket.mode}`,
+        shouldReviewAs:
+          requiredEvidenceMissing.length === 0 && stats.lift >= 1.15
+            ? "case"
+            : stats.backgroundPrevalencePenalty >= 0.72
+              ? "noise"
+              : "watchlist",
+        dominantAnchor: `${bucket.partNumber} + ${bucket.batchRef}`,
+        supportingProductIds: bucket.threads.map((thread) => thread.productId),
+        supportingSignalIds: uniqueValues(
+          bucket.threads.flatMap((thread) =>
+            thread.signals
+              .filter((signal) =>
+                signal.headline.includes(bucket.mode) ||
+                signal.sourceContext?.includes(bucket.mode),
+              )
+              .map((signal) => signal.signalId),
+          ),
+        ).slice(0, 120),
+        signalTypesPresent: uniqueValues(
+          bucket.threads.flatMap((thread) => thread.summaryFeatures.signalTypesPresent),
+        ),
+        discriminativeAnchors: uniqueValues([
+          `${bucket.partNumber}|${bucket.batchRef}`,
+          bucket.mode,
+          ...bucket.threads.flatMap((thread) =>
+            ensureThreadHypothesisSignals(thread, dossier, context).discriminativeAnchors.slice(0, 2),
+          ),
+        ]).slice(0, 8),
+        broadContextAnchors: uniqueValues(
+          bucket.threads.flatMap((thread) =>
+            ensureThreadHypothesisSignals(thread, dossier, context).broadContextAnchors.slice(0, 2),
+          ),
+        ).slice(0, 6),
+        requiredEvidencePresent,
+        requiredEvidenceMissing,
+        strongestEvidence: uniqueValues([
+          `Part ${bucket.partNumber} and batch ${bucket.batchRef} recur across ${bucket.threads.length} products.`,
+          `Mode ${bucket.mode} repeats inside the same part+batch family.`,
+          hasShortLag ? "Claim lag stays short when field impact appears." : null,
+        ]).slice(0, 6),
+        strongestCounterevidence: uniqueValues([
+          stats.backgroundPrevalencePenalty >= 0.7
+            ? `${bucket.batchRef} is common across the article and has weak lift.`
+            : null,
+          bucket.threads.some((thread) => thread.mechanismEvidence.fieldLeakEvidence.claimOnlyThread)
+            ? "Some affected products look claim-only, which can point toward a design escape instead."
+            : null,
+        ]).slice(0, 6),
+        bestCompetingFamilies: uniqueValues([
+          bucket.threads.some((thread) => thread.mechanismEvidence.fieldLeakEvidence.claimOnlyThread)
+            ? "latent_design_escape"
+            : null,
+          bucket.threads.some((thread) =>
+            thread.mechanismEvidence.temporalProcessEvidence.temporalBurstHints.length > 0,
+          )
+            ? "process_window_calibration"
+            : null,
+        ]) as MechanismFamily[],
+        statistics: stats,
+      } satisfies Stage2CandidateFamily;
+    });
+}
+
+function buildProcessWindowCandidates(
+  dossier: ClusteredArticleDossier,
+  context: ArticleMechanismContext,
+) {
+  const buckets = new Map<
+    string,
+    {
+      section: string;
+      week: string;
+      threads: ClusteredProductDossier[];
+    }
+  >();
+
+  for (const thread of dossier.productThreads) {
+    const section =
+      thread.mechanismEvidence.temporalProcessEvidence.dominantOccurrenceSections[0]?.value ?? null;
+    const week = thread.mechanismEvidence.temporalProcessEvidence.firstFactorySignalWeek ?? null;
+
+    if (!section || !week) {
+      continue;
+    }
+
+    const key = `${section}|${week}`;
+    const current = buckets.get(key) ?? { section, week, threads: [] };
+    current.threads.push(thread);
+    buckets.set(key, current);
+  }
+
+  return [...buckets.values()]
+    .map((bucket) => ({
+      ...bucket,
+      threads: uniqueBy(bucket.threads, (thread) => thread.productId),
+    }))
+    .filter((bucket) => bucket.threads.length >= 2)
+    .map((bucket) => {
+      const articleBackgroundCount =
+        context.occurrenceSectionProductCounts.get(bucket.section) ?? bucket.threads.length;
+      const stats = buildCandidateStatistics({
+        threads: bucket.threads,
+        context,
+        articleBackgroundCount,
+      });
+      const hasQuietAfterWindow = bucket.threads.some(
+        (thread) => thread.mechanismEvidence.temporalProcessEvidence.postWindowQuietHints.length > 0,
+      );
+      const hasReworkLanguage = bucket.threads.some(
+        (thread) =>
+          thread.rework.length > 0 ||
+          thread.actions.some((item) => /\b(rework|adjust|tighten|realign|retest|calib)/i.test(item.comments)),
+      );
+      const requiredEvidencePresent = uniqueValues([
+        `Same occurrence section ${bucket.section}.`,
+        `Signals concentrate around week ${bucket.week.slice(0, 10)}.`,
+        hasQuietAfterWindow ? "Signals weaken after the narrow window." : null,
+        hasReworkLanguage ? "Rework/action language suggests local correction." : null,
+      ]);
+      const requiredEvidenceMissing = uniqueValues([
+        !hasQuietAfterWindow ? "The pattern does not clearly fade after the window." : null,
+        !hasReworkLanguage ? "Rework or corrective-action language is weak." : null,
+      ]);
+
+      return {
+        candidateFamilyId: `CFAM-${toStableToken(bucket.section)}-${toStableToken(bucket.week)}`,
+        family: "process_window_calibration" as const,
+        title: `${bucket.section} around ${bucket.week.slice(0, 10)}`,
+        shouldReviewAs:
+          requiredEvidenceMissing.length === 0 && stats.weekConcentrationScore >= 0.65
+            ? "case"
+            : "watchlist",
+        dominantAnchor: `${bucket.section} @ ${bucket.week.slice(0, 10)}`,
+        supportingProductIds: bucket.threads.map((thread) => thread.productId),
+        supportingSignalIds: uniqueValues(
+          bucket.threads.flatMap((thread) =>
+            thread.signals
+              .filter((signal) => signal.section === bucket.section)
+              .map((signal) => signal.signalId),
+          ),
+        ).slice(0, 120),
+        signalTypesPresent: uniqueValues(
+          bucket.threads.flatMap((thread) => thread.summaryFeatures.signalTypesPresent),
+        ),
+        discriminativeAnchors: uniqueValues([
+          bucket.section,
+          bucket.week.slice(0, 10),
+          ...bucket.threads.flatMap((thread) =>
+            thread.mechanismEvidence.temporalProcessEvidence.temporalBurstHints.slice(0, 1),
+          ),
+        ]).slice(0, 8),
+        broadContextAnchors: uniqueValues(
+          bucket.threads.flatMap((thread) =>
+            ensureThreadHypothesisSignals(thread, dossier, context).broadContextAnchors.slice(0, 2),
+          ),
+        ).slice(0, 6),
+        requiredEvidencePresent,
+        requiredEvidenceMissing,
+        strongestEvidence: uniqueValues([
+          `${bucket.section} repeats across ${bucket.threads.length} products in a narrow window.`,
+          hasQuietAfterWindow ? "Evidence weakens after the affected window." : null,
+          hasReworkLanguage ? "Corrective-action language is consistent with a local process issue." : null,
+        ]).slice(0, 6),
+        strongestCounterevidence: uniqueValues([
+          bucket.threads.some(
+            (thread) =>
+              thread.mechanismEvidence.temporalProcessEvidence.occurrenceDetectedMismatch.present,
+          )
+            ? "Detected-vs-occurrence mismatches raise detector-hotspot risk."
+            : null,
+          bucket.threads.some((thread) =>
+            thread.mechanismEvidence.traceabilityEvidence.partBatchAnchors.some(
+              (item) => item.relatedProductCount >= 2,
+            ),
+          )
+            ? "Shared traceability anchors could point to a supplier explanation instead."
+            : null,
+        ]).slice(0, 6),
+        bestCompetingFamilies: uniqueValues([
+          bucket.threads.some(
+            (thread) =>
+              thread.mechanismEvidence.traceabilityEvidence.partBatchAnchors.some(
+                (item) => item.relatedProductCount >= 2,
+              ),
+          )
+            ? "supplier_batch_material"
+            : null,
+          stats.detectedVsOccurrenceMismatchRate >= 0.4 ? "detector_hotspot_noise" : null,
+        ]) as MechanismFamily[],
+        statistics: stats,
+      } satisfies Stage2CandidateFamily;
+    });
+}
+
+function buildDesignEscapeCandidates(
+  dossier: ClusteredArticleDossier,
+  context: ArticleMechanismContext,
+) {
+  const buckets = new Map<
+    string,
+    {
+      partNumber: string;
+      bomPosition: string;
+      lagBucket: string;
+      threads: ClusteredProductDossier[];
+    }
+  >();
+
+  for (const thread of dossier.productThreads) {
+    const partNumber =
+      thread.mechanismEvidence.fieldLeakEvidence.dominantClaimReportedParts[0]?.value ??
+      thread.summaryFeatures.reportedPartNumbers[0] ??
+      null;
+    const bomPosition =
+      thread.mechanismEvidence.fieldLeakEvidence.dominantClaimBomPositions[0]?.value ??
+      thread.summaryFeatures.bomFindNumbers[0] ??
+      null;
+    const lagBucket = thread.mechanismEvidence.fieldLeakEvidence.claimLagBucket;
+
+    if (
+      !thread.mechanismEvidence.fieldLeakEvidence.claimOnlyThread ||
+      !partNumber ||
+      !bomPosition ||
+      !["medium", "long"].includes(lagBucket)
+    ) {
+      continue;
+    }
+
+    const key = `${partNumber}|${bomPosition}|${lagBucket}`;
+    const current = buckets.get(key) ?? { partNumber, bomPosition, lagBucket, threads: [] };
+    current.threads.push(thread);
+    buckets.set(key, current);
+  }
+
+  return [...buckets.values()]
+    .map((bucket) => ({
+      ...bucket,
+      threads: uniqueBy(bucket.threads, (thread) => thread.productId),
+    }))
+    .filter((bucket) => bucket.threads.length >= 2)
+    .map((bucket) => {
+      const articleBackgroundCount = Math.max(
+        context.partProductCounts.get(bucket.partNumber) ?? 0,
+        buildProductCountMap(dossier.productThreads, (thread) => thread.summaryFeatures.bomFindNumbers).get(
+          bucket.bomPosition,
+        ) ?? 0,
+      );
+      const stats = buildCandidateStatistics({
+        threads: bucket.threads,
+        context,
+        articleBackgroundCount,
+      });
+      const requiredEvidencePresent = uniqueValues([
+        `Repeated claim-only leakage on ${bucket.partNumber}.`,
+        `Shared BOM position ${bucket.bomPosition}.`,
+        `Lag profile is ${bucket.lagBucket}.`,
+        stats.preClaimFactoryDefectRatio <= 0.2
+          ? "Prior factory defects are absent or near-zero."
+          : null,
+      ]);
+      const requiredEvidenceMissing = uniqueValues([
+        stats.preClaimFactoryDefectRatio > 0.2
+          ? "Too many affected products already show a factory defect trail."
+          : null,
+        stats.orderConcentrationScore >= 0.65
+          ? "One production order may explain the pattern better than a design escape."
+          : null,
+        stats.backgroundPrevalencePenalty >= 0.7
+          ? "The part/BOM anchor is common article context."
+          : null,
+      ]);
+
+      return {
+        candidateFamilyId: `CFAM-${toStableToken(bucket.partNumber)}-${toStableToken(
+          bucket.bomPosition,
+        )}-${bucket.lagBucket}`,
+        family: "latent_design_escape" as const,
+        title: `${bucket.partNumber} at ${bucket.bomPosition} with ${bucket.lagBucket} claim lag`,
+        shouldReviewAs:
+          requiredEvidenceMissing.length === 0 && stats.claimOnlyRatio >= 0.85
+            ? "case"
+            : "watchlist",
+        dominantAnchor: `${bucket.partNumber} @ ${bucket.bomPosition}`,
+        supportingProductIds: bucket.threads.map((thread) => thread.productId),
+        supportingSignalIds: uniqueValues(
+          bucket.threads.flatMap((thread) => thread.claims.map((claim) => claim.id)),
+        ).slice(0, 120),
+        signalTypesPresent: uniqueValues(
+          bucket.threads.flatMap((thread) => thread.summaryFeatures.signalTypesPresent),
+        ),
+        discriminativeAnchors: uniqueValues([
+          bucket.partNumber,
+          bucket.bomPosition,
+          `${bucket.lagBucket} claim lag`,
+        ]),
+        broadContextAnchors: uniqueValues(
+          bucket.threads.flatMap((thread) =>
+            ensureThreadHypothesisSignals(thread, dossier, context).broadContextAnchors.slice(0, 2),
+          ),
+        ).slice(0, 6),
+        requiredEvidencePresent,
+        requiredEvidenceMissing,
+        strongestEvidence: uniqueValues([
+          `${bucket.partNumber} claims recur without a factory defect trail.`,
+          `Claims map back to ${bucket.bomPosition} with ${bucket.lagBucket} lag.`,
+        ]).slice(0, 6),
+        strongestCounterevidence: uniqueValues([
+          stats.orderConcentrationScore >= 0.65
+            ? "Order concentration suggests a handling or process explanation."
+            : null,
+          bucket.threads.some((thread) =>
+            thread.mechanismEvidence.traceabilityEvidence.partBatchAnchors.some(
+              (item) => item.relatedProductCount >= 2,
+            ),
+          )
+            ? "Shared part+batch anchors could indicate a supplier explanation instead."
+            : null,
+        ]).slice(0, 6),
+        bestCompetingFamilies: uniqueValues([
+          stats.orderConcentrationScore >= 0.65 ? "operator_handling_order_cluster" : null,
+          bucket.threads.some((thread) =>
+            thread.mechanismEvidence.traceabilityEvidence.partBatchAnchors.some(
+              (item) => item.relatedProductCount >= 2,
+            ),
+          )
+            ? "supplier_batch_material"
+            : null,
+        ]) as MechanismFamily[],
+        statistics: stats,
+      } satisfies Stage2CandidateFamily;
+    });
+}
+
+function buildHandlingCandidates(
+  dossier: ClusteredArticleDossier,
+  context: ArticleMechanismContext,
+) {
+  const buckets = new Map<string, { userId: string; threads: ClusteredProductDossier[] }>();
+
+  for (const thread of dossier.productThreads) {
+    const userId = thread.mechanismEvidence.operatorHandlingEvidence.dominantReworkUsers[0]?.userId;
+
+    if (
+      !userId ||
+      !thread.orderId ||
+      !thread.mechanismEvidence.operatorHandlingEvidence.cosmeticOnlySignals ||
+      !thread.mechanismEvidence.operatorHandlingEvidence.lowSeverityOnly
+    ) {
+      continue;
+    }
+
+    const current = buckets.get(userId) ?? { userId, threads: [] };
+    current.threads.push(thread);
+    buckets.set(userId, current);
+  }
+
+  return [...buckets.values()]
+    .map((bucket) => ({
+      ...bucket,
+      threads: uniqueBy(bucket.threads, (thread) => thread.productId),
+    }))
+    .filter((bucket) => bucket.threads.length >= 2)
+    .map((bucket) => {
+      const articleBackgroundCount =
+        context.reworkUserProductCounts.get(bucket.userId) ?? bucket.threads.length;
+      const stats = buildCandidateStatistics({
+        threads: bucket.threads,
+        context,
+        articleBackgroundCount,
+      });
+      const orderValues = uniqueValues(bucket.threads.map((thread) => thread.orderId));
+      const requiredEvidencePresent = uniqueValues([
+        `Rework user ${bucket.userId} dominates the affected slice.`,
+        orderValues.length <= 3 ? `Orders stay concentrated (${orderValues.join(", ")}).` : null,
+        "Low-severity cosmetic signals dominate the family.",
+      ]);
+      const requiredEvidenceMissing = uniqueValues([
+        orderValues.length > 3 ? "Orders are too diffuse for a handling cluster." : null,
+        stats.claimOnlyRatio > 0.35 ? "Field-claim leakage is too strong for a pure handling story." : null,
+      ]);
+
+      return {
+        candidateFamilyId: `CFAM-user-${toStableToken(bucket.userId)}`,
+        family: "operator_handling_order_cluster" as const,
+        title: `${bucket.userId} cosmetic handling cluster`,
+        shouldReviewAs:
+          requiredEvidenceMissing.length === 0 && stats.orderConcentrationScore >= 0.45
+            ? "case"
+            : "watchlist",
+        dominantAnchor: bucket.userId,
+        supportingProductIds: bucket.threads.map((thread) => thread.productId),
+        supportingSignalIds: uniqueValues(
+          bucket.threads.flatMap((thread) => thread.signals.map((signal) => signal.signalId)),
+        ).slice(0, 120),
+        signalTypesPresent: uniqueValues(
+          bucket.threads.flatMap((thread) => thread.summaryFeatures.signalTypesPresent),
+        ),
+        discriminativeAnchors: uniqueValues([
+          bucket.userId,
+          ...orderValues.slice(0, 3),
+        ]),
+        broadContextAnchors: uniqueValues(
+          bucket.threads.flatMap((thread) =>
+            ensureThreadHypothesisSignals(thread, dossier, context).broadContextAnchors.slice(0, 2),
+          ),
+        ).slice(0, 6),
+        requiredEvidencePresent,
+        requiredEvidenceMissing,
+        strongestEvidence: uniqueValues([
+          `${bucket.userId} repeats across ${bucket.threads.length} low-severity cosmetic threads.`,
+          orderValues.length <= 3 ? "Orders stay concentrated rather than article-wide." : null,
+        ]).slice(0, 6),
+        strongestCounterevidence: uniqueValues([
+          bucket.threads.some((thread) =>
+            thread.mechanismEvidence.traceabilityEvidence.partBatchAnchors.some(
+              (item) => item.relatedProductCount >= 2,
+            ),
+          )
+            ? "Shared part+batch anchors may point to a supplier issue instead."
+            : null,
+          stats.claimOnlyRatio > 0.35
+            ? "Claim-only leakage is too strong for a pure handling explanation."
+            : null,
+        ]).slice(0, 6),
+        bestCompetingFamilies: uniqueValues([
+          bucket.threads.some((thread) =>
+            thread.mechanismEvidence.traceabilityEvidence.partBatchAnchors.some(
+              (item) => item.relatedProductCount >= 2,
+            ),
+          )
+            ? "supplier_batch_material"
+            : null,
+          stats.claimOnlyRatio > 0.35 ? "latent_design_escape" : null,
+        ]) as MechanismFamily[],
+        statistics: stats,
+      } satisfies Stage2CandidateFamily;
+    });
+}
+
+function buildDetectorHotspotCandidates(
+  dossier: ClusteredArticleDossier,
+  context: ArticleMechanismContext,
+) {
+  const buckets = new Map<string, { anchor: string; threads: ClusteredProductDossier[] }>();
+
+  for (const thread of dossier.productThreads) {
+    const hypothesisSignals = ensureThreadHypothesisSignals(thread, dossier, context);
+
+    if (!hypothesisSignals.detectorHotspotOnly) {
+      continue;
+    }
+
+    const anchor =
+      thread.mechanismEvidence.temporalProcessEvidence.dominantDetectedSections[0]?.value ??
+      thread.summaryFeatures.testKeysMarginalFail[0] ??
+      "detector-hotspot";
+    const current = buckets.get(anchor) ?? { anchor, threads: [] };
+    current.threads.push(thread);
+    buckets.set(anchor, current);
+  }
+
+  return [...buckets.values()]
+    .map((bucket) => ({
+      ...bucket,
+      threads: uniqueBy(bucket.threads, (thread) => thread.productId),
+    }))
+    .filter((bucket) => bucket.threads.length >= 2)
+    .map((bucket) => {
+      const articleBackgroundCount =
+        context.detectedSectionProductCounts.get(bucket.anchor) ??
+        context.testKeyProductCounts.get(bucket.anchor) ??
+        bucket.threads.length;
+      const stats = buildCandidateStatistics({
+        threads: bucket.threads,
+        context,
+        articleBackgroundCount,
+      });
+
+      return {
+        candidateFamilyId: `CFAM-detector-${toStableToken(bucket.anchor)}`,
+        family: "detector_hotspot_noise" as const,
+        title: `${bucket.anchor} detector hotspot`,
+        shouldReviewAs: stats.backgroundPrevalencePenalty >= 0.45 ? "noise" : "watchlist",
+        dominantAnchor: bucket.anchor,
+        supportingProductIds: bucket.threads.map((thread) => thread.productId),
+        supportingSignalIds: uniqueValues(
+          bucket.threads.flatMap((thread) => thread.signals.map((signal) => signal.signalId)),
+        ).slice(0, 120),
+        signalTypesPresent: uniqueValues(
+          bucket.threads.flatMap((thread) => thread.summaryFeatures.signalTypesPresent),
+        ),
+        discriminativeAnchors: [bucket.anchor],
+        broadContextAnchors: uniqueValues(
+          bucket.threads.flatMap((thread) =>
+            ensureThreadHypothesisSignals(thread, dossier, context).broadContextAnchors.slice(0, 2),
+          ),
+        ).slice(0, 6),
+        requiredEvidencePresent: [
+          "Detected-section or marginal-only evidence dominates.",
+          "No stronger occurrence-side family explains the same slice.",
+        ],
+        requiredEvidenceMissing: [],
+        strongestEvidence: uniqueValues([
+          `${bucket.anchor} recurs mainly as detected-side or marginal-only evidence.`,
+          ...bucket.threads.flatMap((thread) =>
+            thread.mechanismEvidence.confounderEvidence.detectionBiasRisk.slice(0, 1),
+          ),
+        ]).slice(0, 6),
+        strongestCounterevidence: uniqueValues([
+          bucket.threads.some(
+            (thread) =>
+              thread.mechanismEvidence.temporalProcessEvidence.dominantOccurrenceSections.length > 0,
+          )
+            ? "Some products still carry occurrence-side evidence, so this may not be pure detector noise."
+            : null,
+        ]).slice(0, 6),
+        bestCompetingFamilies: uniqueValues([
+          bucket.threads.some(
+            (thread) =>
+              thread.mechanismEvidence.temporalProcessEvidence.dominantOccurrenceSections.length > 0,
+          )
+            ? "process_window_calibration"
+            : null,
+        ]) as MechanismFamily[],
+        statistics: stats,
+      } satisfies Stage2CandidateFamily;
+    });
+}
+
+function buildFalsePositiveCandidates(
+  dossier: ClusteredArticleDossier,
+  context: ArticleMechanismContext,
+) {
+  const threads = dossier.productThreads.filter(
+    (thread) => ensureThreadHypothesisSignals(thread, dossier, context).falsePositiveFlag,
+  );
+
+  if (threads.length < 2) {
+    return [] as Stage2CandidateFamily[];
+  }
+
+  const stats = buildCandidateStatistics({
+    threads,
+    context,
+    articleBackgroundCount: threads.length,
+  });
+
+  return [
+    {
+      candidateFamilyId: "CFAM-false-positive-noise",
+      family: "false_positive_noise",
+      title: "False-positive cluster",
+      shouldReviewAs: "noise",
+      dominantAnchor: "false-positive language",
+      supportingProductIds: threads.map((thread) => thread.productId),
+      supportingSignalIds: uniqueValues(
+        threads.flatMap((thread) => thread.signals.map((signal) => signal.signalId)),
+      ).slice(0, 120),
+      signalTypesPresent: uniqueValues(
+        threads.flatMap((thread) => thread.summaryFeatures.signalTypesPresent),
+      ),
+      discriminativeAnchors: ["false-positive language"],
+      broadContextAnchors: [],
+      requiredEvidencePresent: [
+        "False-positive or no-defect language is present directly in the evidence.",
+      ],
+      requiredEvidenceMissing: [],
+      strongestEvidence: uniqueValues(
+        threads.flatMap((thread) =>
+          thread.mechanismEvidence.confounderEvidence.falsePositiveMarkers.slice(0, 1),
+        ),
+      ).slice(0, 6),
+      strongestCounterevidence: [],
+      bestCompetingFamilies: [],
+      statistics: stats,
+    },
+  ];
+}
+
+function buildNearLimitCandidates(
+  dossier: ClusteredArticleDossier,
+  context: ArticleMechanismContext,
+) {
+  const buckets = new Map<string, { testKey: string; threads: ClusteredProductDossier[] }>();
+
+  for (const thread of dossier.productThreads) {
+    if (!thread.mechanismEvidence.confounderEvidence.marginalOnlySignals) {
+      continue;
+    }
+
+    const testKey = thread.summaryFeatures.testKeysMarginalFail[0];
+
+    if (!testKey) {
+      continue;
+    }
+
+    const current = buckets.get(testKey) ?? { testKey, threads: [] };
+    current.threads.push(thread);
+    buckets.set(testKey, current);
+  }
+
+  return [...buckets.values()]
+    .map((bucket) => ({
+      ...bucket,
+      threads: uniqueBy(bucket.threads, (thread) => thread.productId),
+    }))
+    .filter((bucket) => bucket.threads.length >= 2)
+    .map((bucket) => {
+      const articleBackgroundCount =
+        context.testKeyProductCounts.get(bucket.testKey) ?? bucket.threads.length;
+      const stats = buildCandidateStatistics({
+        threads: bucket.threads,
+        context,
+        articleBackgroundCount,
+      });
+
+      return {
+        candidateFamilyId: `CFAM-near-limit-${toStableToken(bucket.testKey)}`,
+        family: "near_limit_leading_indicator" as const,
+        title: `${bucket.testKey} near-limit leading indicator`,
+        shouldReviewAs: "watchlist",
+        dominantAnchor: bucket.testKey,
+        supportingProductIds: bucket.threads.map((thread) => thread.productId),
+        supportingSignalIds: uniqueValues(
+          bucket.threads.flatMap((thread) =>
+            thread.tests
+              .filter((test) => test.testKey === bucket.testKey)
+              .map((test) => test.id),
+          ),
+        ).slice(0, 120),
+        signalTypesPresent: uniqueValues(
+          bucket.threads.flatMap((thread) => thread.summaryFeatures.signalTypesPresent),
+        ),
+        discriminativeAnchors: [bucket.testKey],
+        broadContextAnchors: uniqueValues(
+          bucket.threads.flatMap((thread) =>
+            ensureThreadHypothesisSignals(thread, dossier, context).broadContextAnchors.slice(0, 2),
+          ),
+        ).slice(0, 6),
+        requiredEvidencePresent: [
+          "Marginal-only or near-limit tests repeat across products.",
+        ],
+        requiredEvidenceMissing: [],
+        strongestEvidence: uniqueValues([
+          `${bucket.testKey} repeats without a stronger confirmed-failure story.`,
+          ...bucket.threads.flatMap((thread) =>
+            thread.mechanismEvidence.confounderEvidence.nearLimitTestSignals.slice(0, 1),
+          ),
+        ]).slice(0, 6),
+        strongestCounterevidence: uniqueValues([
+          bucket.threads.some((thread) => thread.defects.length > 0)
+            ? "Some products also have defect rows, so this may be more than an early warning."
+            : null,
+        ]).slice(0, 6),
+        bestCompetingFamilies: uniqueValues([
+          bucket.threads.some((thread) => thread.defects.length > 0)
+            ? "process_window_calibration"
+            : null,
+        ]) as MechanismFamily[],
+        statistics: stats,
+      } satisfies Stage2CandidateFamily;
+    });
+}
+
+function buildStage2CandidateFamilies(
+  dossier: ClusteredArticleDossier,
+  context = buildArticleMechanismContext(dossier),
+) {
+  const candidates = [
+    ...buildSupplierBatchCandidates(dossier, context),
+    ...buildProcessWindowCandidates(dossier, context),
+    ...buildDesignEscapeCandidates(dossier, context),
+    ...buildHandlingCandidates(dossier, context),
+    ...buildDetectorHotspotCandidates(dossier, context),
+    ...buildFalsePositiveCandidates(dossier, context),
+    ...buildNearLimitCandidates(dossier, context),
+  ];
+  const deduped = new Map<string, Stage2CandidateFamily>();
+
+  for (const candidate of candidates) {
+    const key = [
+      candidate.family,
+      candidate.dominantAnchor,
+      [...candidate.supportingProductIds].sort().join(","),
+    ].join("|");
+
+    if (!deduped.has(key)) {
+      deduped.set(key, candidate);
+    }
+  }
+
+  return [...deduped.values()]
+    .sort((left, right) => {
+      const dispositionRank = {
+        case: 3,
+        watchlist: 2,
+        incident: 1,
+        noise: 0,
+      } satisfies Record<CandidateFamilyDisposition, number>;
+      const rankDelta =
+        dispositionRank[right.shouldReviewAs] - dispositionRank[left.shouldReviewAs];
+
+      if (rankDelta !== 0) {
+        return rankDelta;
+      }
+
+      const scoreDelta =
+        right.statistics.lift -
+        right.statistics.backgroundPrevalencePenalty -
+        (left.statistics.lift - left.statistics.backgroundPrevalencePenalty);
+
+      if (scoreDelta !== 0) {
+        return scoreDelta > 0 ? 1 : -1;
+      }
+
+      return left.title.localeCompare(right.title);
+    })
+    .slice(0, 48);
+}
+
+function ensureStage2CandidateFamilies(
+  dossier: ClusteredArticleDossier,
+  context = buildArticleMechanismContext(dossier),
+) {
+  return dossier.candidateFamilies ?? buildStage2CandidateFamilies(dossier, context);
+}
 
 function buildFallbackProductThreadSynthesis(input: {
   productId: string;

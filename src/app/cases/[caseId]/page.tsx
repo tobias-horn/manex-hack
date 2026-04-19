@@ -2,30 +2,21 @@ import { ArrowLeft, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { ArticleHypothesisBoard } from "@/components/article-hypothesis-board";
+import { CaseViewer } from "@/components/case-viewer";
 import { ClusteringPipelineToggle } from "@/components/clustering-pipeline-toggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
-  buildArticleHypothesisBoardViewModel,
-  type ArticleHypothesisBoardCaseboard,
-} from "@/lib/article-hypothesis-view";
-import { listArticleHypothesisReviews } from "@/lib/article-hypothesis-review-state";
-import { capabilities } from "@/lib/env";
-import { getArticleCaseboard } from "@/lib/manex-case-clustering";
-import { getDummyArticleCaseboard } from "@/lib/manex-dummy-clustering";
-import {
+  buildCaseViewerHref,
   buildClusteringModeHref,
   parseClusteringMode,
 } from "@/lib/manex-clustering-mode";
-import { getDeterministicArticleCaseboard } from "@/lib/manex-deterministic-case-clustering";
-import { getHypothesisArticleCaseboard } from "@/lib/manex-hypothesis-case-clustering";
-import { getInvestigateArticleCaseboard } from "@/lib/manex-investigate";
+import { loadCaseViewerData } from "@/lib/manex-case-viewer";
 
 export const dynamic = "force-dynamic";
 
-type ArticleCaseboardPageProps = {
-  params: Promise<{ articleId: string }>;
+type CaseViewerPageProps = {
+  params: Promise<{ caseId: string }>;
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 };
 
@@ -33,89 +24,64 @@ function normalizeQueryValue(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] : value;
 }
 
-async function loadCaseboard(
-  articleId: string,
-  mode: ReturnType<typeof parseClusteringMode>,
-): Promise<ArticleHypothesisBoardCaseboard | null> {
-  if (mode === "dummy") {
-    return getDummyArticleCaseboard(articleId);
-  }
-
-  if (mode === "deterministic") {
-    return getDeterministicArticleCaseboard(articleId);
-  }
-
-  if (mode === "hypothesis") {
-    return getHypothesisArticleCaseboard(articleId);
-  }
-
-  if (mode === "investigate") {
-    return getInvestigateArticleCaseboard(articleId);
-  }
-
-  return getArticleCaseboard(articleId);
-}
-
-export default async function ArticleCaseboardPage({
+export default async function CaseViewerPage({
   params,
   searchParams,
-}: ArticleCaseboardPageProps) {
-  const { articleId } = await params;
+}: CaseViewerPageProps) {
+  const { caseId } = await params;
   const search = await searchParams;
-  const selectedCaseId = normalizeQueryValue(search.case) ?? null;
+  const articleId = normalizeQueryValue(search.article);
   const mode = parseClusteringMode(search.pipeline);
-  const caseboard = await loadCaseboard(articleId, mode);
 
-  if (!caseboard) {
+  if (!articleId) {
     notFound();
   }
 
-  const reviews = capabilities.hasPostgres
-    ? await listArticleHypothesisReviews(caseboard.articleId, mode)
-    : [];
-  const viewModel = buildArticleHypothesisBoardViewModel({
-    caseboard,
+  const caseData = await loadCaseViewerData({
+    articleId,
+    caseId,
     mode,
-    initialSelectedId: selectedCaseId,
-    reviews,
   });
+
+  if (!caseData) {
+    notFound();
+  }
 
   const toggleItems = [
     {
       mode: "current" as const,
       label: "Classic three-layer clustering",
       description: "Original dossier, article-case, and global reconciliation flow.",
-      href: buildClusteringModeHref(`/articles/${caseboard.articleId}`, "current"),
+      href: buildCaseViewerHref(caseId, articleId, "current"),
     },
     {
       mode: "deterministic" as const,
       label: "Deterministic issue grouping",
       description: "Small per-product issue extraction with deterministic article grouping.",
-      href: buildClusteringModeHref(`/articles/${caseboard.articleId}`, "deterministic"),
+      href: buildCaseViewerHref(caseId, articleId, "deterministic"),
     },
     {
       mode: "hypothesis" as const,
       label: "Case hypothesis engine",
       description:
         "Mechanism-family analyzers rank supplier, process, design, handling, and noise investigations before AI writes the case narrative.",
-      href: buildClusteringModeHref(`/articles/${caseboard.articleId}`, "hypothesis"),
+      href: buildCaseViewerHref(caseId, articleId, "hypothesis"),
     },
     {
       mode: "investigate" as const,
       label: "Statistical anomaly RCA",
       description:
         "Direct SQL sweeps plus OpenAI root-cause narration without the clustered case pipeline.",
-      href: buildClusteringModeHref(`/articles/${caseboard.articleId}`, "investigate"),
+      href: buildCaseViewerHref(caseId, articleId, "investigate"),
     },
     {
       mode: "dummy" as const,
       label: "Seeded dummy run",
       description:
         "Read-only completed run populated with the four published challenge stories so UI work can continue immediately.",
-      href: buildClusteringModeHref(`/articles/${caseboard.articleId}`, "dummy"),
+      href: buildCaseViewerHref(caseId, articleId, "dummy"),
     },
   ];
-
   const pipelineLabel =
     mode === "deterministic"
       ? "Deterministic issue-grouping pipeline"
@@ -135,25 +101,20 @@ export default async function ArticleCaseboardPage({
             <div className="space-y-3">
               <Badge variant="outline">
                 <Sparkles className="size-3.5" />
-                Article intelligence
+                Case intelligence
               </Badge>
               <h1 className="font-heading text-3xl leading-none font-semibold tracking-[-0.03em] sm:text-4xl">
-                {caseboard.articleId}
+                {caseData.selectedCase.title}
               </h1>
               <p className="max-w-3xl text-sm leading-6 text-[var(--muted-foreground)] sm:text-base">
-                Open one article, compare the top competing hypotheses, then dive into proof only when you need it.
+                One case at a time. Pressure-test the working explanation, then open the structured evidence only when you need it.
               </p>
               <div className="flex flex-wrap gap-2">
-                {caseboard.articleName ? <Badge variant="outline">{caseboard.articleName}</Badge> : null}
-                <Badge variant="outline">{pipelineLabel}</Badge>
-                {caseboard.dashboardCard ? (
-                  <Badge variant="outline">
-                    {caseboard.dashboardCard.productCount} products · {caseboard.dashboardCard.totalSignals} signals
-                  </Badge>
+                <Badge variant="outline">{caseData.viewModel.articleId}</Badge>
+                {caseData.viewModel.articleName ? (
+                  <Badge variant="outline">{caseData.viewModel.articleName}</Badge>
                 ) : null}
-                <Badge variant="outline">
-                  {caseboard.proposedCases.length} ranked hypotheses
-                </Badge>
+                <Badge variant="outline">{pipelineLabel}</Badge>
               </div>
             </div>
 
@@ -164,7 +125,7 @@ export default async function ArticleCaseboardPage({
                 render={
                   <Link href={buildClusteringModeHref("/articles", mode)}>
                     <ArrowLeft className="size-4" />
-                    Back to proposed cases
+                    Back to global intelligence
                   </Link>
                 }
               />
@@ -175,10 +136,11 @@ export default async function ArticleCaseboardPage({
 
         <ClusteringPipelineToggle currentMode={mode} items={toggleItems} />
 
-        <ArticleHypothesisBoard
+        <CaseViewer
           mode={mode}
-          viewModel={viewModel}
-          hasPostgres={capabilities.hasPostgres}
+          viewModel={caseData.viewModel}
+          selectedCaseId={caseId}
+          hasPostgres={caseData.hasPostgres}
         />
       </div>
     </main>

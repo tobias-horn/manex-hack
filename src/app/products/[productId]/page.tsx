@@ -28,6 +28,7 @@ import { DEMO_DOSSIER_PRODUCTS } from "@/lib/manex-demo";
 import { getProposedCasesForProduct } from "@/lib/manex-case-clustering";
 import { getDummyProposedCasesForProduct } from "@/lib/manex-dummy-clustering";
 import {
+  buildCaseViewerHref,
   buildClusteringModeHref,
   parseClusteringMode,
 } from "@/lib/manex-clustering-mode";
@@ -259,8 +260,14 @@ export default async function ProductDossierPage({
                   size="lg"
                   variant="outline"
                   render={
-                    <Link href={buildClusteringModeHref(`/articles/${product.articleId}`, mode)}>
-                      Open article caseboard
+                    <Link
+                      href={
+                        proposedCases[0]
+                          ? buildCaseViewerHref(proposedCases[0].id, proposedCases[0].articleId, mode)
+                          : buildClusteringModeHref(`/articles/${product.articleId}`, mode)
+                      }
+                    >
+                      {proposedCases[0] ? "Open leading case" : "Open article caseboard"}
                     </Link>
                   }
                 />
@@ -598,7 +605,7 @@ export default async function ProductDossierPage({
                   Proposed clusters
                 </Badge>
                 <CardTitle className="section-title mt-3">
-                  Article-level case suggestions
+                  Related cases
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-3 px-5 pb-5">
@@ -632,8 +639,8 @@ export default async function ProductDossierPage({
                           variant="outline"
                           size="sm"
                           render={
-                            <Link href={buildClusteringModeHref(`/articles/${candidate.articleId}`, mode)}>
-                              Open article caseboard
+                            <Link href={buildCaseViewerHref(candidate.id, candidate.articleId, mode)}>
+                              Open case viewer
                             </Link>
                           }
                         />

@@ -170,7 +170,7 @@ export default async function Home({ searchParams }: HomeProps) {
   return (
     <main className="min-h-screen">
       <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-6 px-4 py-4 sm:px-6 lg:px-10 lg:py-8">
-        <header className="glass-panel ghost-border rounded-[30px] px-5 py-5 sm:px-6">
+        <header className="glass-panel ghost-border spec-grid overflow-hidden rounded-[30px] px-5 py-5 sm:px-6">
           <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
             <div className="space-y-3">
               <div className="eyebrow">Manex // Quality Inbox</div>

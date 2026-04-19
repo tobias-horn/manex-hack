@@ -55,10 +55,6 @@ const statusLabel: Record<ArticleHypothesisBoardStatus, string> = {
   confirmed: "Confirmed",
 };
 
-function formatConfidence(value: number | null) {
-  return value !== null ? `${Math.round(value * 100)}% confidence` : "No confidence score";
-}
-
 export function ArticleHypothesisBoard({
   mode,
   viewModel,
@@ -199,9 +195,6 @@ export function ArticleHypothesisBoard({
                 Competing hypotheses
               </Badge>
               <CardTitle className="section-title mt-3">Compact argument board</CardTitle>
-              <CardDescription className="mt-2 leading-6">
-                Keep only the strongest competing explanations in view. Proof stays in the drawer.
-              </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4 px-5 pb-5">
               {hypotheses.length ? (
@@ -223,9 +216,6 @@ export function ArticleHypothesisBoard({
                             <Badge className={statusTone[hypothesis.currentStatus]}>
                               {statusLabel[hypothesis.currentStatus]}
                             </Badge>
-                            <Badge variant="outline">{hypothesis.caseKind}</Badge>
-                            <Badge variant="outline">{hypothesis.priority}</Badge>
-                            <Badge variant="outline">{formatConfidence(hypothesis.confidence)}</Badge>
                           </div>
                           <div>
                             <h3 className="text-lg font-semibold text-foreground">
@@ -247,8 +237,8 @@ export function ArticleHypothesisBoard({
                         </Button>
                       </div>
 
-                      <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                        <div className="rounded-[24px] border border-white/8 bg-[linear-gradient(180deg,rgba(0,92,151,0.06),rgba(0,92,151,0.02))] p-4">
+                      <div className="mt-5 grid gap-4 md:grid-cols-2">
+                        <div className="h-full rounded-[24px] border border-white/8 bg-[linear-gradient(180deg,rgba(0,92,151,0.06),rgba(0,92,151,0.02))] p-4">
                           <div className="eyebrow text-[var(--primary)]">Observed support</div>
                           <p className="mt-2 text-xs leading-5 text-[var(--muted-foreground)]">
                             What the current record positively points toward.
@@ -259,7 +249,7 @@ export function ArticleHypothesisBoard({
                             ))}
                           </div>
                         </div>
-                        <div className="rounded-[24px] border border-white/8 bg-[linear-gradient(180deg,rgba(20,32,42,0.06),rgba(20,32,42,0.02))] p-4">
+                        <div className="h-full rounded-[24px] border border-white/8 bg-[linear-gradient(180deg,rgba(20,32,42,0.06),rgba(20,32,42,0.02))] p-4">
                           <div className="eyebrow text-foreground">Assumptions required</div>
                           <p className="mt-2 text-xs leading-5 text-[var(--muted-foreground)]">
                             Conditions that must hold for this explanation to stay coherent.
@@ -270,7 +260,7 @@ export function ArticleHypothesisBoard({
                             ))}
                           </div>
                         </div>
-                        <div className="rounded-[24px] border border-white/8 bg-[linear-gradient(180deg,rgba(178,69,63,0.07),rgba(178,69,63,0.02))] p-4">
+                        <div className="h-full rounded-[24px] border border-white/8 bg-[linear-gradient(180deg,rgba(178,69,63,0.07),rgba(178,69,63,0.02))] p-4">
                           <div className="eyebrow text-[var(--destructive)]">Counterevidence</div>
                           <p className="mt-2 text-xs leading-5 text-[var(--muted-foreground)]">
                             Friction in the record, missing proof, or rival explanations still alive.
@@ -281,7 +271,7 @@ export function ArticleHypothesisBoard({
                             ))}
                           </div>
                         </div>
-                        <div className="rounded-[24px] border border-white/8 bg-[linear-gradient(180deg,rgba(45,123,98,0.07),rgba(45,123,98,0.02))] p-4">
+                        <div className="h-full rounded-[24px] border border-white/8 bg-[linear-gradient(180deg,rgba(45,123,98,0.07),rgba(45,123,98,0.02))] p-4">
                           <div className="eyebrow text-emerald-700">Decisive test</div>
                           <p className="mt-2 text-xs leading-5 text-[var(--muted-foreground)]">
                             The shortest next move that should meaningfully strengthen or weaken it.
@@ -365,25 +355,10 @@ export function ArticleHypothesisBoard({
               <CardTitle className="section-title mt-3">
                 {selectedHypothesis?.title ?? "No hypothesis selected"}
               </CardTitle>
-              <CardDescription className="mt-2 leading-6">
-                Summaries stay in the main flow. Proof, provenance, and raw signals live here.
-              </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4 px-5 pb-5">
               {selectedHypothesis ? (
                 <>
-                  <div className="flex flex-wrap gap-2">
-                    <Badge className={statusTone[selectedHypothesis.currentStatus]}>
-                      {statusLabel[selectedHypothesis.currentStatus]}
-                    </Badge>
-                    <Badge variant="outline">{selectedHypothesis.caseKind}</Badge>
-                    {selectedHypothesis.reportedParts.slice(0, 2).map((item) => (
-                      <Badge key={item} variant="outline">
-                        {item}
-                      </Badge>
-                    ))}
-                  </div>
-
                   <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
                     <div className="eyebrow">Evidence spine</div>
                     <div className="mt-3 space-y-3">
@@ -408,41 +383,6 @@ export function ArticleHypothesisBoard({
                           No evidence spine is available for this selection yet.
                         </p>
                       )}
-                    </div>
-                  </div>
-
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                      <div className="eyebrow">Traceability</div>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        {selectedHypothesis.supplierBatches.length ? (
-                          selectedHypothesis.supplierBatches.map((item) => (
-                            <Badge key={item} variant="secondary">
-                              {item}
-                            </Badge>
-                          ))
-                        ) : (
-                          <p className="text-sm leading-6 text-[var(--muted-foreground)]">
-                            No dominant supplier batch was surfaced.
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                    <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                      <div className="eyebrow">Sections</div>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        {selectedHypothesis.sections.length ? (
-                          selectedHypothesis.sections.map((item) => (
-                            <Badge key={item} variant="secondary">
-                              {item}
-                            </Badge>
-                          ))
-                        ) : (
-                          <p className="text-sm leading-6 text-[var(--muted-foreground)]">
-                            No strong section pattern was emitted.
-                          </p>
-                        )}
-                      </div>
                     </div>
                   </div>
 
