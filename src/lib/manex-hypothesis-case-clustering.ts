@@ -1,5 +1,4 @@
 import { createOpenAI } from "@ai-sdk/openai";
-import { generateObject } from "ai";
 import { z } from "zod";
 
 import {
@@ -9,6 +8,7 @@ import {
 } from "@/lib/manex-case-clustering";
 import { getTeamArticleDossierRecord } from "@/lib/manex-case-clustering-state";
 import { capabilities, env } from "@/lib/env";
+import { stringifyUnicodeSafe } from "@/lib/json-unicode";
 import {
   completeHypothesisCaseRun,
   createHypothesisCaseRun,
@@ -32,6 +32,7 @@ import {
   buildHypothesisNarrativeUserPrompt,
   MANEX_HYPOTHESIS_CASE_CLUSTERING_PROMPT_VERSION,
 } from "@/prompts/manex-hypothesis-case-clustering";
+import { generateStructuredObjectWithRepair } from "@/lib/openai-resilience";
 import { memoizeWithTtl } from "@/lib/server-cache";
 import { normalizeUiIdentifier } from "@/lib/ui-format";
 
@@ -628,6 +629,10 @@ function createPipelineStopError(reason = STOPPED_PIPELINE_MESSAGE) {
   return error;
 }
 
+function isPipelineStopError(error: unknown) {
+  return error instanceof Error && error.name === "AbortError";
+}
+
 function throwIfPipelineAborted(abortSignal?: AbortSignal) {
   if (abortSignal?.aborted) {
     throw createPipelineStopError(
@@ -636,28 +641,6 @@ function throwIfPipelineAborted(abortSignal?: AbortSignal) {
         : STOPPED_PIPELINE_MESSAGE,
     );
   }
-}
-
-async function sleep(ms: number, abortSignal?: AbortSignal) {
-  return new Promise<void>((resolve, reject) => {
-    if (abortSignal?.aborted) {
-      reject(createPipelineStopError());
-      return;
-    }
-
-    const timer = setTimeout(() => {
-      abortSignal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-
-    const onAbort = () => {
-      clearTimeout(timer);
-      abortSignal?.removeEventListener("abort", onAbort);
-      reject(createPipelineStopError());
-    };
-
-    abortSignal?.addEventListener("abort", onAbort, { once: true });
-  });
 }
 
 async function mapWithConcurrency<T, TResult>(
@@ -1909,43 +1892,30 @@ async function generateNarrative(seed: HypothesisSeed, abortSignal?: AbortSignal
     articleWideAnchorRisk: seed.articleWideAnchorRisk,
   };
 
-  let attempt = 0;
-  let lastError: unknown = null;
-
-  while (attempt < HYP_MODEL_CALL_MAX_ATTEMPTS) {
-    attempt += 1;
-
-    try {
-      throwIfPipelineAborted(abortSignal);
-      const result = await generateObject({
-        model: openai.responses(env.OPENAI_MODEL),
-        schema: hypothesisNarrativeSchema,
-        system: buildHypothesisNarrativeSystemPrompt(),
-        prompt: buildHypothesisNarrativeUserPrompt(payload),
-        maxOutputTokens: HYP_NARRATIVE_MAX_OUTPUT_TOKENS,
-        abortSignal,
-        providerOptions: {
-          openai: {
-            reasoningEffort: HYP_REASONING_EFFORT,
-          },
+  try {
+    throwIfPipelineAborted(abortSignal);
+    return await generateStructuredObjectWithRepair({
+      model: openai.responses(env.OPENAI_MODEL),
+      schema: hypothesisNarrativeSchema,
+      schemaName: "manex_hypothesis_narrative",
+      schemaDescription: "Narrative summary for one deterministic hypothesis case seed.",
+      system: buildHypothesisNarrativeSystemPrompt(),
+      prompt: buildHypothesisNarrativeUserPrompt(payload),
+      maxOutputTokens: HYP_NARRATIVE_MAX_OUTPUT_TOKENS,
+      abortSignal,
+      abortMessage: STOPPED_PIPELINE_MESSAGE,
+      createAbortError: createPipelineStopError,
+      isStopError: isPipelineStopError,
+      maxAttempts: HYP_MODEL_CALL_MAX_ATTEMPTS,
+      providerOptions: {
+        openai: {
+          reasoningEffort: HYP_REASONING_EFFORT,
         },
-      });
-
-      return result.object;
-    } catch (error) {
-      lastError = error;
-
-      if (attempt >= HYP_MODEL_CALL_MAX_ATTEMPTS) {
-        break;
-      }
-
-      await sleep(300 * attempt, abortSignal);
-    }
-  }
-
-  if (lastError) {
+      },
+    });
+  } catch (lastError) {
     console.warn(
-      `[manex-hypothesis:narrative-fallback] ${JSON.stringify({
+      `[manex-hypothesis:narrative-fallback] ${stringifyUnicodeSafe({
         anchorKey: seed.anchorKey,
         error: lastError instanceof Error ? lastError.message : String(lastError),
       })}`,
@@ -2702,7 +2672,7 @@ async function persistHypothesisEvaluation(input: {
         truth.family,
         truth.expectedKind,
         truth.articleId,
-        JSON.stringify(truth.anchorTokens),
+        stringifyUnicodeSafe(truth.anchorTokens),
         truth.notes,
       ],
     );
@@ -2746,8 +2716,8 @@ async function persistHypothesisEvaluation(input: {
         row.matchedAnchor,
         row.falseMergeCount,
         row.falseNeighborCount,
-        JSON.stringify(row.topEvidence),
-        JSON.stringify(row.notes),
+        stringifyUnicodeSafe(row.topEvidence),
+        stringifyUnicodeSafe(row.notes),
       ],
     );
   }
@@ -2784,7 +2754,7 @@ async function persistHypothesisEvaluation(input: {
       input.summary.leadingIndicatorCount,
       input.summary.falseMergeCount,
       input.summary.falseNeighborCount,
-      JSON.stringify(input.summary),
+      stringifyUnicodeSafe(input.summary),
     ],
   );
 }

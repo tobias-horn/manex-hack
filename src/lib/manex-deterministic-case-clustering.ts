@@ -1,5 +1,4 @@
 import { createOpenAI } from "@ai-sdk/openai";
-import { generateObject } from "ai";
 import { z } from "zod";
 
 import { buildArticleDossier, type ClusteredArticleDossier, type ClusteredProductDossier } from "@/lib/manex-case-clustering";
@@ -30,6 +29,7 @@ import {
   buildDeterministicIssueExtractionUserPrompt,
   MANEX_DETERMINISTIC_CASE_CLUSTERING_PROMPT_VERSION,
 } from "@/prompts/manex-deterministic-case-clustering";
+import { generateStructuredObjectWithRepair } from "@/lib/openai-resilience";
 import { memoizeWithTtl } from "@/lib/server-cache";
 import { normalizeUiIdentifier } from "@/lib/ui-format";
 
@@ -1234,11 +1234,6 @@ async function mapWithConcurrency<TItem, TResult>(
   return results;
 }
 
-function isRetryableModelError(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
-  return /rate limit|429|overloaded|temporarily unavailable|timeout|timed out/i.test(message);
-}
-
 function throwIfDeterministicPipelineAborted(abortSignal?: AbortSignal) {
   if (abortSignal?.aborted) {
     throw new Error(
@@ -1247,40 +1242,6 @@ function throwIfDeterministicPipelineAborted(abortSignal?: AbortSignal) {
         : "Pipeline stopped by user.",
     );
   }
-}
-
-async function sleep(ms: number, abortSignal?: AbortSignal) {
-  await new Promise((resolve, reject) => {
-    if (abortSignal?.aborted) {
-      reject(
-        new Error(
-          typeof abortSignal.reason === "string" && abortSignal.reason
-            ? abortSignal.reason
-            : "Pipeline stopped by user.",
-        ),
-      );
-      return;
-    }
-
-    const timeout = setTimeout(() => {
-      abortSignal?.removeEventListener("abort", onAbort);
-      resolve(undefined);
-    }, ms);
-
-    const onAbort = () => {
-      clearTimeout(timeout);
-      abortSignal?.removeEventListener("abort", onAbort);
-      reject(
-        new Error(
-          typeof abortSignal?.reason === "string" && abortSignal.reason
-            ? abortSignal.reason
-            : "Pipeline stopped by user.",
-        ),
-      );
-    };
-
-    abortSignal?.addEventListener("abort", onAbort, { once: true });
-  });
 }
 
 function getOpenAiClient() {
@@ -1300,44 +1261,27 @@ async function generateIssueSetObject(input: {
   abortSignal?: AbortSignal;
 }) {
   const openai = getOpenAiClient();
-  let lastError: unknown = null;
+  throwIfDeterministicPipelineAborted(input.abortSignal);
 
-  for (let attempt = 1; attempt <= DET_MODEL_CALL_MAX_ATTEMPTS; attempt += 1) {
-    throwIfDeterministicPipelineAborted(input.abortSignal);
-
-    try {
-      const result = await generateObject({
-        model: openai.responses(env.OPENAI_MODEL),
-        schema: productIssueSetSchema,
-        schemaName: "manex_deterministic_product_issue_set",
-        schemaDescription:
-          "Deterministic-friendly issue cards extracted from one product dossier.",
-        system: buildDeterministicIssueExtractionSystemPrompt(),
-        prompt: buildDeterministicIssueExtractionUserPrompt(input.payload),
-        maxOutputTokens: DET_ISSUE_MAX_OUTPUT_TOKENS,
-        providerOptions: {
-          openai: {
-            reasoningEffort: DET_REASONING_EFFORT,
-            store: false,
-            textVerbosity: "low",
-          },
-        },
-        abortSignal: input.abortSignal,
-      });
-
-      return result.object;
-    } catch (error) {
-      lastError = error;
-
-      if (!isRetryableModelError(error) || attempt >= DET_MODEL_CALL_MAX_ATTEMPTS) {
-        throw error;
-      }
-
-      await sleep(700 * 2 ** (attempt - 1), input.abortSignal);
-    }
-  }
-
-  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  return generateStructuredObjectWithRepair({
+    model: openai.responses(env.OPENAI_MODEL),
+    schema: productIssueSetSchema,
+    schemaName: "manex_deterministic_product_issue_set",
+    schemaDescription: "Deterministic-friendly issue cards extracted from one product dossier.",
+    system: buildDeterministicIssueExtractionSystemPrompt(),
+    prompt: buildDeterministicIssueExtractionUserPrompt(input.payload),
+    maxOutputTokens: DET_ISSUE_MAX_OUTPUT_TOKENS,
+    providerOptions: {
+      openai: {
+        reasoningEffort: DET_REASONING_EFFORT,
+        store: false,
+        textVerbosity: "low",
+      },
+    },
+    abortSignal: input.abortSignal,
+    abortMessage: "Pipeline stopped by user.",
+    maxAttempts: DET_MODEL_CALL_MAX_ATTEMPTS,
+  });
 }
 
 async function generateFinalJudgeObject(input: {
@@ -1346,44 +1290,27 @@ async function generateFinalJudgeObject(input: {
   abortSignal?: AbortSignal;
 }) {
   const openai = getOpenAiClient();
-  let lastError: unknown = null;
+  throwIfDeterministicPipelineAborted(input.abortSignal);
 
-  for (let attempt = 1; attempt <= DET_MODEL_CALL_MAX_ATTEMPTS; attempt += 1) {
-    throwIfDeterministicPipelineAborted(input.abortSignal);
-
-    try {
-      const result = await generateObject({
-        model: openai.responses(DET_FINAL_JUDGE_MODEL),
-        schema: deterministicFinalJudgeResponseSchema,
-        schemaName: "manex_deterministic_final_judge",
-        schemaDescription:
-          "Closed-output review over shortlisted deterministic article-local candidates.",
-        system: buildDeterministicFinalJudgeSystemPrompt(),
-        prompt: buildDeterministicFinalJudgeUserPrompt(input.payload),
-        maxOutputTokens: DET_FINAL_JUDGE_MAX_OUTPUT_TOKENS,
-        providerOptions: {
-          openai: {
-            reasoningEffort: DET_FINAL_JUDGE_REASONING_EFFORT,
-            store: false,
-            textVerbosity: "low",
-          },
-        },
-        abortSignal: input.abortSignal,
-      });
-
-      return result.object;
-    } catch (error) {
-      lastError = error;
-
-      if (!isRetryableModelError(error) || attempt >= DET_MODEL_CALL_MAX_ATTEMPTS) {
-        throw error;
-      }
-
-      await sleep(700 * 2 ** (attempt - 1), input.abortSignal);
-    }
-  }
-
-  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  return generateStructuredObjectWithRepair({
+    model: openai.responses(DET_FINAL_JUDGE_MODEL),
+    schema: deterministicFinalJudgeResponseSchema,
+    schemaName: "manex_deterministic_final_judge",
+    schemaDescription: "Closed-output review over shortlisted deterministic article-local candidates.",
+    system: buildDeterministicFinalJudgeSystemPrompt(),
+    prompt: buildDeterministicFinalJudgeUserPrompt(input.payload),
+    maxOutputTokens: DET_FINAL_JUDGE_MAX_OUTPUT_TOKENS,
+    providerOptions: {
+      openai: {
+        reasoningEffort: DET_FINAL_JUDGE_REASONING_EFFORT,
+        store: false,
+        textVerbosity: "low",
+      },
+    },
+    abortSignal: input.abortSignal,
+    abortMessage: "Pipeline stopped by user.",
+    maxAttempts: DET_MODEL_CALL_MAX_ATTEMPTS,
+  });
 }
 
 function buildIssueExtractionPayload(thread: ClusteredProductDossier) {

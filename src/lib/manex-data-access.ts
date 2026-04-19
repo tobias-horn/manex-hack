@@ -3,7 +3,11 @@ import { startOfWeek } from "date-fns";
 
 import { env } from "@/lib/env";
 import { resolveManexImageUrl } from "@/lib/manex-images";
-import { sanitizeUnicodeForJson, stringifyUnicodeSafe } from "@/lib/json-unicode";
+import {
+  parseUnicodeSafeJson,
+  sanitizeUnicodeForJson,
+  stringifyUnicodeSafe,
+} from "@/lib/json-unicode";
 import { queryPostgres } from "@/lib/postgres";
 
 type TransportKind = "rest" | "postgres";
@@ -55,8 +59,7 @@ type WriteResult<T> = {
   transport: TransportKind;
 };
 
-const parseJsonResponseSafe = <T>(responseText: string) =>
-  JSON.parse(sanitizeUnicodeForJson(responseText)) as T;
+const parseJsonResponseSafe = <T>(responseText: string) => parseUnicodeSafeJson<T>(responseText);
 
 type DefectRow = {
   defect_id: string;

@@ -37,6 +37,9 @@ type ArticleClusterRunnerProps = {
   pipelineDescription: string;
   actionLabel: string;
   derivedCountLabel?: string;
+  readOnly?: boolean;
+  capabilityLabel?: string;
+  readOnlyMessage?: string;
 };
 
 type FeedbackState = {
@@ -182,6 +185,9 @@ export function ArticleClusterRunner({
   pipelineDescription,
   actionLabel,
   derivedCountLabel = "extracted issues",
+  readOnly = false,
+  capabilityLabel,
+  readOnlyMessage,
 }: ArticleClusterRunnerProps) {
   const router = useRouter();
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -236,7 +242,7 @@ export function ArticleClusterRunner({
   });
 
   useEffect(() => {
-    if (!status.isRunning && !isSubmitting) {
+    if (readOnly || (!status.isRunning && !isSubmitting)) {
       return;
     }
 
@@ -251,7 +257,7 @@ export function ArticleClusterRunner({
       window.clearTimeout(initialTimer);
       window.clearInterval(interval);
     };
-  }, [articleId, isSubmitting, status.isRunning]);
+  }, [articleId, isSubmitting, readOnly, status.isRunning]);
 
   async function runClustering() {
     setIsSubmitting(true);
@@ -316,7 +322,7 @@ export function ArticleClusterRunner({
       </p>
 
       <div className="flex flex-wrap gap-2">
-        <Badge>{hasAi ? "GPT clustering enabled" : "OpenAI key missing"}</Badge>
+        <Badge>{capabilityLabel ?? (hasAi ? "GPT clustering enabled" : "OpenAI key missing")}</Badge>
         {run ? <Badge variant="outline">{run.model}</Badge> : null}
         {run?.strategy ? <Badge variant="outline">{run.strategy}</Badge> : null}
         {status.issueCount ? (
@@ -373,28 +379,35 @@ export function ArticleClusterRunner({
         </div>
       </div>
 
-      <Button
-        size="lg"
-        onClick={runClustering}
-        disabled={isSubmitting || status.isRunning || !hasAi}
-        className="w-full"
-      >
-        {isSubmitting ? (
-          <>
-            <LoaderCircle className="size-4 animate-spin" />
-            Starting {actionLabel}
-          </>
-        ) : status.isRunning ? (
-          <>
-            <LoaderCircle className="size-4 animate-spin" />
-            {actionLabel} in progress
-          </>
-        ) : run ? (
-          `Refresh ${actionLabel}`
-        ) : (
-          `Run ${actionLabel}`
-        )}
-      </Button>
+      {readOnly ? (
+        <div className="rounded-[22px] border border-dashed border-white/12 bg-black/8 px-4 py-3 text-sm leading-6 text-[var(--muted-foreground)]">
+          {readOnlyMessage ??
+            "This mode is a seeded, read-only snapshot. It behaves like a finished run so the downstream UI can be reviewed without starting live clustering."}
+        </div>
+      ) : (
+        <Button
+          size="lg"
+          onClick={runClustering}
+          disabled={isSubmitting || status.isRunning || !hasAi}
+          className="w-full"
+        >
+          {isSubmitting ? (
+            <>
+              <LoaderCircle className="size-4 animate-spin" />
+              Starting {actionLabel}
+            </>
+          ) : status.isRunning ? (
+            <>
+              <LoaderCircle className="size-4 animate-spin" />
+              {actionLabel} in progress
+            </>
+          ) : run ? (
+            `Refresh ${actionLabel}`
+          ) : (
+            `Run ${actionLabel}`
+          )}
+        </Button>
+      )}
 
       {feedback ? (
         <div

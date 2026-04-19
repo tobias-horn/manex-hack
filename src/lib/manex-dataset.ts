@@ -1,4 +1,5 @@
 import { env } from "@/lib/env";
+import { parseUnicodeSafeJson, stringifyUnicodeSafe } from "@/lib/json-unicode";
 import { resolveManexImageUrl } from "@/lib/manex-images";
 import { queryPostgres } from "@/lib/postgres";
 
@@ -70,7 +71,7 @@ const formatDebug = (value: unknown) => {
   }
 
   try {
-    return JSON.stringify(value);
+    return stringifyUnicodeSafe(value);
   } catch {
     return String(value);
   }
@@ -180,7 +181,7 @@ async function runRestSmokeTest() {
       );
     }
 
-    const data = JSON.parse(responseText) as DefectDetailRow[];
+    const data = parseUnicodeSafeJson<DefectDetailRow[]>(responseText);
     const contentRange = response.headers.get("content-range");
     const rowCountText = contentRange?.split("/")[1];
     const rowCount =

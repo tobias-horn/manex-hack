@@ -1,6 +1,7 @@
 import { subDays } from "date-fns";
 
 import { createManexDataAccess } from "@/lib/manex-data-access";
+import { stringifyUnicodeSafe } from "@/lib/json-unicode";
 import { memoizeWithTtl } from "@/lib/server-cache";
 import { normalizeUiIdentifier } from "@/lib/ui-format";
 
@@ -161,7 +162,7 @@ export function parseQualityInboxFilters(
 const loadQualityInbox = memoizeWithTtl(
   "quality-inbox",
   12_000,
-  (filters: QualityInboxFilterState) => JSON.stringify(filters),
+  (filters: QualityInboxFilterState) => stringifyUnicodeSafe(filters),
   async (filters: QualityInboxFilterState): Promise<QualityInboxReadModel> => {
   const data = createManexDataAccess();
   const observedAfter = getWindowStart(filters.timeWindow);

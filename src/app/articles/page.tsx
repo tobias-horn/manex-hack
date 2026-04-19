@@ -1,16 +1,17 @@
 import {
   ArrowLeft,
   CircuitBoard,
-  EyeOff,
   FolderKanban,
   Orbit,
-  ShieldAlert,
   Sparkles,
 } from "lucide-react";
 import Link from "next/link";
 
 import { ClusteringPipelineToggle } from "@/components/clustering-pipeline-toggle";
-import { GlobalPipelineRunner } from "@/components/global-pipeline-runner";
+import {
+  GlobalPipelineRunner,
+  type GlobalPipelineBatchStatus,
+} from "@/components/global-pipeline-runner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,6 +26,7 @@ import {
   getProposedCasesDashboard,
   type GlobalInventoryItem,
 } from "@/lib/manex-case-clustering";
+import { getDummyProposedCasesDashboard } from "@/lib/manex-dummy-clustering";
 import {
   buildClusteringModeHref,
   parseClusteringMode,
@@ -38,7 +40,10 @@ import {
   getHypothesisProposedCasesDashboard,
   type HypothesisGlobalInventoryItem,
 } from "@/lib/manex-hypothesis-case-clustering";
-import { formatUiDateTime } from "@/lib/ui-format";
+import {
+  getInvestigateDashboard,
+  type InvestigateGlobalInventoryItem,
+} from "@/lib/manex-investigate";
 
 export const dynamic = "force-dynamic";
 
@@ -71,7 +76,8 @@ function inventoryHref(
   item:
     | GlobalInventoryItem
     | DeterministicGlobalInventoryItem
-    | HypothesisGlobalInventoryItem,
+    | HypothesisGlobalInventoryItem
+    | InvestigateGlobalInventoryItem,
   mode: ClusteringMode,
 ) {
   const articleId = item.articleIds[0];
@@ -96,7 +102,10 @@ function GlobalPatternSection({
   title: string;
   description: string;
   items: Array<
-    GlobalInventoryItem | DeterministicGlobalInventoryItem | HypothesisGlobalInventoryItem
+    | GlobalInventoryItem
+    | DeterministicGlobalInventoryItem
+    | HypothesisGlobalInventoryItem
+    | InvestigateGlobalInventoryItem
   >;
   mode: ClusteringMode;
   emptyText: string;
@@ -186,24 +195,43 @@ type ArticlesPageProps = {
 export default async function ArticlesPage({ searchParams }: ArticlesPageProps) {
   const search = await searchParams;
   const mode = parseClusteringMode(search.pipeline);
+  const dummyDashboard =
+    mode === "dummy" ? await getDummyProposedCasesDashboard() : null;
+  const investigateDashboard =
+    mode === "investigate" ? await getInvestigateDashboard() : null;
   const dashboard =
-    mode === "deterministic"
+    mode === "dummy"
+      ? (dummyDashboard ?? (await getHypothesisProposedCasesDashboard()))
+      : mode === "deterministic"
       ? await getDeterministicProposedCasesDashboard()
       : mode === "hypothesis"
         ? await getHypothesisProposedCasesDashboard()
         : await getProposedCasesDashboard();
+  const globalInventory =
+    mode === "investigate"
+      ? investigateDashboard?.globalInventory ?? null
+      : dashboard.globalInventory;
   const crossArticleCases =
-    dashboard.globalInventory?.validatedCases.filter((item) => item.articleIds.length > 1) ?? [];
-  const watchlists = dashboard.globalInventory?.watchlists ?? [];
-  const leadingIndicators =
-    mode === "hypothesis" && dashboard.globalInventory && "leadingIndicators" in dashboard.globalInventory
-      ? dashboard.globalInventory.leadingIndicators
+    mode === "dummy"
+      ? globalInventory?.validatedCases ?? []
+      : globalInventory?.validatedCases.filter((item) => item.articleIds.length > 1) ?? [];
+  const watchlists = globalInventory?.watchlists ?? [];
+  const leadingIndicators: Array<HypothesisGlobalInventoryItem | InvestigateGlobalInventoryItem> =
+    (mode === "hypothesis" || mode === "dummy") &&
+    globalInventory &&
+    "leadingIndicators" in globalInventory &&
+    Array.isArray(globalInventory.leadingIndicators)
+      ? (globalInventory.leadingIndicators as HypothesisGlobalInventoryItem[])
       : [];
-  const noiseBuckets = dashboard.globalInventory?.noiseBuckets ?? [];
-  const rejectedCases = dashboard.globalInventory?.rejectedCases ?? [];
+  const noiseBuckets = globalInventory?.noiseBuckets ?? [];
+  const rejectedCases = globalInventory?.rejectedCases ?? [];
   const globalPatterns = [...crossArticleCases, ...watchlists, ...leadingIndicators, ...noiseBuckets, ...rejectedCases];
-  const articleQueues = dashboard.articleQueues;
-  const activeRuns = dashboard.activeRuns;
+  const articleQueues =
+    mode === "investigate"
+      ? investigateDashboard?.articleQueues ?? []
+      : dashboard.articleQueues;
+  const activeRuns =
+    mode === "investigate" ? investigateDashboard?.activeRuns ?? [] : dashboard.activeRuns;
   const toggleItems = [
     {
       mode: "current" as const,
@@ -224,25 +252,81 @@ export default async function ArticlesPage({ searchParams }: ArticlesPageProps) 
         "Mechanism-family analyzers rank supplier, process, design, handling, and noise investigations before AI writes the narrative.",
       href: buildClusteringModeHref("/articles", "hypothesis"),
     },
+    {
+      mode: "investigate" as const,
+      label: "Statistical anomaly RCA",
+      description:
+        "Direct SQL sweeps plus OpenAI root-cause narration without the clustered case pipeline.",
+      href: buildClusteringModeHref("/articles", "investigate"),
+    },
+    {
+      mode: "dummy" as const,
+      label: "Seeded dummy run",
+      description:
+        "Read-only completed run populated with the four published challenge stories so UI work can continue immediately.",
+      href: buildClusteringModeHref("/articles", "dummy"),
+    },
   ];
   const pipelineLabel =
     mode === "deterministic"
       ? "Deterministic issue-grouping pipeline"
       : mode === "hypothesis"
         ? "Case hypothesis engine"
+        : mode === "investigate"
+          ? "Statistical anomaly RCA"
+          : mode === "dummy"
+            ? "Seeded challenge dummy mode"
       : "Classic three-layer pipeline";
   const pipelineDescription =
     mode === "deterministic"
       ? "Run the bounded deterministic batch. Each article keeps its own issue extraction, then the batch reconciles the latest article-local outputs into a separate deterministic global view."
       : mode === "hypothesis"
         ? "Run the hypothesis engine batch. It reuses the shared product dossier, generates supplier/process/design/handling/noise candidates deterministically, scores overlap, then adds bounded AI narratives after the cases are already formed."
+        : mode === "investigate"
+          ? "Run the direct statistical anomaly batch. Each article gets six SQL evidence tables, OpenAI returns structured root-cause stories, and the dashboard aggregates those article-local findings without cluster merging."
+          : mode === "dummy"
+            ? "This mode does not execute clustering. It mounts a finished, read-only dummy run shaped around the four published challenge stories so the global and article UX can keep moving."
       : "Launch the original full dataset pipeline from Global Intelligence. This reports queue depth, live stage distribution, and article-by-article outcomes while the batch is still running.";
   const batchRoute =
-    mode === "deterministic"
+    mode === "dummy"
+      ? "/api/articles/cluster-all-hypothesis"
+      : mode === "deterministic"
       ? "/api/articles/cluster-all-deterministic"
       : mode === "hypothesis"
         ? "/api/articles/cluster-all-hypothesis"
+        : mode === "investigate"
+          ? "/api/articles/cluster-all-investigate"
       : "/api/articles/cluster-all";
+  const dummyBatch: GlobalPipelineBatchStatus | undefined =
+    mode === "dummy"
+      ? {
+          status: "completed",
+          requestedArticleIds: articleQueues.map((article) => article.articleId),
+          totalArticleCount: articleQueues.length,
+          startedAt: "2026-04-19T08:05:00.000Z",
+          completedAt: "2026-04-19T08:09:00.000Z",
+          lastUpdatedAt: "2026-04-19T08:09:00.000Z",
+          concurrency: 4,
+          okCount: articleQueues.length,
+          errorCount: 0,
+          errorMessage: null,
+            articleResults: articleQueues.map((article) => ({
+              articleId: article.articleId,
+              ok: true,
+              runId: article.latestRun?.id ?? null,
+              issueCount:
+                article.latestRun && "issueCount" in article.latestRun
+                  ? article.latestRun.issueCount ?? 0
+                  : 0,
+              caseCount: article.proposedCaseCount,
+              validatedCount: article.proposedCaseCount,
+              watchlistCount: 1,
+            noiseCount: 1,
+            error: null,
+            completedAt: article.latestRun?.completedAt ?? "2026-04-19T08:09:00.000Z",
+          })),
+        }
+      : undefined;
 
   return (
     <main className="min-h-screen">
@@ -252,24 +336,16 @@ export default async function ArticlesPage({ searchParams }: ArticlesPageProps) 
             <div className="space-y-3">
               <Badge variant="outline">
                 <Sparkles className="size-3.5" />
-                Global intelligence
+                Overview
               </Badge>
               <h1 className="font-heading text-3xl leading-none font-semibold tracking-[-0.03em] sm:text-4xl">
                 Global intelligence
               </h1>
               <p className="max-w-3xl text-sm leading-6 text-[var(--muted-foreground)] sm:text-base">
-                This screen has two jobs: surface global patterns that should be
-                monitored or suppressed, and show which articles currently have
-                meaningful proposed cases worth opening for investigation.
+                A cross-article view of the current quality landscape, combining
+                broader system patterns with the articles that currently stand
+                out for review.
               </p>
-              <div className="flex flex-wrap gap-2">
-                <Badge>{capabilities.hasAi ? "LLM pipeline live" : "OpenAI key missing"}</Badge>
-                <Badge variant="outline">{pipelineLabel}</Badge>
-                <Badge variant="outline">{globalPatterns.length} global patterns</Badge>
-                <Badge variant="outline">
-                  {articleQueues.length} articles with proposed cases
-                </Badge>
-              </div>
             </div>
 
             <Button
@@ -342,7 +418,7 @@ export default async function ArticlesPage({ searchParams }: ArticlesPageProps) 
                   mode={mode}
                   emptyText="No watchlists were emitted in the latest global pass."
                 />
-                {mode === "hypothesis" ? (
+                {mode === "hypothesis" || mode === "dummy" ? (
                   <GlobalPatternSection
                     title="Leading Indicators"
                     description="Near-limit and marginal patterns that stayed visible as early warnings instead of becoming active investigations."
@@ -364,9 +440,10 @@ export default async function ArticlesPage({ searchParams }: ArticlesPageProps) 
 
           <div className="space-y-6">
             <GlobalPipelineRunner
-              key={`${mode}:${dashboard.latestGlobalRun?.id ?? "none"}:${activeRuns.map((run) => run.id).join(",")}`}
+              key={`${mode}:${mode === "investigate" ? investigateDashboard?.latestBatch?.id ?? "none" : dashboard.latestGlobalRun?.id ?? "none"}:${activeRuns.map((run) => run.id).join(",")}`}
               hasAi={capabilities.hasAi}
               initialActiveRuns={activeRuns}
+              initialBatch={dummyBatch}
               routePath={batchRoute}
               pipelineLabel={pipelineLabel}
               pipelineDescription={pipelineDescription}
@@ -375,58 +452,27 @@ export default async function ArticlesPage({ searchParams }: ArticlesPageProps) 
                   ? "Run deterministic batch"
                   : mode === "hypothesis"
                     ? "Run hypothesis batch"
+                    : mode === "investigate"
+                      ? "Run statistical batch"
+                      : mode === "dummy"
+                        ? "Replay seeded batch"
                   : "Run complete pipeline"
               }
               supportsStop
-              derivedCountLabel={mode === "hypothesis" ? "ranked hypotheses" : "issues"}
+              derivedCountLabel={
+                mode === "hypothesis" || mode === "dummy"
+                  ? "ranked hypotheses"
+                  : mode === "investigate"
+                    ? "statistical stories"
+                    : "issues"
+              }
+              readOnly={mode === "dummy"}
+              readOnlyMessage={
+                mode === "dummy"
+                  ? "This batch is pre-filled from the four published challenge stories. It is read-only by design so the team can iterate on UI and reporting without touching live clustering state."
+                  : undefined
+              }
             />
-
-            <Card className="surface-panel rounded-[30px] px-0 py-0">
-              <CardHeader className="px-6 pt-6">
-                <Badge variant="outline">
-                  <ShieldAlert className="size-3.5" />
-                  Latest global pass
-                </Badge>
-                <CardTitle className="section-title mt-3">
-                  Reconciliation state
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3 px-5 pb-5">
-                <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                  <div className="eyebrow">Run</div>
-                  <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                    {dashboard.latestGlobalRun
-                      ? `${dashboard.latestGlobalRun.articleId} · ${dashboard.latestGlobalRun.model}`
-                      : "No completed pipeline run has persisted a global inventory yet."}
-                  </p>
-                </div>
-                <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                  <div className="eyebrow">Completed</div>
-                  <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                    {dashboard.latestGlobalRun?.completedAt
-                      ? formatUiDateTime(dashboard.latestGlobalRun.completedAt)
-                      : "Not completed yet"}
-                  </p>
-                </div>
-                <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                  <div className="eyebrow">Summary</div>
-                  <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                    {dashboard.globalInventory?.inventorySummary ??
-                      "Once a run completes, this panel will summarize how the global pass separated real cases from watchlists and noise."}
-                  </p>
-                </div>
-                {dashboard.globalInventory?.confidenceNotes.length ? (
-                  <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                    <div className="eyebrow">Confidence notes</div>
-                    <div className="mt-2 space-y-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                      {dashboard.globalInventory.confidenceNotes.map((item) => (
-                        <p key={item}>{item}</p>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-              </CardContent>
-            </Card>
 
             <Card className="surface-sheet rounded-[30px] px-0 py-0">
               <CardHeader className="px-6 pt-6">
@@ -438,8 +484,8 @@ export default async function ArticlesPage({ searchParams }: ArticlesPageProps) 
                   Article investigation inventory
                 </CardTitle>
                 <CardDescription className="mt-2 max-w-3xl leading-6">
-                  This is the real investigation entry point. Open an article when
-                  it already has article-wide proposed cases worth reviewing.
+                  This is the investigation entry point. Open an article to compare its
+                  top competing hypotheses before diving into raw evidence.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3 px-5 pb-5">
@@ -484,7 +530,7 @@ export default async function ArticlesPage({ searchParams }: ArticlesPageProps) 
                           variant="outline"
                           render={
                             <Link href={buildClusteringModeHref(`/articles/${article.articleId}`, mode)}>
-                              Open article
+                              Review hypotheses
                             </Link>
                           }
                         />
@@ -499,26 +545,6 @@ export default async function ArticlesPage({ searchParams }: ArticlesPageProps) 
               </CardContent>
             </Card>
 
-            <Card className="surface-sheet rounded-[30px] px-0 py-0">
-              <CardHeader className="px-6 pt-6">
-                <Badge variant="outline">
-                  <EyeOff className="size-3.5" />
-                  Merge log
-                </Badge>
-                <CardTitle className="section-title mt-3">
-                  What got suppressed or merged
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2 px-5 pb-5 text-sm leading-6 text-[var(--muted-foreground)]">
-                {dashboard.globalInventory?.caseMergeLog.length ? (
-                  dashboard.globalInventory.caseMergeLog.map((item) => (
-                    <p key={item}>{item}</p>
-                  ))
-                ) : (
-                  <p>No merge or suppression notes are available yet.</p>
-                )}
-              </CardContent>
-            </Card>
           </div>
         </section>
       </div>

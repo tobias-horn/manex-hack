@@ -1,6 +1,5 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import { startOfWeek } from "date-fns";
-import { asSchema, generateObject, generateText } from "ai";
 import { z } from "zod";
 
 import {
@@ -52,6 +51,7 @@ import {
   MANEX_CASE_CLUSTERING_PROMPT_VERSION,
 } from "@/prompts/manex-case-clustering";
 import { sanitizeUnicodeForJson, stringifyUnicodeSafe } from "@/lib/json-unicode";
+import { generateStructuredObjectWithRepair } from "@/lib/openai-resilience";
 import { memoizeWithTtl } from "@/lib/server-cache";
 import { normalizeUiIdentifier } from "@/lib/ui-format";
 
@@ -1086,98 +1086,6 @@ function throwIfPipelineAborted(abortSignal?: AbortSignal) {
         : STOPPED_PIPELINE_MESSAGE,
     );
   }
-}
-
-function sleep(ms: number, abortSignal?: AbortSignal) {
-  return new Promise<void>((resolve, reject) => {
-    if (abortSignal?.aborted) {
-      reject(
-        createPipelineStopError(
-          typeof abortSignal.reason === "string" && abortSignal.reason
-            ? abortSignal.reason
-            : STOPPED_PIPELINE_MESSAGE,
-        ),
-      );
-      return;
-    }
-
-    const timer = setTimeout(() => {
-      abortSignal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-
-    const onAbort = () => {
-      clearTimeout(timer);
-      abortSignal?.removeEventListener("abort", onAbort);
-      reject(
-        createPipelineStopError(
-          typeof abortSignal?.reason === "string" && abortSignal.reason
-            ? abortSignal.reason
-            : STOPPED_PIPELINE_MESSAGE,
-        ),
-      );
-    };
-
-    abortSignal?.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
-function extractRetryDelayMs(message: string) {
-  const match = message.match(/try again in\s+([0-9.]+)\s*(ms|s|sec|secs|second|seconds)/i);
-
-  if (!match) {
-    return null;
-  }
-
-  const value = Number.parseFloat(match[1] ?? "");
-
-  if (!Number.isFinite(value) || value <= 0) {
-    return null;
-  }
-
-  return /^ms$/i.test(match[2] ?? "") ? Math.ceil(value) : Math.ceil(value * 1000);
-}
-
-function isStructuredParseError(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
-  return /no object generated|could not parse the response|failed to parse/i.test(message);
-}
-
-function isRetryableModelError(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
-
-  return /rate limit|429|overloaded|temporarily unavailable|timeout|timed out|no object generated|could not parse the response|failed to parse/i.test(
-    message,
-  );
-}
-
-function stripMarkdownCodeFence(value: string) {
-  const trimmed = value.trim();
-
-  if (!trimmed.startsWith("```")) {
-    return trimmed;
-  }
-
-  return trimmed.replace(/^```[a-zA-Z0-9_-]*\s*/, "").replace(/\s*```$/, "").trim();
-}
-
-function extractJsonCandidate(value: string) {
-  const stripped = stripMarkdownCodeFence(value);
-  const firstObjectIndex = stripped.indexOf("{");
-  const lastObjectIndex = stripped.lastIndexOf("}");
-
-  if (firstObjectIndex >= 0 && lastObjectIndex > firstObjectIndex) {
-    return stripped.slice(firstObjectIndex, lastObjectIndex + 1);
-  }
-
-  const firstArrayIndex = stripped.indexOf("[");
-  const lastArrayIndex = stripped.lastIndexOf("]");
-
-  if (firstArrayIndex >= 0 && lastArrayIndex > firstArrayIndex) {
-    return stripped.slice(firstArrayIndex, lastArrayIndex + 1);
-  }
-
-  return stripped;
 }
 
 function extractClaimKeywords(text: string) {
@@ -3318,11 +3226,54 @@ function collectRawEvidenceSnippets(thread: ClusteredProductDossier) {
     .slice(0, MAX_STAGE2_RAW_SNIPPETS);
 }
 
+function toCompactAnchorRows(
+  rows: Array<{
+    value: string;
+    count: number;
+    relatedProductCount: number;
+  }>,
+  limit: number,
+) {
+  return rows.slice(0, limit).map((row) => ({
+    value: row.value,
+    count: row.count,
+    relatedProductCount: row.relatedProductCount,
+  }));
+}
+
+function toCompactArticleSummaryRows(
+  rows: Array<{
+    value: string;
+    count: number;
+    productIds: string[];
+  }>,
+  limit: number,
+) {
+  return rows.slice(0, limit).map((row) => ({
+    value: row.value,
+    count: row.count,
+    productCount: row.productIds.length,
+  }));
+}
+
+function toCompactArticleLabelRows(
+  rows: Array<{
+    label: string;
+    count: number;
+    productIds: string[];
+  }>,
+  limit: number,
+) {
+  return rows.slice(0, limit).map((row) => ({
+    label: row.label,
+    count: row.count,
+    productCount: row.productIds.length,
+  }));
+}
+
 function toStage2ProductClusterCard(thread: ClusteredProductDossier) {
   return {
     productId: thread.productId,
-    articleId: thread.articleId,
-    articleName: thread.articleName,
     buildWeek: formatBuildWeek(thread.buildTs),
     orderId: thread.orderId,
     sourceCounts: thread.sourceCounts,
@@ -3332,117 +3283,114 @@ function toStage2ProductClusterCard(thread: ClusteredProductDossier) {
       fieldClaimWithoutFactoryDefect: thread.summaryFeatures.fieldClaimWithoutFactoryDefect,
     },
     stage1Summary: {
-      productSummary: trimPreview(thread.stage1Synthesis.productSummary, 320),
-      timeline: thread.stage1Synthesis.timeline.slice(0, 5),
+      productSummary: trimPreview(thread.stage1Synthesis.productSummary, 220),
+      timeline: thread.stage1Synthesis.timeline.slice(0, 3),
       evidenceFeatures: {
-        confirmedFailures: thread.stage1Synthesis.evidenceFeatures.confirmedFailures.slice(0, 4),
-        marginalSignals: thread.stage1Synthesis.evidenceFeatures.marginalSignals.slice(0, 4),
-        traceHighlights: thread.stage1Synthesis.evidenceFeatures.traceHighlights.slice(0, 4),
-        serviceSignals: thread.stage1Synthesis.evidenceFeatures.serviceSignals.slice(0, 4),
-        contradictions: thread.stage1Synthesis.evidenceFeatures.contradictions.slice(0, 3),
+        confirmedFailures: thread.stage1Synthesis.evidenceFeatures.confirmedFailures.slice(0, 3),
+        marginalSignals: thread.stage1Synthesis.evidenceFeatures.marginalSignals.slice(0, 3),
+        traceHighlights: thread.stage1Synthesis.evidenceFeatures.traceHighlights.slice(0, 3),
+        serviceSignals: thread.stage1Synthesis.evidenceFeatures.serviceSignals.slice(0, 2),
+        contradictions: thread.stage1Synthesis.evidenceFeatures.contradictions.slice(0, 2),
       },
-      suspiciousPatterns: thread.stage1Synthesis.suspiciousPatterns.slice(0, 4),
-      possibleNoiseFlags: thread.stage1Synthesis.possibleNoiseFlags.slice(0, 4),
-      openQuestions: thread.stage1Synthesis.openQuestions.slice(0, 4),
+      suspiciousPatterns: thread.stage1Synthesis.suspiciousPatterns.slice(0, 3),
+      possibleNoiseFlags: thread.stage1Synthesis.possibleNoiseFlags.slice(0, 3),
+      openQuestions: thread.stage1Synthesis.openQuestions.slice(0, 2),
     },
     strongestMechanismAnchors: {
-      signalTypesPresent: thread.summaryFeatures.signalTypesPresent.slice(0, 6),
-      defectCodesPresent: thread.summaryFeatures.defectCodesPresent.slice(0, 8),
-      testKeysMarginalFail: thread.summaryFeatures.testKeysMarginalFail.slice(0, 8),
-      reportedPartNumbers: thread.summaryFeatures.reportedPartNumbers.slice(0, 8),
-      bomFindNumbers: thread.summaryFeatures.bomFindNumbers.slice(0, 8),
-      supplierBatches: thread.summaryFeatures.supplierBatches.slice(0, 8),
-      sectionsSeen: thread.summaryFeatures.sectionsSeen.slice(0, 8),
+      signalTypesPresent: thread.summaryFeatures.signalTypesPresent.slice(0, 5),
+      defectCodesPresent: thread.summaryFeatures.defectCodesPresent.slice(0, 5),
+      testKeysMarginalFail: thread.summaryFeatures.testKeysMarginalFail.slice(0, 5),
+      reportedPartNumbers: thread.summaryFeatures.reportedPartNumbers.slice(0, 5),
+      bomFindNumbers: thread.summaryFeatures.bomFindNumbers.slice(0, 5),
+      supplierBatches: thread.summaryFeatures.supplierBatches.slice(0, 5),
+      sectionsSeen: thread.summaryFeatures.sectionsSeen.slice(0, 5),
       ordersSeen: thread.summaryFeatures.ordersSeen.slice(0, 4),
     },
     traceabilityAnchors: {
-      dominantInstalledParts:
-        thread.mechanismEvidence.traceabilityEvidence.dominantInstalledParts.slice(0, 4),
-      dominantBomPositions:
-        thread.mechanismEvidence.traceabilityEvidence.dominantBomPositions.slice(0, 4),
-      dominantSupplierBatches:
-        thread.mechanismEvidence.traceabilityEvidence.dominantSupplierBatches.slice(0, 4),
-      dominantSuppliers:
-        thread.mechanismEvidence.traceabilityEvidence.dominantSuppliers.slice(0, 4),
+      dominantInstalledParts: toCompactAnchorRows(
+        thread.mechanismEvidence.traceabilityEvidence.dominantInstalledParts,
+        3,
+      ),
+      dominantBomPositions: toCompactAnchorRows(
+        thread.mechanismEvidence.traceabilityEvidence.dominantBomPositions,
+        3,
+      ),
+      dominantSupplierBatches: toCompactAnchorRows(
+        thread.mechanismEvidence.traceabilityEvidence.dominantSupplierBatches,
+        3,
+      ),
+      dominantSuppliers: toCompactAnchorRows(
+        thread.mechanismEvidence.traceabilityEvidence.dominantSuppliers,
+        2,
+      ),
       productAnchorCandidates:
         thread.mechanismEvidence.traceabilityEvidence.productAnchorCandidates
-          .slice(0, 3)
+          .slice(0, 2)
           .map((item) => ({
             anchorType: item.anchorType,
             anchorValue: item.anchorValue,
-            reason: trimPreview(item.reason, 120),
+            reason: trimPreview(item.reason, 80),
           })),
       partBatchAnchors: thread.mechanismEvidence.traceabilityEvidence.partBatchAnchors
-        .slice(0, 3)
+        .slice(0, 2)
         .map((item) => ({
           anchorValue: item.anchorValue,
           partNumber: item.partNumber,
           batchRef: item.batchRef,
           relatedProductCount: item.relatedProductCount,
-          bomPositions: item.bomPositions.slice(0, 4),
-          suppliers: item.suppliers.slice(0, 4),
         })),
-      dominantTraceAnchors:
-        thread.mechanismEvidence.traceabilityEvidence.dominantTraceAnchors.slice(0, 4),
-      traceabilityNeighborhood:
+      dominantTraceAnchors: thread.mechanismEvidence.traceabilityEvidence.dominantTraceAnchors.slice(
+        0,
+        4,
+      ),
+      neighborhoodHints:
         thread.mechanismEvidence.traceabilityEvidence.traceabilityNeighborhood
-          .slice(0, 3)
-          .map((item) => ({
-            productId: item.productId,
-            orderId: item.orderId,
-            buildTs: item.buildTs,
-            matchedInstallCount: item.matchedInstallCount,
-            sharedAnchorTypes: item.sharedAnchorTypes,
-            sharedAnchorValues: item.sharedAnchorValues.slice(0, 4),
-            sharedPartNumbers: item.sharedPartNumbers.slice(0, 4),
-            sharedFindNumbers: item.sharedFindNumbers.slice(0, 4),
-            sharedBatchNumbers: item.sharedBatchNumbers.slice(0, 4),
-          })),
+          .slice(0, 2)
+          .map(
+            (item) =>
+              `${item.productId} shares ${item.sharedAnchorTypes.join("/")} anchors ${item.sharedAnchorValues
+                .slice(0, 2)
+                .join(", ")}.`,
+          ),
       anchorSpecificity: thread.mechanismEvidence.traceabilityEvidence.anchorSpecificity
-        .slice(0, 4)
-        .map((item) => ({
-          anchorType: item.anchorType,
-          anchorValue: item.anchorValue,
-          specificity: item.specificity,
-          relatedProductCount: item.relatedProductCount,
-          reason: trimPreview(item.reason, 120),
-        })),
-      cooccurringAnchorBundles:
+        .slice(0, 3)
+        .map(
+          (item) =>
+            `${item.anchorType}:${item.anchorValue} is ${item.specificity} across ${item.relatedProductCount} products.`,
+        ),
+      cooccurringBundles:
         thread.mechanismEvidence.traceabilityEvidence.cooccurringAnchorBundles
-          .slice(0, 3)
-          .map((item) => ({
-            bundleKey: item.bundleKey,
-            partNumbers: item.partNumbers,
-            batchRefs: item.batchRefs,
-            bomPositions: item.bomPositions,
-            relatedProductCount: item.relatedProductCount,
-            reason: trimPreview(item.reason, 120),
-          })),
-      blastRadiusHints:
-        thread.mechanismEvidence.traceabilityEvidence.blastRadiusHints.slice(0, 2).map((item) => ({
-          anchorType: item.anchorType,
-          anchorValue: item.anchorValue,
-          relatedProductCount: item.relatedProductCount,
-          sharedPartNumbers: item.sharedPartNumbers.slice(0, 4),
-          sharedBomPositions: item.sharedBomPositions.slice(0, 4),
-          sharedSupplierBatches: item.sharedSupplierBatches.slice(0, 4),
-        })),
-      blastRadiusSuspects:
-        thread.mechanismEvidence.traceabilityEvidence.blastRadiusSuspects
           .slice(0, 2)
           .map((item) => ({
-            anchorType: item.anchorType,
-            anchorValue: item.anchorValue,
-            partNumber: item.partNumber,
-            batchNumber: item.batchNumber,
-            affectedProductCount: item.affectedProductCount,
-            concentrationRatio: item.concentrationRatio,
-            reason: trimPreview(item.reason, 120),
+            bundleKey: item.bundleKey,
+            relatedProductCount: item.relatedProductCount,
           })),
-      batchConcentrationHints:
-        thread.mechanismEvidence.traceabilityEvidence.batchConcentrationHints.slice(0, 3),
-      traceabilityConcentrationHints:
-        thread.mechanismEvidence.traceabilityEvidence.traceabilityConcentrationHints.slice(0, 4),
+      broadAnchorWarnings: [
+        ...thread.mechanismEvidence.traceabilityEvidence.blastRadiusHints
+          .slice(0, 1)
+          .map(
+            (item) =>
+              `${item.anchorType}:${item.anchorValue} reaches ${item.relatedProductCount} products (ratio ${item.concentrationRatio.toFixed(2)}).`,
+          ),
+        thread.mechanismEvidence.traceabilityEvidence.blastRadiusSuspects
+          .slice(0, 1)
+          .map(
+            (item) =>
+              `${item.anchorType}:${item.anchorValue} may be broad blast radius over ${item.affectedProductCount} products.`,
+          ),
+      ],
+      batchConcentrationHints: thread.mechanismEvidence.traceabilityEvidence.batchConcentrationHints
+        .slice(0, 2)
+        .map((item) => ({
+          batchRef: item.batchRef,
+          productCount: item.productIds.length,
+          partNumbers: item.partNumbers.slice(0, 2),
+          suppliers: item.supplierNames.slice(0, 2),
+        })),
+      traceabilityConcentrationHints: thread.mechanismEvidence.traceabilityEvidence.traceabilityConcentrationHints.slice(
+        0,
+        3,
+      ),
     },
     temporalProcessAnchors: {
       buildWeek: thread.mechanismEvidence.temporalProcessEvidence.buildWeek,
@@ -3451,45 +3399,45 @@ function toStage2ProductClusterCard(thread: ClusteredProductDossier) {
       lastFactorySignalWeek:
         thread.mechanismEvidence.temporalProcessEvidence.lastFactorySignalWeek,
       dominantOccurrenceSections:
-        thread.mechanismEvidence.temporalProcessEvidence.dominantOccurrenceSections.slice(0, 4),
+        thread.mechanismEvidence.temporalProcessEvidence.dominantOccurrenceSections.slice(0, 3),
       dominantDetectedSections:
-        thread.mechanismEvidence.temporalProcessEvidence.dominantDetectedSections.slice(0, 4),
+        thread.mechanismEvidence.temporalProcessEvidence.dominantDetectedSections.slice(0, 3),
       dominantTestResults:
         thread.mechanismEvidence.temporalProcessEvidence.dominantTestResults.slice(0, 2),
       occurrenceDetectedMismatch:
         thread.mechanismEvidence.temporalProcessEvidence.occurrenceDetectedMismatch,
       temporalBurstHints:
-        thread.mechanismEvidence.temporalProcessEvidence.temporalBurstHints.slice(0, 4),
+        thread.mechanismEvidence.temporalProcessEvidence.temporalBurstHints.slice(0, 3),
       postWindowQuietHints:
-        thread.mechanismEvidence.temporalProcessEvidence.postWindowQuietHints.slice(0, 3),
+        thread.mechanismEvidence.temporalProcessEvidence.postWindowQuietHints.slice(0, 2),
       temporalContainmentHints:
-        thread.mechanismEvidence.temporalProcessEvidence.temporalContainmentHints.slice(0, 4),
+        thread.mechanismEvidence.temporalProcessEvidence.temporalContainmentHints.slice(0, 3),
       marginalVsFailHints:
-        thread.mechanismEvidence.temporalProcessEvidence.marginalVsFailHints.slice(0, 4),
+        thread.mechanismEvidence.temporalProcessEvidence.marginalVsFailHints.slice(0, 3),
     },
     fieldLeakAnchors: {
       claimOnlyThread: thread.mechanismEvidence.fieldLeakEvidence.claimOnlyThread,
       hasPriorFactoryDefect: thread.mechanismEvidence.fieldLeakEvidence.hasPriorFactoryDefect,
       claimLagBucket: thread.mechanismEvidence.fieldLeakEvidence.claimLagBucket,
       buildToClaimDays:
-        thread.mechanismEvidence.fieldLeakEvidence.buildToClaimDays.slice(0, 6),
+        thread.mechanismEvidence.fieldLeakEvidence.buildToClaimDays.slice(0, 4),
       claimLagStats: thread.mechanismEvidence.fieldLeakEvidence.claimLagStats,
       dominantClaimReportedParts:
-        thread.mechanismEvidence.fieldLeakEvidence.dominantClaimReportedParts.slice(0, 4),
+        thread.mechanismEvidence.fieldLeakEvidence.dominantClaimReportedParts.slice(0, 3),
       dominantClaimBomPositions:
-        thread.mechanismEvidence.fieldLeakEvidence.dominantClaimBomPositions.slice(0, 4),
+        thread.mechanismEvidence.fieldLeakEvidence.dominantClaimBomPositions.slice(0, 3),
       latentFailureHints:
-        thread.mechanismEvidence.fieldLeakEvidence.latentFailureHints.slice(0, 4),
+        thread.mechanismEvidence.fieldLeakEvidence.latentFailureHints.slice(0, 3),
     },
     operatorHandlingAnchors: {
       dominantReworkUsers:
-        thread.mechanismEvidence.operatorHandlingEvidence.dominantReworkUsers.slice(0, 4),
+        thread.mechanismEvidence.operatorHandlingEvidence.dominantReworkUsers.slice(0, 3),
       orderClusterHints:
-        thread.mechanismEvidence.operatorHandlingEvidence.orderClusterHints.slice(0, 4),
+        thread.mechanismEvidence.operatorHandlingEvidence.orderClusterHints.slice(0, 3),
       userConcentrationHints:
-        thread.mechanismEvidence.operatorHandlingEvidence.userConcentrationHints.slice(0, 4),
+        thread.mechanismEvidence.operatorHandlingEvidence.userConcentrationHints.slice(0, 3),
       handlingPatternHints:
-        thread.mechanismEvidence.operatorHandlingEvidence.handlingPatternHints.slice(0, 4),
+        thread.mechanismEvidence.operatorHandlingEvidence.handlingPatternHints.slice(0, 3),
       fieldImpactPresent:
         thread.mechanismEvidence.operatorHandlingEvidence.fieldImpactPresent,
       lowSeverityOnly: thread.mechanismEvidence.operatorHandlingEvidence.lowSeverityOnly,
@@ -3497,18 +3445,18 @@ function toStage2ProductClusterCard(thread: ClusteredProductDossier) {
         thread.mechanismEvidence.operatorHandlingEvidence.cosmeticOnlySignals,
     },
     confounders: {
-      falsePositiveMarkers: thread.summaryFeatures.falsePositiveMarkers.slice(0, 4),
+      falsePositiveMarkers: thread.summaryFeatures.falsePositiveMarkers.slice(0, 3),
       marginalOnlySignals: thread.mechanismEvidence.confounderEvidence.marginalOnlySignals,
       detectionBiasRisk:
-        thread.mechanismEvidence.confounderEvidence.detectionBiasRisk.slice(0, 4),
+        thread.mechanismEvidence.confounderEvidence.detectionBiasRisk.slice(0, 3),
       lowVolumePeriodRisk:
-        thread.mechanismEvidence.confounderEvidence.lowVolumePeriodRisk.slice(0, 4),
+        thread.mechanismEvidence.confounderEvidence.lowVolumePeriodRisk.slice(0, 3),
       mixedServiceDocumentationSignals:
-        thread.mechanismEvidence.confounderEvidence.mixedServiceDocumentationSignals.slice(0, 4),
+        thread.mechanismEvidence.confounderEvidence.mixedServiceDocumentationSignals.slice(0, 3),
       nearLimitTestSignals:
-        thread.mechanismEvidence.confounderEvidence.nearLimitTestSignals.slice(0, 4),
+        thread.mechanismEvidence.confounderEvidence.nearLimitTestSignals.slice(0, 3),
     },
-    diagnosticTimelineEvents: collectDiagnosticTimelineEvents(thread),
+    diagnosticTimelineEvents: collectDiagnosticTimelineEvents(thread).slice(0, 3),
     rawEvidenceSnippets: collectRawEvidenceSnippets(thread),
   };
 }
@@ -3518,27 +3466,87 @@ function buildStage2ArticleContext(dossier: ClusteredArticleDossier) {
     article: dossier.article,
     articleSummary: {
       sourceCounts: dossier.articleSummary.sourceCounts,
-      topDefectCodes: dossier.articleSummary.topDefectCodes.slice(0, 6),
-      topReportedParts: dossier.articleSummary.topReportedParts.slice(0, 6),
-      topBomPositions: dossier.articleSummary.topBomPositions.slice(0, 6),
-      topSections: dossier.articleSummary.topSections.slice(0, 6),
-      topSupplierBatches: dossier.articleSummary.topSupplierBatches.slice(0, 6),
-      topProductionOrders: dossier.articleSummary.topProductionOrders.slice(0, 6),
-      fieldClaimOnlyPatterns: dossier.articleSummary.fieldClaimOnlyPatterns.slice(0, 6),
-      testHotspots: dossier.articleSummary.testHotspots.slice(0, 6),
+      topDefectCodes: toCompactArticleSummaryRows(dossier.articleSummary.topDefectCodes, 4),
+      topReportedParts: toCompactArticleSummaryRows(dossier.articleSummary.topReportedParts, 4),
+      topBomPositions: toCompactArticleSummaryRows(dossier.articleSummary.topBomPositions, 4),
+      topSections: toCompactArticleSummaryRows(dossier.articleSummary.topSections, 4),
+      topSupplierBatches: toCompactArticleSummaryRows(
+        dossier.articleSummary.topSupplierBatches,
+        4,
+      ),
+      topProductionOrders: toCompactArticleSummaryRows(
+        dossier.articleSummary.topProductionOrders,
+        4,
+      ),
+      fieldClaimOnlyPatterns: toCompactArticleLabelRows(
+        dossier.articleSummary.fieldClaimOnlyPatterns,
+        4,
+      ),
+      testHotspots: toCompactArticleLabelRows(dossier.articleSummary.testHotspots, 4),
     },
     crossProductSummaries: {
-      sharedSupplierBatches: dossier.crossProductSummaries.sharedSupplierBatches.slice(0, 6),
-      sharedReportedPartNumbers:
-        dossier.crossProductSummaries.sharedReportedPartNumbers.slice(0, 6),
-      sharedBomFindNumbers: dossier.crossProductSummaries.sharedBomFindNumbers.slice(0, 6),
-      similarClaimThemes: dossier.crossProductSummaries.similarClaimThemes.slice(0, 6),
-      sharedOrders: dossier.crossProductSummaries.sharedOrders.slice(0, 6),
-      sharedReworkUsers: dossier.crossProductSummaries.sharedReworkUsers.slice(0, 6),
-      sharedOccurrenceSections:
-        dossier.crossProductSummaries.sharedOccurrenceSections.slice(0, 6),
-      sharedSections: dossier.crossProductSummaries.sharedSections.slice(0, 6),
-      sharedTestHotspots: dossier.crossProductSummaries.sharedTestHotspots.slice(0, 6),
+      sharedSupplierBatches: dossier.crossProductSummaries.sharedSupplierBatches
+        .slice(0, 4)
+        .map((item) => ({
+          batchRef: item.batchRef,
+          count: item.count,
+          productCount: item.productIds.length,
+          supplierNames: item.supplierNames.slice(0, 2),
+          partNumbers: item.partNumbers.slice(0, 2),
+        })),
+      sharedReportedPartNumbers: dossier.crossProductSummaries.sharedReportedPartNumbers
+        .slice(0, 4)
+        .map((item) => ({
+          partNumber: item.partNumber,
+          count: item.count,
+          productCount: item.productIds.length,
+        })),
+      sharedBomFindNumbers: dossier.crossProductSummaries.sharedBomFindNumbers
+        .slice(0, 4)
+        .map((item) => ({
+          findNumber: item.findNumber,
+          count: item.count,
+          productCount: item.productIds.length,
+          partNumbers: item.partNumbers.slice(0, 2),
+        })),
+      similarClaimThemes: dossier.crossProductSummaries.similarClaimThemes
+        .slice(0, 4)
+        .map((item) => ({
+          keyword: item.keyword,
+          count: item.count,
+          productCount: item.productIds.length,
+        })),
+      sharedOrders: dossier.crossProductSummaries.sharedOrders.slice(0, 4).map((item) => ({
+        orderId: item.orderId,
+        count: item.count,
+        productCount: item.productIds.length,
+      })),
+      sharedReworkUsers: dossier.crossProductSummaries.sharedReworkUsers
+        .slice(0, 4)
+        .map((item) => ({
+          userId: item.userId,
+          count: item.count,
+          productCount: item.productIds.length,
+        })),
+      sharedOccurrenceSections: dossier.crossProductSummaries.sharedOccurrenceSections
+        .slice(0, 4)
+        .map((item) => ({
+          section: item.section,
+          count: item.count,
+          productCount: item.productIds.length,
+        })),
+      sharedSections: dossier.crossProductSummaries.sharedSections.slice(0, 4).map((item) => ({
+        section: item.section,
+        count: item.count,
+        productCount: item.productIds.length,
+      })),
+      sharedTestHotspots: dossier.crossProductSummaries.sharedTestHotspots
+        .slice(0, 4)
+        .map((item) => ({
+          testKey: item.testKey,
+          count: item.count,
+          productCount: item.productIds.length,
+        })),
     },
   };
 }
@@ -4540,44 +4548,6 @@ async function generateStructuredObject<TSchema extends z.ZodTypeAny>(input: {
   abortSignal?: AbortSignal;
 }) {
   const openai = getOpenAiClient();
-  let lastError: unknown = null;
-
-  const repairViaText = async () => {
-    const resolvedSchema = await asSchema(input.schema).jsonSchema;
-    const repairResult = await generateText({
-      model: openai.responses(env.OPENAI_MODEL),
-      system: [
-        input.system,
-        "",
-        "Your previous answer could not be parsed as valid structured output.",
-        "Return exactly one valid JSON value and nothing else.",
-        "Do not use markdown code fences.",
-        "Every required field in the JSON schema must be present.",
-        "Use empty arrays instead of omitting array fields.",
-        "Use null only where the schema allows null.",
-      ].join("\n"),
-      prompt: [
-        input.prompt,
-        "",
-        `Return one valid JSON value matching this JSON schema for ${input.schemaName}:`,
-        stringifyUnicodeSafe(resolvedSchema),
-      ].join("\n"),
-      maxOutputTokens: input.maxOutputTokens ?? undefined,
-      abortSignal: input.abortSignal,
-      providerOptions: {
-        openai: {
-          reasoningEffort: input.reasoningEffort === "xhigh" ? "high" : input.reasoningEffort,
-          store: false,
-          textVerbosity: "low",
-        },
-      },
-    });
-
-    const rawText = sanitizeUnicodeForJson(repairResult.text);
-    const candidate = extractJsonCandidate(rawText);
-    const parsedJson = JSON.parse(candidate);
-    return input.schema.parse(parsedJson) as z.infer<TSchema>;
-  };
 
   logModelCallMetrics({
     stageName: input.stageName,
@@ -4591,61 +4561,27 @@ async function generateStructuredObject<TSchema extends z.ZodTypeAny>(input: {
     maxOutputTokens: input.maxOutputTokens,
   });
 
-  for (let attempt = 1; attempt <= MODEL_CALL_MAX_ATTEMPTS; attempt += 1) {
-    throwIfPipelineAborted(input.abortSignal);
-
-    try {
-      const result = await generateObject({
-        model: openai.responses(env.OPENAI_MODEL),
-        schema: input.schema,
-        schemaName: input.schemaName,
-        schemaDescription: input.schemaDescription,
-        system: input.system,
-        prompt: input.prompt,
-        maxOutputTokens: input.maxOutputTokens ?? undefined,
-        abortSignal: input.abortSignal,
-        providerOptions: {
-          openai: {
-            reasoningEffort: input.reasoningEffort,
-            store: false,
-            textVerbosity: "low",
-          },
-        },
-      });
-
-      return result.object as z.infer<TSchema>;
-    } catch (error) {
-      lastError = error;
-
-      if (isPipelineStopError(error)) {
-        throw createPipelineStopError(
-          error instanceof Error ? error.message : STOPPED_PIPELINE_MESSAGE,
-        );
-      }
-
-      if (isStructuredParseError(error)) {
-        try {
-          return await repairViaText();
-        } catch (repairError) {
-          lastError = repairError;
-        }
-      }
-
-      if (!isRetryableModelError(error) || attempt >= MODEL_CALL_MAX_ATTEMPTS) {
-        throw lastError instanceof Error ? lastError : error;
-      }
-
-      const retryError = lastError ?? error;
-      const message = retryError instanceof Error ? retryError.message : String(retryError);
-      const hintedDelayMs = extractRetryDelayMs(message);
-      const fallbackDelayMs = Math.min(12_000, 1_250 * 2 ** (attempt - 1));
-      const jitterMs = Math.floor(Math.random() * 600);
-
-      await sleep((hintedDelayMs ?? fallbackDelayMs) + jitterMs, input.abortSignal);
-    }
-  }
-
-  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  return generateStructuredObjectWithRepair({
+    model: openai.responses(env.OPENAI_MODEL),
+    schema: input.schema,
+    schemaName: input.schemaName,
+    schemaDescription: input.schemaDescription,
+    system: input.system,
+    prompt: input.prompt,
+    maxOutputTokens: input.maxOutputTokens,
+    abortSignal: input.abortSignal,
+    abortMessage: STOPPED_PIPELINE_MESSAGE,
+    createAbortError: createPipelineStopError,
+    isStopError: isPipelineStopError,
+    maxAttempts: MODEL_CALL_MAX_ATTEMPTS,
+    providerOptions: {
+      openai: {
+        reasoningEffort: input.reasoningEffort,
+        store: false,
+        textVerbosity: "low",
+      },
+    },
+  });
 }
 
 async function generateProductThreadSynthesis(input: {
@@ -5172,12 +5108,24 @@ function buildArticleCaseSetSummary(input: {
     signalCount: input.dossier.article.totalSignals,
     clusteringNotes: input.stage2.reviewSummary,
     articleSummary: {
-      topDefectCodes: input.dossier.articleSummary.topDefectCodes.slice(0, 5),
-      topReportedParts: input.dossier.articleSummary.topReportedParts.slice(0, 5),
-      topBomPositions: input.dossier.articleSummary.topBomPositions.slice(0, 5),
-      topSupplierBatches: input.dossier.articleSummary.topSupplierBatches.slice(0, 5),
-      topSections: input.dossier.articleSummary.topSections.slice(0, 5),
-      fieldClaimOnlyPatterns: input.dossier.articleSummary.fieldClaimOnlyPatterns.slice(0, 5),
+      topDefectCodes: toCompactArticleSummaryRows(input.dossier.articleSummary.topDefectCodes, 4),
+      topReportedParts: toCompactArticleSummaryRows(
+        input.dossier.articleSummary.topReportedParts,
+        4,
+      ),
+      topBomPositions: toCompactArticleSummaryRows(
+        input.dossier.articleSummary.topBomPositions,
+        4,
+      ),
+      topSupplierBatches: toCompactArticleSummaryRows(
+        input.dossier.articleSummary.topSupplierBatches,
+        4,
+      ),
+      topSections: toCompactArticleSummaryRows(input.dossier.articleSummary.topSections, 4),
+      fieldClaimOnlyPatterns: toCompactArticleLabelRows(
+        input.dossier.articleSummary.fieldClaimOnlyPatterns,
+        4,
+      ),
     },
     proposedCases: input.candidates.map((candidate) => {
       const proposal =
@@ -5267,7 +5215,11 @@ function buildGlobalReconciliationContext(input: {
       (item) => item.productId,
     ),
     10,
-  );
+  ).map((entry) => ({
+    section: entry.value,
+    count: entry.count,
+    productCount: entry.productIds.length,
+  }));
 
   const occurrenceSectionDistribution = topEntries(
     bucketCounts(
@@ -5279,7 +5231,11 @@ function buildGlobalReconciliationContext(input: {
       (item) => item.productId,
     ),
     10,
-  );
+  ).map((entry) => ({
+    section: entry.value,
+    count: entry.count,
+    productCount: entry.productIds.length,
+  }));
 
   const falsePositivePool = productThreads
     .filter((thread) => thread.summaryFeatures.falsePositiveMarkers.length > 0)
@@ -5287,7 +5243,7 @@ function buildGlobalReconciliationContext(input: {
       productId: thread.productId,
       markers: thread.summaryFeatures.falsePositiveMarkers.slice(0, 3),
     }))
-    .slice(0, 20);
+    .slice(0, 12);
 
   const marginalOnlyPool = productThreads
     .filter(
@@ -5303,7 +5259,7 @@ function buildGlobalReconciliationContext(input: {
       testKeys: thread.summaryFeatures.testKeysMarginalFail.slice(0, 4),
       noiseFlags: thread.stage1Synthesis.possibleNoiseFlags.slice(0, 3),
     }))
-    .slice(0, 24);
+    .slice(0, 12);
 
   const testResultBandSummaries = topEntries(
     bucketCounts(
@@ -5313,7 +5269,12 @@ function buildGlobalReconciliationContext(input: {
       (item) => item.id,
     ),
     12,
-  );
+  ).map((entry) => ({
+    band: entry.value,
+    count: entry.count,
+    productCount: entry.productIds.length,
+    signalCount: entry.signalIds.length,
+  }));
 
   const claimLags = claims
     .map((item) => item.daysFromBuild)
@@ -5343,7 +5304,7 @@ function buildGlobalReconciliationContext(input: {
       marginalOnlyPool,
       volumeByWeek: [...weeklySummaryByWeek.entries()]
         .sort(([left], [right]) => left.localeCompare(right))
-        .slice(-16)
+        .slice(-12)
         .map(([weekStart, value]) => ({
           weekStart,
           ...value,

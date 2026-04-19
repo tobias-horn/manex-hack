@@ -21,6 +21,9 @@ app and non-runtime prompts that document repeatable repository workflows.
 - `manex-hypothesis-case-clustering.ts`
   Runtime prompts for the mechanism-family hypothesis engine that only uses the
   LLM after deterministic candidate formation.
+- `manex-investigate.ts`
+  Runtime prompt contract for the API-first statistical anomaly investigation
+  route that sends six SQL result tables directly to OpenAI.
 - `manex-copilot.ts`
   Runtime copilot system prompt and user prompt wrapper.
 - `manex-implementation-refactor.ts`

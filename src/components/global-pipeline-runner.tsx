@@ -51,6 +51,7 @@ type BatchStatus = {
   errorMessage: string | null;
   articleResults: BatchArticleResult[];
 };
+export type GlobalPipelineBatchStatus = BatchStatus;
 
 type ResetSummary =
   | {
@@ -71,6 +72,7 @@ type ResetStatus = {
   completedAt: string | null;
   summary: ResetSummary | null;
 };
+export type GlobalPipelineResetStatus = ResetStatus;
 
 type StatusPayload = {
   ok: boolean;
@@ -91,12 +93,16 @@ type FeedbackState = {
 type GlobalPipelineRunnerProps = {
   hasAi: boolean;
   initialActiveRuns: PipelineRunSummary[];
+  initialBatch?: BatchStatus;
+  initialReset?: ResetStatus;
   routePath: string;
   pipelineLabel: string;
   pipelineDescription: string;
   startButtonLabel: string;
   supportsStop?: boolean;
   derivedCountLabel?: string;
+  readOnly?: boolean;
+  readOnlyMessage?: string;
 };
 
 const stageLabels: Record<string, string> = {
@@ -144,12 +150,16 @@ const actionButtonClass =
 export function GlobalPipelineRunner({
   hasAi,
   initialActiveRuns,
+  initialBatch,
+  initialReset,
   routePath,
   pipelineLabel,
   pipelineDescription,
   startButtonLabel,
   supportsStop = false,
   derivedCountLabel = "issues",
+  readOnly = false,
+  readOnlyMessage,
 }: GlobalPipelineRunnerProps) {
   const router = useRouter();
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -160,23 +170,27 @@ export function GlobalPipelineRunner({
   const [stageCounts, setStageCounts] = useState<Record<string, number>>(
     buildInitialStageCounts(initialActiveRuns),
   );
-  const [batch, setBatch] = useState<BatchStatus>({
-    status: initialActiveRuns.length ? "running" : "idle",
-    requestedArticleIds: [],
-    totalArticleCount: 0,
-    startedAt: null,
-    completedAt: null,
-    lastUpdatedAt: null,
-    concurrency: null,
-    okCount: 0,
-    errorCount: 0,
-    errorMessage: null,
-    articleResults: [],
-  });
-  const [reset, setReset] = useState<ResetStatus>({
-    completedAt: null,
-    summary: null,
-  });
+  const [batch, setBatch] = useState<BatchStatus>(
+    initialBatch ?? {
+      status: initialActiveRuns.length ? "running" : "idle",
+      requestedArticleIds: [],
+      totalArticleCount: 0,
+      startedAt: null,
+      completedAt: null,
+      lastUpdatedAt: null,
+      concurrency: null,
+      okCount: 0,
+      errorCount: 0,
+      errorMessage: null,
+      articleResults: [],
+    },
+  );
+  const [reset, setReset] = useState<ResetStatus>(
+    initialReset ?? {
+      completedAt: null,
+      summary: null,
+    },
+  );
   const batchRef = useRef(batch);
 
   useEffect(() => {
@@ -184,11 +198,12 @@ export function GlobalPipelineRunner({
   }, [batch]);
 
   const shouldPoll =
-    batch.status === "running" ||
-    activeRuns.length > 0 ||
-    isSubmitting ||
-    isStopping ||
-    isResetting;
+    !readOnly &&
+    (batch.status === "running" ||
+      activeRuns.length > 0 ||
+      isSubmitting ||
+      isStopping ||
+      isResetting);
 
   const refreshStatus = useEffectEvent(async () => {
     const response = await fetch(routePath, {
@@ -406,22 +421,6 @@ export function GlobalPipelineRunner({
     ? Math.round((finishedArticleCount / totalArticleCount) * 100)
     : 0;
 
-  const headline = useMemo(() => {
-    if (batch.status === "running" || activeRuns.length > 0) {
-      return `${activeRuns.length} active article runs`;
-    }
-
-    if (batch.status === "completed") {
-      return `Last batch finished with ${batch.okCount} successful article runs`;
-    }
-
-    if (batch.status === "failed") {
-      return "Last batch finished with errors";
-    }
-
-    return "No full pipeline batch is running";
-  }, [activeRuns.length, batch.okCount, batch.status]);
-
   const progressCaption = useMemo(() => {
     if (batch.status === "running" || activeRuns.length > 0) {
       if (totalArticleCount) {
@@ -473,14 +472,6 @@ export function GlobalPipelineRunner({
           </div>
         </div>
 
-        <div className="mt-4 flex flex-wrap gap-2">
-          <Badge>{hasAi ? "GPT pipeline enabled" : "OpenAI key missing"}</Badge>
-          <Badge variant="outline">{headline}</Badge>
-          {totalArticleCount ? <Badge variant="outline">{totalArticleCount} articles</Badge> : null}
-          {batch.concurrency ? (
-            <Badge variant="outline">Concurrency {batch.concurrency}</Badge>
-          ) : null}
-        </div>
       </div>
 
       <div className="rounded-[28px] border border-white/10 bg-black/8 p-5">
@@ -530,98 +521,111 @@ export function GlobalPipelineRunner({
       </div>
 
       <div className="rounded-[28px] border border-white/10 bg-[color:var(--surface-low)] p-5">
-        <div className="space-y-1">
-          <div className="eyebrow">Controls</div>
-          <div className="text-base font-semibold">Start, stop, or clear generated pipeline state</div>
-          <p className="text-sm leading-6 text-[var(--muted-foreground)]">
-            Stop halts the active batch gracefully. Reset removes only persisted pipeline artifacts and leaves the source hackathon data untouched.
-          </p>
-        </div>
+        {readOnly ? (
+          <div className="space-y-3">
+            <div className="eyebrow">Seeded snapshot</div>
+            <div className="text-base font-semibold">Read-only completed batch</div>
+            <p className="text-sm leading-6 text-[var(--muted-foreground)]">
+              {readOnlyMessage ??
+                "This engine is intentionally static. It replays a finished dummy batch so the dashboard can be reviewed without mutating any live pipeline state."}
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="space-y-1">
+              <div className="eyebrow">Controls</div>
+              <div className="text-base font-semibold">Start, stop, or clear generated pipeline state</div>
+              <p className="text-sm leading-6 text-[var(--muted-foreground)]">
+                Stop halts the active batch gracefully. Reset removes only persisted pipeline artifacts and leaves the source hackathon data untouched.
+              </p>
+            </div>
 
-        <Button
-          size="lg"
-          onClick={runCompletePipeline}
-          disabled={
-            isSubmitting ||
-            isStopping ||
-            isResetting ||
-            batch.status === "running" ||
-            !hasAi
-          }
-          className={`mt-4 ${actionButtonClass}`}
-        >
-          {isSubmitting ? (
-            <>
-              <LoaderCircle className="size-4 animate-spin" />
-              Starting batch
-            </>
-          ) : batch.status === "running" ? (
-            <>
-              <LoaderCircle className="size-4 animate-spin" />
-              Batch running
-            </>
-          ) : (
-            <>
-              <Play className="size-4" />
-              {startButtonLabel}
-            </>
-          )}
-        </Button>
-
-        <div className="mt-3 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(160px,1fr))]">
-          {supportsStop ? (
             <Button
               size="lg"
-              variant="outline"
-              onClick={stopPipeline}
+              onClick={runCompletePipeline}
               disabled={
                 isSubmitting ||
-                isResetting ||
                 isStopping ||
-                (batch.status !== "running" && activeRuns.length === 0)
+                isResetting ||
+                batch.status === "running" ||
+                !hasAi
               }
-              className={actionButtonClass}
+              className={`mt-4 ${actionButtonClass}`}
             >
-              {isStopping ? (
+              {isSubmitting ? (
                 <>
                   <LoaderCircle className="size-4 animate-spin" />
-                  Stopping pipeline
+                  Starting batch
+                </>
+              ) : batch.status === "running" ? (
+                <>
+                  <LoaderCircle className="size-4 animate-spin" />
+                  Batch running
                 </>
               ) : (
                 <>
-                  <Square className="size-4" />
-                  Stop pipeline
+                  <Play className="size-4" />
+                  {startButtonLabel}
                 </>
               )}
             </Button>
-          ) : null}
 
-          <Button
-            size="lg"
-            variant="destructive"
-            onClick={resetClusteringState}
-            disabled={
-              isSubmitting ||
-              isStopping ||
-              isResetting ||
-              batch.status === "running" ||
-              activeRuns.length > 0
-            }
-            className={actionButtonClass}
-          >
-            {isResetting ? (
-              <>
-                <LoaderCircle className="size-4 animate-spin" />
-                Resetting clustering state
-              </>
-            ) : (
-              <>
-                <Trash2 className="size-4" />
-                Reset clustering state
-              </>
-            )}
-          </Button>
-        </div>
+            <div className="mt-3 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(160px,1fr))]">
+              {supportsStop ? (
+                <Button
+                  size="lg"
+                  variant="outline"
+                  onClick={stopPipeline}
+                  disabled={
+                    isSubmitting ||
+                    isResetting ||
+                    isStopping ||
+                    (batch.status !== "running" && activeRuns.length === 0)
+                  }
+                  className={actionButtonClass}
+                >
+                  {isStopping ? (
+                    <>
+                      <LoaderCircle className="size-4 animate-spin" />
+                      Stopping pipeline
+                    </>
+                  ) : (
+                    <>
+                      <Square className="size-4" />
+                      Stop pipeline
+                    </>
+                  )}
+                </Button>
+              ) : null}
+
+              <Button
+                size="lg"
+                variant="destructive"
+                onClick={resetClusteringState}
+                disabled={
+                  isSubmitting ||
+                  isStopping ||
+                  isResetting ||
+                  batch.status === "running" ||
+                  activeRuns.length > 0
+                }
+                className={actionButtonClass}
+              >
+                {isResetting ? (
+                  <>
+                    <LoaderCircle className="size-4 animate-spin" />
+                    Resetting clustering state
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="size-4" />
+                    Reset clustering state
+                  </>
+                )}
+              </Button>
+            </div>
+          </>
+        )}
       </div>
 
       {activeRuns.length ? (

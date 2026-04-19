@@ -22,12 +22,12 @@ export function ClusteringPipelineToggle({
       <div className="flex flex-wrap items-center gap-2">
         <Badge variant="outline">Investigation engine</Badge>
         <div className="text-sm leading-6 text-[var(--muted-foreground)]">
-          Switch the app surface between the three investigation engines without
+          Switch the app surface between the available investigation engines without
           leaving the current workspace.
         </div>
       </div>
 
-      <div className="mt-3 grid gap-3 md:grid-cols-3">
+      <div className="mt-3 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(220px,1fr))]">
         {items.map((item) => {
           const isActive = item.mode === currentMode;
 

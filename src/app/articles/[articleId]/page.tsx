@@ -1,37 +1,26 @@
-import {
-  AlertTriangle,
-  ArrowLeft,
-  Boxes,
-  CircleOff,
-  Link2,
-  Sparkles,
-} from "lucide-react";
+import { ArrowLeft, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { ArticleClusterRunner } from "@/components/article-cluster-runner";
+import { ArticleHypothesisBoard } from "@/components/article-hypothesis-board";
 import { ClusteringPipelineToggle } from "@/components/clustering-pipeline-toggle";
-import { ProductActionPanel } from "@/components/product-action-panel";
-import { QualitySignalImage } from "@/components/quality-signal-image";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+  buildArticleHypothesisBoardViewModel,
+  type ArticleHypothesisBoardCaseboard,
+} from "@/lib/article-hypothesis-view";
+import { listArticleHypothesisReviews } from "@/lib/article-hypothesis-review-state";
 import { capabilities } from "@/lib/env";
 import { getArticleCaseboard } from "@/lib/manex-case-clustering";
+import { getDummyArticleCaseboard } from "@/lib/manex-dummy-clustering";
 import {
   buildClusteringModeHref,
   parseClusteringMode,
 } from "@/lib/manex-clustering-mode";
 import { getDeterministicArticleCaseboard } from "@/lib/manex-deterministic-case-clustering";
 import { getHypothesisArticleCaseboard } from "@/lib/manex-hypothesis-case-clustering";
-import type { Initiative } from "@/lib/quality-workspace";
-import { formatUiDateTime } from "@/lib/ui-format";
+import { getInvestigateArticleCaseboard } from "@/lib/manex-investigate";
 
 export const dynamic = "force-dynamic";
 
@@ -40,108 +29,31 @@ type ArticleCaseboardPageProps = {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 };
 
-const signalTone = {
-  defect: "bg-[color:rgba(0,92,151,0.1)] text-[var(--primary)]",
-  field_claim: "bg-[color:rgba(178,69,63,0.1)] text-[var(--destructive)]",
-  bad_test: "bg-[color:rgba(178,69,63,0.12)] text-[var(--destructive)]",
-  marginal_test: "bg-[color:rgba(208,141,37,0.14)] text-[var(--warning-foreground)]",
-};
-
-function uniqueStrings(values: Array<string | null | undefined>) {
-  return Array.from(
-    new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value))),
-  );
-}
-
 function normalizeQueryValue(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] : value;
 }
 
-function getSuspectedMechanism(candidate: Record<string, unknown> | null) {
-  if (typeof candidate?.suspectedCommonRootCause === "string") {
-    return candidate.suspectedCommonRootCause;
+async function loadCaseboard(
+  articleId: string,
+  mode: ReturnType<typeof parseClusteringMode>,
+): Promise<ArticleHypothesisBoardCaseboard | null> {
+  if (mode === "dummy") {
+    return getDummyArticleCaseboard(articleId);
   }
 
-  return "Deterministic grouping kept this case together because multiple bounded product issue cards reused the same anchors, evidence phrases, and fingerprint tokens across the article.";
-}
-
-function getConflictingEvidence(candidate: Record<string, unknown> | null) {
-  return Array.isArray(candidate?.conflictingEvidence)
-    ? candidate.conflictingEvidence.filter((item): item is string => typeof item === "string")
-    : [];
-}
-
-function getSuggestedActionType(candidate: Record<string, unknown> | null) {
-  if (
-    candidate?.payload &&
-    typeof candidate.payload === "object" &&
-    typeof (candidate.payload as { recommendedActionType?: unknown }).recommendedActionType ===
-      "string"
-  ) {
-    return (candidate.payload as { recommendedActionType: string }).recommendedActionType;
+  if (mode === "deterministic") {
+    return getDeterministicArticleCaseboard(articleId);
   }
 
-  return "supplier_containment";
-}
-
-function getSuggestedActionComment(candidate: Record<string, unknown> | null) {
-  if (!candidate) {
-    return "Contain the signal, attach traceability evidence, and assign an owner for the next verification step.";
+  if (mode === "hypothesis") {
+    return getHypothesisArticleCaseboard(articleId);
   }
 
-  const title = typeof candidate.title === "string" ? candidate.title : "Selected investigation";
-  const evidence = Array.isArray(candidate.strongestEvidence)
-    ? candidate.strongestEvidence.filter((item): item is string => typeof item === "string").slice(0, 2)
-    : [];
+  if (mode === "investigate") {
+    return getInvestigateArticleCaseboard(articleId);
+  }
 
-  return `${title}: ${evidence.join(" ")} Capture the owner, containment step, and verification exit criteria.`;
-}
-
-function mapActionsToFeed(
-  actions: Array<{
-    id: string;
-    productId: string;
-    defectId: string | null;
-    actionType: string;
-    status: string;
-    comments: string;
-    recordedAt: string;
-  }>,
-): Initiative[] {
-  return actions.map((action) => ({
-    id: action.id,
-    productId: action.productId,
-    defectId: action.defectId,
-    actionType: action.actionType,
-    status: action.status,
-    comments: action.comments || "No notes attached.",
-    timestamp: formatUiDateTime(action.recordedAt),
-  }));
-}
-
-function TopChips({
-  title,
-  items,
-}: {
-  title: string;
-  items: string[];
-}) {
-  return (
-    <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-      <div className="eyebrow">{title}</div>
-      <div className="mt-3 flex flex-wrap gap-2">
-        {items.length ? (
-          items.map((item) => (
-            <Badge key={item} variant="secondary">
-              {item}
-            </Badge>
-          ))
-        ) : (
-          <p className="text-sm leading-6 text-[var(--muted-foreground)]">Nothing dominant yet.</p>
-        )}
-      </div>
-    </div>
-  );
+  return getArticleCaseboard(articleId);
 }
 
 export default async function ArticleCaseboardPage({
@@ -150,87 +62,24 @@ export default async function ArticleCaseboardPage({
 }: ArticleCaseboardPageProps) {
   const { articleId } = await params;
   const search = await searchParams;
-  const selectedCaseId = normalizeQueryValue(search.case);
+  const selectedCaseId = normalizeQueryValue(search.case) ?? null;
   const mode = parseClusteringMode(search.pipeline);
-  const caseboard =
-    mode === "deterministic"
-      ? await getDeterministicArticleCaseboard(articleId)
-      : mode === "hypothesis"
-        ? await getHypothesisArticleCaseboard(articleId)
-      : await getArticleCaseboard(articleId);
+  const caseboard = await loadCaseboard(articleId, mode);
 
   if (!caseboard) {
     notFound();
   }
 
-  const dossier = caseboard.dossier;
-  const proposedCases = caseboard.proposedCases;
-  const selectedCase =
-    proposedCases.find((candidate) => candidate.id === selectedCaseId) ??
-    proposedCases[0] ??
-    null;
-  const selectedThreads =
-    selectedCase && dossier
-      ? dossier.productThreads.filter((thread) =>
-          selectedCase.includedProductIds.includes(thread.productId),
-        )
-      : dossier?.productThreads.filter((thread) => thread.signals.length > 0).slice(0, 3) ?? [];
+  const reviews = capabilities.hasPostgres
+    ? await listArticleHypothesisReviews(caseboard.articleId, mode)
+    : [];
+  const viewModel = buildArticleHypothesisBoardViewModel({
+    caseboard,
+    mode,
+    initialSelectedId: selectedCaseId,
+    reviews,
+  });
 
-  const selectedTimeline = selectedThreads
-    .flatMap((thread) =>
-      thread.signals.map((signal) => ({
-        ...signal,
-        productId: thread.productId,
-        productSummary: thread.stage1Synthesis.productSummary,
-      })),
-    )
-    .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt))
-    .slice(0, 18);
-
-  const selectedFrames = selectedThreads
-    .flatMap((thread) => thread.evidenceFrames)
-    .filter(
-      (frame, index, collection) =>
-        collection.findIndex((candidate) => candidate.id === frame.id) === index,
-    )
-    .slice(0, 6);
-
-  const selectedReportedParts = uniqueStrings(
-    selectedThreads.flatMap((thread) => thread.summaryFeatures.reportedPartNumbers),
-  ).slice(0, 8);
-  const selectedFindNumbers = uniqueStrings(
-    selectedThreads.flatMap((thread) => thread.summaryFeatures.bomFindNumbers),
-  ).slice(0, 8);
-  const selectedBatches = uniqueStrings(
-    selectedThreads.flatMap((thread) => thread.summaryFeatures.supplierBatches),
-  ).slice(0, 8);
-  const standaloneSignals =
-    "standaloneSignals" in caseboard ? caseboard.standaloneSignals : [];
-  const leadingIndicators =
-    "leadingIndicators" in caseboard ? caseboard.leadingIndicators : [];
-  const evaluationSummary =
-    "evaluationSummary" in caseboard ? caseboard.evaluationSummary : null;
-  const selectedNoiseFlags = uniqueStrings([
-    ...selectedThreads.flatMap((thread) => thread.stage1Synthesis.possibleNoiseFlags),
-    ...standaloneSignals
-      .filter((signal) => selectedThreads.some((thread) => thread.productId === signal.productId))
-      .map((signal) => signal.reason),
-  ]).slice(0, 10);
-  const selectedActions = mapActionsToFeed(
-    selectedThreads.flatMap((thread) =>
-      thread.actions.map((action) => ({
-        id: action.id,
-        productId: thread.productId,
-        defectId: action.defectId,
-        actionType: action.actionType,
-        status: action.status,
-        comments: action.comments,
-        recordedAt: action.recordedAt,
-      })),
-    ),
-  ).slice(0, 8);
-  const defaultProductId = selectedThreads[0]?.productId ?? "";
-  const defaultDefectId = selectedThreads[0]?.defects[0]?.id ?? "";
   const toggleItems = [
     {
       mode: "current" as const,
@@ -251,34 +100,32 @@ export default async function ArticleCaseboardPage({
         "Mechanism-family analyzers rank supplier, process, design, handling, and noise investigations before AI writes the case narrative.",
       href: buildClusteringModeHref(`/articles/${caseboard.articleId}`, "hypothesis"),
     },
+    {
+      mode: "investigate" as const,
+      label: "Statistical anomaly RCA",
+      description:
+        "Direct SQL sweeps plus OpenAI root-cause narration without the clustered case pipeline.",
+      href: buildClusteringModeHref(`/articles/${caseboard.articleId}`, "investigate"),
+    },
+    {
+      mode: "dummy" as const,
+      label: "Seeded dummy run",
+      description:
+        "Read-only completed run populated with the four published challenge stories so UI work can continue immediately.",
+      href: buildClusteringModeHref(`/articles/${caseboard.articleId}`, "dummy"),
+    },
   ];
+
   const pipelineLabel =
     mode === "deterministic"
       ? "Deterministic issue-grouping pipeline"
       : mode === "hypothesis"
         ? "Case hypothesis engine"
-      : "Classic three-layer pipeline";
-  const runnerDescription =
-    mode === "deterministic"
-      ? "Stage 1 reuses the shared article dossier, extracts a few bounded issue cards per product, then groups them deterministically before reconciling the latest article output into the deterministic global view."
-      : mode === "hypothesis"
-        ? "Stage 1 reuses the shared dossier, mechanism-family analyzers generate supplier, process, latent-design, handling, and noise candidates, overlap is resolved deterministically, and only the surviving ranked investigations get a bounded AI narrative."
-      : "Stage 1 builds deterministic product and article dossiers, Stage 2 drafts and reviews article-local cases, and Stage 3 reconciles the article against the latest global inventory. The output stays investigative and proposed.";
-  const outsideCaseSecondaryText =
-    mode === "deterministic"
-      ? caseboard.incidents.length || caseboard.noise.length
-        ? `${caseboard.incidents.length} single-product incidents and ${caseboard.noise.length} noise items stayed outside shared cases.`
-        : "No incidents or explicit noise items were emitted in the latest deterministic run."
-      : mode === "hypothesis"
-        ? caseboard.incidents.length || caseboard.noise.length
-          ? `${caseboard.incidents.length} single-product investigations and ${caseboard.noise.length} suppressed noise patterns stayed outside ranked shared cases.`
-          : "No standalone incidents or suppressed noise items were emitted in the latest hypothesis run."
-      : standaloneSignals.length
-        ? `${standaloneSignals.length} faults stayed real but non-clustered.`
-        : "No standalone faults were emitted in the latest run.";
-  const conflictingEvidence = getConflictingEvidence(selectedCase as Record<string, unknown> | null);
-  const suggestedActionType = getSuggestedActionType(selectedCase as Record<string, unknown> | null);
-  const suggestedActionComment = getSuggestedActionComment(selectedCase as Record<string, unknown> | null);
+        : mode === "investigate"
+          ? "Statistical anomaly RCA"
+          : mode === "dummy"
+            ? "Seeded challenge dummy mode"
+            : "Classic three-layer pipeline";
 
   return (
     <main className="min-h-screen">
@@ -294,8 +141,7 @@ export default async function ArticleCaseboardPage({
                 {caseboard.articleId}
               </h1>
               <p className="max-w-3xl text-sm leading-6 text-[var(--muted-foreground)] sm:text-base">
-                This screen separates article-wide cases from product-specific threads so
-                investigators can review shared mechanisms without losing the per-unit evidence story.
+                Open one article, compare the top competing hypotheses, then dive into proof only when you need it.
               </p>
               <div className="flex flex-wrap gap-2">
                 {caseboard.articleName ? <Badge variant="outline">{caseboard.articleName}</Badge> : null}
@@ -305,15 +151,9 @@ export default async function ArticleCaseboardPage({
                     {caseboard.dashboardCard.productCount} products · {caseboard.dashboardCard.totalSignals} signals
                   </Badge>
                 ) : null}
-                <Badge variant="outline">{proposedCases.length} proposed cases</Badge>
-                {mode === "hypothesis" ? (
-                  <Badge variant="outline">{leadingIndicators.length} leading indicators</Badge>
-                ) : null}
-                {caseboard.globalInventory ? (
-                  <Badge variant="outline">
-                    {caseboard.globalInventory.validatedCases.length} validated globally
-                  </Badge>
-                ) : null}
+                <Badge variant="outline">
+                  {caseboard.proposedCases.length} ranked hypotheses
+                </Badge>
               </div>
             </div>
 
@@ -335,457 +175,11 @@ export default async function ArticleCaseboardPage({
 
         <ClusteringPipelineToggle currentMode={mode} items={toggleItems} />
 
-        <section className="grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)_390px]">
-          <div className="space-y-6">
-            <ArticleClusterRunner
-              key={`${mode}:${caseboard.latestRun?.id ?? "none"}:${proposedCases.length}`}
-              articleId={caseboard.articleId}
-              hasAi={capabilities.hasAi}
-              latestRun={caseboard.latestRun}
-              proposedCaseCount={proposedCases.length}
-              routePath={
-                mode === "deterministic"
-                  ? `/api/articles/${caseboard.articleId}/cluster-deterministic`
-                  : mode === "hypothesis"
-                    ? `/api/articles/${caseboard.articleId}/cluster-hypothesis`
-                  : `/api/articles/${caseboard.articleId}/cluster`
-              }
-              pipelineLabel={pipelineLabel}
-              pipelineDescription={runnerDescription}
-              actionLabel={
-                mode === "deterministic"
-                  ? "deterministic clustering"
-                  : mode === "hypothesis"
-                    ? "hypothesis analysis"
-                    : "article clustering"
-              }
-              derivedCountLabel={mode === "hypothesis" ? "ranked hypotheses" : "extracted issues"}
-            />
-
-            <Card className="surface-sheet rounded-[30px] px-0 py-0">
-              <CardHeader className="px-6 pt-6">
-                <Badge variant="outline">Article-wide cases</Badge>
-                <CardTitle className="section-title mt-3">Proposed case candidates</CardTitle>
-                <CardDescription className="mt-2 leading-6">
-                  Each card is a shared multi-product pattern proposed by the article-local
-                  clustering stage.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3 px-5 pb-5">
-                {proposedCases.length ? (
-                  proposedCases.map((candidate) => {
-                    const isSelected = selectedCase?.id === candidate.id;
-
-                    return (
-                      <Link
-                        key={candidate.id}
-                        href={buildClusteringModeHref(
-                          `/articles/${caseboard.articleId}?case=${candidate.id}`,
-                          mode,
-                        )}
-                        className={
-                          isSelected
-                            ? "block rounded-[22px] border border-[color:rgba(0,92,151,0.28)] bg-[color:rgba(0,92,151,0.08)] p-4"
-                            : "block rounded-[22px] border border-white/10 bg-black/8 p-4 transition hover:border-white/20"
-                        }
-                      >
-                        <div className="flex flex-wrap gap-2">
-                          <Badge>{candidate.caseKind}</Badge>
-                          <Badge variant="outline">
-                            {candidate.priority} ·{" "}
-                            {candidate.confidence !== null
-                              ? `${Math.round(candidate.confidence * 100)}%`
-                              : "n/a"}
-                          </Badge>
-                        </div>
-                        <div className="mt-3 font-medium">{candidate.title}</div>
-                        <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                          {candidate.summary}
-                        </p>
-                        <div className="mt-3 text-xs uppercase tracking-[0.16em] text-[var(--muted-foreground)]">
-                          {candidate.includedProductIds.length} products ·{" "}
-                          {candidate.includedSignalIds.length} signals
-                        </div>
-                      </Link>
-                    );
-                  })
-                ) : (
-                  <div className="rounded-[22px] border border-dashed border-white/10 bg-black/8 p-4 text-sm leading-6 text-[var(--muted-foreground)]">
-                    Run the article pipeline to generate the first proposed cases.
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            <Card className="surface-sheet rounded-[30px] px-0 py-0">
-              <CardHeader className="px-6 pt-6">
-                <Badge variant="outline">
-                  <CircleOff className="size-3.5" />
-                  Product-specific threads
-                </Badge>
-                <CardTitle className="section-title mt-3">Outside article-wide cases</CardTitle>
-                <CardDescription className="mt-2 leading-6">
-                  These are real product threads and signals that stayed unresolved, weak, or intentionally non-clustered.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3 px-5 pb-5">
-                <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                  <div className="eyebrow">Unassigned products</div>
-                  <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                    {caseboard.unassignedProducts.length
-                      ? `${caseboard.unassignedProducts.length} products were kept outside any proposed case.`
-                      : "No products were left completely unassigned in the latest run."}
-                  </p>
-                </div>
-                <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                  <div className="eyebrow">Standalone faults</div>
-                  <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                    {outsideCaseSecondaryText}
-                  </p>
-                </div>
-                {mode === "deterministic" || mode === "hypothesis" ? (
-                  <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                    <div className="eyebrow">Watchlists</div>
-                    <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                      {caseboard.watchlists.length
-                        ? mode === "hypothesis"
-                          ? `${caseboard.watchlists.length} weaker mechanism patterns stayed visible without becoming ranked investigations.`
-                          : `${caseboard.watchlists.length} deterministic watchlists were kept visible without becoming article cases.`
-                        : mode === "hypothesis"
-                          ? "No hypothesis watchlists were emitted in the latest run."
-                          : "No deterministic watchlists were emitted in the latest run."}
-                    </p>
-                  </div>
-                ) : null}
-                {mode === "hypothesis" ? (
-                  <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                    <div className="eyebrow">Leading indicators</div>
-                    <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                      {leadingIndicators.length
-                        ? `${leadingIndicators.length} near-limit or marginal patterns stayed visible as early warnings instead of becoming cases.`
-                        : "No leading indicators were emitted in the latest hypothesis run."}
-                    </p>
-                  </div>
-                ) : null}
-              </CardContent>
-            </Card>
-          </div>
-
-          <div className="space-y-6">
-            <Card className="surface-panel rounded-[30px] px-0 py-0">
-              <CardHeader className="px-6 pt-6">
-                <Badge>{selectedCase ? "Article-wide case" : "Article overview"}</Badge>
-                <CardTitle className="section-title mt-3">
-                  {selectedCase?.title ?? "No case selected yet"}
-                </CardTitle>
-                <CardDescription className="mt-2 max-w-3xl leading-6">
-                  {selectedCase?.summary ??
-                    "Choose an article-wide case from the left rail to see which product threads support it."}
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4 px-5 pb-5">
-                {selectedCase ? (
-                  <>
-                    <div className="flex flex-wrap gap-2">
-                      <Badge variant="outline">{selectedCase.caseKind}</Badge>
-                      <Badge variant="outline">
-                        {selectedCase.priority} ·{" "}
-                        {selectedCase.confidence !== null
-                          ? `${Math.round(selectedCase.confidence * 100)}%`
-                          : "n/a"}
-                      </Badge>
-                      <Badge variant="outline">
-                        {selectedCase.includedProductIds.length} products
-                      </Badge>
-                      <Badge variant="outline">
-                        {selectedCase.includedSignalIds.length} signals
-                      </Badge>
-                    </div>
-                    <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                      <div className="eyebrow">Suspected common mechanism</div>
-                      <p className="mt-2 text-sm leading-6">
-                        {getSuspectedMechanism(selectedCase as Record<string, unknown>)}
-                      </p>
-                    </div>
-                    <div className="grid gap-3 md:grid-cols-3">
-                      <TopChips title="Reported parts" items={selectedReportedParts} />
-                      <TopChips title="BOM positions" items={selectedFindNumbers} />
-                      <TopChips title="Supplier batches" items={selectedBatches} />
-                    </div>
-                  </>
-                ) : null}
-              </CardContent>
-            </Card>
-
-            <Card className="surface-sheet rounded-[30px] px-0 py-0">
-              <CardHeader className="px-6 pt-6">
-                <Badge variant="outline">
-                  <Boxes className="size-3.5" />
-                  Product-specific threads
-                </Badge>
-                <CardTitle className="section-title mt-3">Per-product evidence threads</CardTitle>
-                <CardDescription className="mt-2 leading-6">
-                  Each thread is a Stage 1 product dossier: one unit, one evidence story, kept separate from the article-wide case object.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="grid gap-4 px-5 pb-5 md:grid-cols-2">
-                {selectedThreads.length ? (
-                  selectedThreads.map((thread) => (
-                    <article
-                      key={thread.productId}
-                      className="rounded-[24px] border border-white/10 bg-[color:var(--raised-overlay-surface)] p-4"
-                    >
-                      <div className="flex flex-wrap gap-2">
-                        <Badge>{thread.productId}</Badge>
-                        {thread.orderId ? <Badge variant="outline">{thread.orderId}</Badge> : null}
-                        {thread.buildTs ? (
-                          <Badge variant="outline">
-                            {formatUiDateTime(thread.buildTs)}
-                          </Badge>
-                        ) : null}
-                      </div>
-                      <p className="mt-3 text-sm leading-6 text-[var(--muted-foreground)]">
-                        {thread.stage1Synthesis.productSummary}
-                      </p>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        {thread.stage1Synthesis.suspiciousPatterns.slice(0, 3).map((item) => (
-                          <Badge key={item} variant="secondary">
-                            {item}
-                          </Badge>
-                        ))}
-                      </div>
-                      <div className="mt-3">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          render={
-                            <Link
-                              href={buildClusteringModeHref(`/products/${thread.productId}`, mode)}
-                            >
-                              Open product dossier
-                            </Link>
-                          }
-                        />
-                      </div>
-                    </article>
-                  ))
-                ) : (
-                  <div className="rounded-[22px] border border-dashed border-white/10 bg-black/8 p-4 text-sm leading-6 text-[var(--muted-foreground)]">
-                    No clustered products are selected yet.
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            <Card className="surface-sheet rounded-[30px] px-0 py-0">
-              <CardHeader className="px-6 pt-6">
-                <Badge variant="outline">
-                  <Link2 className="size-3.5" />
-                  Evidence spine
-                </Badge>
-                <CardTitle className="section-title mt-3">Signals from selected product threads</CardTitle>
-                <CardDescription className="mt-2 leading-6">
-                  This timeline merges the selected product threads so you can inspect the shared signal pattern behind the article-wide case.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3 px-5 pb-5">
-                {selectedTimeline.length ? (
-                  selectedTimeline.map((signal) => (
-                    <article
-                      key={`${signal.productId}:${signal.signalId}`}
-                      className="rounded-[22px] border border-white/10 bg-black/8 p-4"
-                    >
-                      <div className="flex flex-wrap gap-2">
-                        <Badge variant="outline">{signal.productId}</Badge>
-                        <Badge
-                          className={
-                            signalTone[signal.signalType as keyof typeof signalTone] ??
-                            "bg-[color:rgba(20,32,42,0.08)] text-foreground"
-                          }
-                        >
-                          {signal.signalType}
-                        </Badge>
-                        {signal.severity ? <Badge variant="outline">{signal.severity}</Badge> : null}
-                      </div>
-                      <div className="mt-3 font-medium">{signal.headline}</div>
-                      <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                        {signal.notePreview}
-                      </p>
-                      <div className="mt-3 text-xs uppercase tracking-[0.16em] text-[var(--muted-foreground)]">
-                        {formatUiDateTime(signal.occurredAt)} · {signal.section ?? "section unknown"}
-                      </div>
-                    </article>
-                  ))
-                ) : (
-                  <div className="rounded-[22px] border border-dashed border-white/10 bg-black/8 p-4 text-sm leading-6 text-[var(--muted-foreground)]">
-                    No evidence timeline is available for the current selection yet.
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            {selectedFrames.length ? (
-              <Card className="surface-sheet rounded-[30px] px-0 py-0">
-                <CardHeader className="px-6 pt-6">
-                  <Badge variant="outline">Evidence images</Badge>
-                  <CardTitle className="section-title mt-3">Relevant visual evidence</CardTitle>
-                </CardHeader>
-                <CardContent className="grid gap-4 px-5 pb-5 md:grid-cols-2 xl:grid-cols-3">
-                  {selectedFrames.map((frame) => (
-                    <article
-                      key={frame.id}
-                      className="rounded-[24px] border border-white/10 bg-black/8 p-4"
-                    >
-                      <QualitySignalImage
-                        alt={`${frame.sourceType} ${frame.sourceId}`}
-                        src={frame.imageUrl}
-                      />
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <Badge variant="outline">{frame.sourceType}</Badge>
-                        <Badge variant="outline">{frame.sourceId}</Badge>
-                      </div>
-                      <div className="mt-3 font-medium">{frame.title}</div>
-                      <p className="mt-1 text-sm leading-6 text-[var(--muted-foreground)]">
-                        {frame.caption}
-                      </p>
-                    </article>
-                  ))}
-                </CardContent>
-              </Card>
-            ) : null}
-          </div>
-
-          <div className="space-y-6">
-            <Card className="surface-panel rounded-[30px] px-0 py-0">
-              <CardHeader className="px-6 pt-6">
-                <Badge variant="outline">
-                  <AlertTriangle className="size-3.5" />
-                  Guidance
-                </Badge>
-                <CardTitle className="section-title mt-3">Shared evidence and caution</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3 px-5 pb-5">
-                <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                  <div className="eyebrow">Strongest evidence</div>
-                  <div className="mt-2 space-y-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                    {selectedCase?.strongestEvidence.length ? (
-                      selectedCase.strongestEvidence.map((item) => <p key={item}>{item}</p>)
-                    ) : (
-                      <p>No strongest-evidence lines are available yet.</p>
-                    )}
-                  </div>
-                </div>
-                <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                  <div className="eyebrow">Conflicting evidence</div>
-                  <div className="mt-2 space-y-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                    {conflictingEvidence.length ? (
-                      conflictingEvidence.map((item) => <p key={item}>{item}</p>)
-                    ) : (
-                      <p>No strong conflict signals were highlighted for this case.</p>
-                    )}
-                  </div>
-                </div>
-                <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                  <div className="eyebrow">Noise and caution</div>
-                  <div className="mt-2 space-y-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                    {selectedNoiseFlags.length ? (
-                      selectedNoiseFlags.map((item) => <p key={item}>{item}</p>)
-                    ) : (
-                      <p>No strong noise flags were attached to the selected products.</p>
-                    )}
-                  </div>
-                </div>
-                <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                  <div className="eyebrow">Recommended next trace checks</div>
-                  <div className="mt-2 space-y-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                    {selectedCase?.recommendedNextTraceChecks.length ? (
-                      selectedCase.recommendedNextTraceChecks.map((item) => <p key={item}>{item}</p>)
-                    ) : (
-                      <p>No next trace checks are available until a case is selected.</p>
-                    )}
-                  </div>
-                </div>
-                {mode === "hypothesis" && evaluationSummary ? (
-                  <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                    <div className="eyebrow">Benchmark evaluation</div>
-                    <div className="mt-2 space-y-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                      <p>{evaluationSummary.summaryLine}</p>
-                      {evaluationSummary.rows
-                        .filter((row) => row.applicable)
-                        .slice(0, 4)
-                        .map((row) => (
-                          <p key={row.truthId}>
-                            {row.label}: {row.surfaced ? `surfaced at rank ${row.rankPosition ?? "n/a"}` : "not surfaced"}
-                          </p>
-                        ))}
-                    </div>
-                  </div>
-                ) : null}
-              </CardContent>
-            </Card>
-
-            {defaultProductId ? (
-              <ProductActionPanel
-                key={`${defaultProductId}:${defaultDefectId}:${suggestedActionType}:${selectedCase?.id ?? "none"}`}
-                initialActions={selectedActions}
-                defaultProductId={defaultProductId}
-                defaultDefectId={defaultDefectId}
-                defaultActionType={suggestedActionType}
-                defaultComments={suggestedActionComment}
-              />
-            ) : (
-              <Card className="surface-panel rounded-[30px] px-0 py-0">
-                <CardHeader className="px-6 pt-6">
-                  <Badge variant="outline">Closed loop</Badge>
-                  <CardTitle className="section-title mt-3">Action lane</CardTitle>
-                </CardHeader>
-                <CardContent className="px-5 pb-5 text-sm leading-6 text-[var(--muted-foreground)]">
-                  Select a proposed case with at least one included product to create an action from this workspace.
-                </CardContent>
-              </Card>
-            )}
-
-            {caseboard.globalInventory ? (
-              <Card className="surface-sheet rounded-[30px] px-0 py-0">
-                <CardHeader className="px-6 pt-6">
-                  <Badge variant="outline">Global context</Badge>
-                  <CardTitle className="section-title mt-3">Watchlists and noise</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3 px-5 pb-5">
-                  <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                    <div className="eyebrow">Validated globally</div>
-                    <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                      {caseboard.globalInventory.validatedCases.length} validated cases in the latest global pass.
-                    </p>
-                  </div>
-                  <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                    <div className="eyebrow">Watchlists</div>
-                    <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                      {caseboard.globalInventory.watchlists.length} watchlists kept visible without opening an investigation.
-                    </p>
-                  </div>
-                  {mode === "hypothesis" ? (
-                    <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                      <div className="eyebrow">Leading indicators</div>
-                      <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                        {"leadingIndicators" in caseboard.globalInventory
-                          ? caseboard.globalInventory.leadingIndicators.length
-                          : 0}{" "}
-                        early-warning patterns stayed separate from validated cases.
-                      </p>
-                    </div>
-                  ) : null}
-                  <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                    <div className="eyebrow">Noise buckets</div>
-                    <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                      {caseboard.globalInventory.noiseBuckets.length} patterns were down-ranked as noise or distractors.
-                    </p>
-                  </div>
-                </CardContent>
-              </Card>
-            ) : null}
-          </div>
-        </section>
+        <ArticleHypothesisBoard
+          mode={mode}
+          viewModel={viewModel}
+          hasPostgres={capabilities.hasPostgres}
+        />
       </div>
     </main>
   );

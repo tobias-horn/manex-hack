@@ -17,6 +17,7 @@ import {
   type TraceabilityGraphNode,
   type TraceabilityRelatedProductSummary,
 } from "@/lib/manex-traceability-evidence";
+import { stringifyUnicodeSafe } from "@/lib/json-unicode";
 import { memoizeWithTtl } from "@/lib/server-cache";
 import { normalizeUiIdentifier } from "@/lib/ui-format";
 
@@ -197,7 +198,7 @@ const loadTraceabilityBlastRadius = memoizeWithTtl(
   "traceability-blast-radius",
   15_000,
   (query: { batchId?: string; batchNumber?: string; partNumber?: string }) =>
-    JSON.stringify(query),
+    stringifyUnicodeSafe(query),
   async (query: {
     batchId?: string;
     batchNumber?: string;

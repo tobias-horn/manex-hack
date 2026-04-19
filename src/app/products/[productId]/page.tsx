@@ -26,12 +26,14 @@ import {
 } from "@/components/ui/card";
 import { DEMO_DOSSIER_PRODUCTS } from "@/lib/manex-demo";
 import { getProposedCasesForProduct } from "@/lib/manex-case-clustering";
+import { getDummyProposedCasesForProduct } from "@/lib/manex-dummy-clustering";
 import {
   buildClusteringModeHref,
   parseClusteringMode,
 } from "@/lib/manex-clustering-mode";
 import { getDeterministicProposedCasesForProduct } from "@/lib/manex-deterministic-case-clustering";
 import { getHypothesisProposedCasesForProduct } from "@/lib/manex-hypothesis-case-clustering";
+import { getInvestigateProposedCasesForProduct } from "@/lib/manex-investigate";
 import {
   getProductDossier,
   type ProductDossierEvidenceFrame,
@@ -107,14 +109,21 @@ export default async function ProductDossierPage({
   let proposedCases = [];
 
   try {
-    [dossier, proposedCases] = await Promise.all([
-      getProductDossier(productId),
-      mode === "deterministic"
-        ? getDeterministicProposedCasesForProduct(productId)
-        : mode === "hypothesis"
-          ? getHypothesisProposedCasesForProduct(productId)
-        : getProposedCasesForProduct(productId),
-    ]);
+    if (mode === "dummy") {
+      dossier = await getProductDossier(productId);
+      proposedCases = await getDummyProposedCasesForProduct(productId);
+    } else {
+      [dossier, proposedCases] = await Promise.all([
+        getProductDossier(productId),
+        mode === "deterministic"
+          ? getDeterministicProposedCasesForProduct(productId)
+          : mode === "hypothesis"
+            ? getHypothesisProposedCasesForProduct(productId)
+            : mode === "investigate"
+              ? getInvestigateProposedCasesForProduct(productId)
+          : getProposedCasesForProduct(productId),
+      ]);
+    }
   } catch {
     return (
       <ScreenState
@@ -164,12 +173,30 @@ export default async function ProductDossierPage({
         "Mechanism-family analyzers rank supplier, process, design, handling, and noise investigations before AI writes the case narrative.",
       href: buildClusteringModeHref(`/products/${dossier.requestedProductId}`, "hypothesis"),
     },
+    {
+      mode: "investigate" as const,
+      label: "Statistical anomaly RCA",
+      description:
+        "Direct SQL sweeps plus OpenAI root-cause narration without the clustered case pipeline.",
+      href: buildClusteringModeHref(`/products/${dossier.requestedProductId}`, "investigate"),
+    },
+    {
+      mode: "dummy" as const,
+      label: "Seeded dummy run",
+      description:
+        "Read-only completed run populated with the four published challenge stories so UI work can continue immediately.",
+      href: buildClusteringModeHref(`/products/${dossier.requestedProductId}`, "dummy"),
+    },
   ];
   const pipelineLabel =
     mode === "deterministic"
       ? "Deterministic issue-grouping pipeline"
       : mode === "hypothesis"
         ? "Case hypothesis engine"
+        : mode === "investigate"
+          ? "Statistical anomaly RCA"
+          : mode === "dummy"
+            ? "Seeded challenge dummy mode"
       : "Classic three-layer pipeline";
 
   return (
