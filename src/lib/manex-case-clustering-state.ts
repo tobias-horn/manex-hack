@@ -5,6 +5,7 @@ import {
   getPostgresPool,
   queryPostgres,
 } from "@/lib/postgres";
+import { stringifyUnicodeSafe } from "@/lib/json-unicode";
 
 export type TeamCaseRunStatus = "building" | "completed" | "failed";
 export type TeamCaseRunStrategy = "single" | "chunked";
@@ -522,6 +523,8 @@ const normalizeNullableNumber = (value: number | string | null | undefined) => {
 const normalizeIso = (value: string | null | undefined) =>
   value ? new Date(value).toISOString() : null;
 
+const stringifyJsonb = (value: unknown) => stringifyUnicodeSafe(value);
+
 const toRecord = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -749,7 +752,7 @@ export async function upsertTeamCaseBatch(input: TeamCaseBatchSummary) {
     [
       input.id,
       input.status,
-      JSON.stringify(input.requestedArticleIds),
+      stringifyJsonb(input.requestedArticleIds),
       input.totalArticleCount,
       input.startedAt ?? null,
       input.completedAt ?? null,
@@ -758,7 +761,7 @@ export async function upsertTeamCaseBatch(input: TeamCaseBatchSummary) {
       input.okCount,
       input.errorCount,
       input.errorMessage ?? null,
-      JSON.stringify(input.articleResults),
+      stringifyJsonb(input.articleResults),
     ],
   );
 }
@@ -1117,9 +1120,9 @@ export async function upsertTeamProductDossier(input: {
       input.buildTs ?? null,
       input.orderId ?? null,
       input.signalCount,
-      JSON.stringify(input.sourceCounts),
-      JSON.stringify(input.summaryFeatures),
-      JSON.stringify(input.payload),
+      stringifyJsonb(input.sourceCounts),
+      stringifyJsonb(input.summaryFeatures),
+      stringifyJsonb(input.payload),
     ],
   );
 }
@@ -1162,8 +1165,8 @@ export async function upsertTeamArticleDossier(input: {
       input.articleName ?? null,
       input.productCount,
       input.signalCount,
-      JSON.stringify(input.summaryPayload),
-      JSON.stringify(input.payload),
+      stringifyJsonb(input.summaryPayload),
+      stringifyJsonb(input.payload),
     ],
   );
 }
@@ -1218,8 +1221,8 @@ export async function createTeamCaseRun(input: {
       input.signalCount,
       input.currentStage ?? "queued",
       input.stageDetail ?? null,
-      JSON.stringify(input.builderPayload),
-      JSON.stringify(input.requestPayload),
+      stringifyJsonb(input.builderPayload),
+      stringifyJsonb(input.requestPayload),
     ],
   );
 }
@@ -1251,8 +1254,8 @@ export async function completeTeamCaseRun(input: {
     [
       input.id,
       input.candidateCount,
-      JSON.stringify(input.proposalPayload),
-      JSON.stringify(input.reviewPayload),
+      stringifyJsonb(input.proposalPayload),
+      stringifyJsonb(input.reviewPayload),
       input.stageDetail ?? null,
     ],
   );
@@ -1284,8 +1287,8 @@ export async function failTeamCaseRun(input: {
     [
       input.id,
       input.errorMessage,
-      JSON.stringify(input.proposalPayload ?? {}),
-      JSON.stringify(input.reviewPayload ?? {}),
+      stringifyJsonb(input.proposalPayload ?? {}),
+      stringifyJsonb(input.reviewPayload ?? {}),
       input.stageDetail ?? null,
     ],
   );
@@ -1428,14 +1431,14 @@ export async function replaceTeamCaseCandidatesForRun(input: {
             candidate.suspectedRootCauseFamily ?? null,
             candidate.confidence ?? null,
             candidate.priority ?? "medium",
-            JSON.stringify(candidate.strongestEvidence),
-            JSON.stringify(candidate.weakestEvidence),
-            JSON.stringify(candidate.sharedEvidence),
-            JSON.stringify(candidate.conflictingEvidence),
-            JSON.stringify(candidate.recommendedNextTraceChecks),
-            JSON.stringify(candidate.includedProductIds),
-            JSON.stringify(candidate.includedSignalIds),
-            JSON.stringify(candidate.payload),
+            stringifyJsonb(candidate.strongestEvidence),
+            stringifyJsonb(candidate.weakestEvidence),
+            stringifyJsonb(candidate.sharedEvidence),
+            stringifyJsonb(candidate.conflictingEvidence),
+            stringifyJsonb(candidate.recommendedNextTraceChecks),
+            stringifyJsonb(candidate.includedProductIds),
+            stringifyJsonb(candidate.includedSignalIds),
+            stringifyJsonb(candidate.payload),
           ],
         );
 

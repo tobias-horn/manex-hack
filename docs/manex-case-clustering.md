@@ -69,7 +69,7 @@ This gives Stage 2 a compact “story of this unit” without losing the raw evi
 
 Current schema version:
 
-- product dossier: `manex.product_dossier.v3`
+- product dossier: `manex.product_dossier.v4`
 
 ## Stage 2
 
@@ -86,6 +86,7 @@ The product threads now carry the same deterministic trace anchors that drive
 the traceability UI, so Stage 2 can reason from:
 
 - shared supplier batches / part installs / BOM positions
+- explicit part+batch anchors, neighborhood matches, and co-occurring bundles
 - occurrence-vs-detected section differences
 - claim-only latent field patterns
 - order / rework-user handling patterns
@@ -102,7 +103,7 @@ Important behaviors:
 
 Current schema versions:
 
-- article dossier: `manex.article_dossier.v3`
+- article dossier: `manex.article_dossier.v4`
 - article case set: `manex.article_case_set.v2`
 
 ## Stage 3

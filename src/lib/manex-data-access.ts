@@ -3,6 +3,7 @@ import { startOfWeek } from "date-fns";
 
 import { env } from "@/lib/env";
 import { resolveManexImageUrl } from "@/lib/manex-images";
+import { sanitizeUnicodeForJson, stringifyUnicodeSafe } from "@/lib/json-unicode";
 import { queryPostgres } from "@/lib/postgres";
 
 type TransportKind = "rest" | "postgres";
@@ -53,6 +54,9 @@ type WriteResult<T> = {
   row: T;
   transport: TransportKind;
 };
+
+const parseJsonResponseSafe = <T>(responseText: string) =>
+  JSON.parse(sanitizeUnicodeForJson(responseText)) as T;
 
 type DefectRow = {
   defect_id: string;
@@ -569,7 +573,7 @@ const assertIdentifier = (value: string) => {
 };
 
 const normalizeText = (value: string | null | undefined) => {
-  const text = value?.replace(/\s+/g, " ").trim();
+  const text = value ? sanitizeUnicodeForJson(value).replace(/\s+/g, " ").trim() : "";
   return text ? text : "";
 };
 
@@ -721,7 +725,7 @@ function createRestTransport(): InternalTransport | null {
       }
 
       return {
-        rows: JSON.parse(responseText) as T[],
+        rows: parseJsonResponseSafe<T[]>(responseText),
         total: spec.count ? parseContentRange(response.headers.get("content-range")) : null,
       };
     },
@@ -740,7 +744,7 @@ function createRestTransport(): InternalTransport | null {
           "Content-Type": "application/json",
           Prefer: "return=representation",
         },
-        body: JSON.stringify(values),
+        body: stringifyUnicodeSafe(values),
         cache: "no-store",
       });
 
@@ -752,7 +756,7 @@ function createRestTransport(): InternalTransport | null {
         );
       }
 
-      const rows = JSON.parse(responseText) as T[];
+      const rows = parseJsonResponseSafe<T[]>(responseText);
       const row = Array.isArray(rows) ? rows[0] : rows;
 
       if (!row) {
@@ -785,7 +789,7 @@ function createRestTransport(): InternalTransport | null {
           "Content-Type": "application/json",
           Prefer: "return=representation",
         },
-        body: JSON.stringify(values),
+        body: stringifyUnicodeSafe(values),
         cache: "no-store",
       });
 
@@ -797,7 +801,7 @@ function createRestTransport(): InternalTransport | null {
         );
       }
 
-      const rows = JSON.parse(responseText) as T[];
+      const rows = parseJsonResponseSafe<T[]>(responseText);
       const row = Array.isArray(rows) ? rows[0] : rows;
 
       if (!row) {
@@ -1330,7 +1334,7 @@ const defaultReworkSelect = [
 ];
 
 const readTransports = () =>
-  [createRestTransport(), createPostgresTransport()].filter(
+  [createPostgresTransport(), createRestTransport()].filter(
     (transport): transport is InternalTransport => Boolean(transport),
   );
 

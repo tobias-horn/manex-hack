@@ -1,5 +1,9 @@
 import type { Metadata } from "next";
 import { Geist_Mono, Inter, Manrope } from "next/font/google";
+
+import { ThemeToggle } from "@/components/theme-toggle";
+import { themeInitScript } from "@/lib/theme";
+
 import "./globals.css";
 
 const inter = Inter({
@@ -31,9 +35,20 @@ export default function RootLayout({
   return (
     <html
       lang="en"
+      suppressHydrationWarning
       className={`${inter.variable} ${manrope.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+      </head>
+      <body className="min-h-full flex flex-col">
+        <div className="pointer-events-none fixed top-4 right-4 z-50 sm:top-6 sm:right-6">
+          <div className="pointer-events-auto">
+            <ThemeToggle />
+          </div>
+        </div>
+        {children}
+      </body>
     </html>
   );
 }

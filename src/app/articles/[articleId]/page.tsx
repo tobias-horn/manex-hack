@@ -10,6 +10,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { ArticleClusterRunner } from "@/components/article-cluster-runner";
+import { ClusteringPipelineToggle } from "@/components/clustering-pipeline-toggle";
 import { ProductActionPanel } from "@/components/product-action-panel";
 import { QualitySignalImage } from "@/components/quality-signal-image";
 import { Badge } from "@/components/ui/badge";
@@ -23,6 +24,11 @@ import {
 } from "@/components/ui/card";
 import { capabilities } from "@/lib/env";
 import { getArticleCaseboard } from "@/lib/manex-case-clustering";
+import {
+  buildClusteringModeHref,
+  parseClusteringMode,
+} from "@/lib/manex-clustering-mode";
+import { getDeterministicArticleCaseboard } from "@/lib/manex-deterministic-case-clustering";
 import type { Initiative } from "@/lib/quality-workspace";
 import { formatUiDateTime } from "@/lib/ui-format";
 
@@ -37,7 +43,7 @@ const signalTone = {
   defect: "bg-[color:rgba(0,92,151,0.1)] text-[var(--primary)]",
   field_claim: "bg-[color:rgba(178,69,63,0.1)] text-[var(--destructive)]",
   bad_test: "bg-[color:rgba(178,69,63,0.12)] text-[var(--destructive)]",
-  marginal_test: "bg-[color:rgba(208,141,37,0.14)] text-amber-700",
+  marginal_test: "bg-[color:rgba(208,141,37,0.14)] text-[var(--warning-foreground)]",
 };
 
 function uniqueStrings(values: Array<string | null | undefined>) {
@@ -48,6 +54,20 @@ function uniqueStrings(values: Array<string | null | undefined>) {
 
 function normalizeQueryValue(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] : value;
+}
+
+function getSuspectedMechanism(candidate: Record<string, unknown> | null) {
+  if (typeof candidate?.suspectedCommonRootCause === "string") {
+    return candidate.suspectedCommonRootCause;
+  }
+
+  return "Deterministic grouping kept this case together because multiple bounded product issue cards reused the same anchors, evidence phrases, and fingerprint tokens across the article.";
+}
+
+function getConflictingEvidence(candidate: Record<string, unknown> | null) {
+  return Array.isArray(candidate?.conflictingEvidence)
+    ? candidate.conflictingEvidence.filter((item): item is string => typeof item === "string")
+    : [];
 }
 
 function mapActionsToFeed(
@@ -104,7 +124,11 @@ export default async function ArticleCaseboardPage({
   const { articleId } = await params;
   const search = await searchParams;
   const selectedCaseId = normalizeQueryValue(search.case);
-  const caseboard = await getArticleCaseboard(articleId);
+  const mode = parseClusteringMode(search.pipeline);
+  const caseboard =
+    mode === "deterministic"
+      ? await getDeterministicArticleCaseboard(articleId)
+      : await getArticleCaseboard(articleId);
 
   if (!caseboard) {
     notFound();
@@ -151,9 +175,11 @@ export default async function ArticleCaseboardPage({
   const selectedBatches = uniqueStrings(
     selectedThreads.flatMap((thread) => thread.summaryFeatures.supplierBatches),
   ).slice(0, 8);
+  const standaloneSignals =
+    "standaloneSignals" in caseboard ? caseboard.standaloneSignals : [];
   const selectedNoiseFlags = uniqueStrings([
     ...selectedThreads.flatMap((thread) => thread.stage1Synthesis.possibleNoiseFlags),
-    ...caseboard.standaloneSignals
+    ...standaloneSignals
       .filter((signal) => selectedThreads.some((thread) => thread.productId === signal.productId))
       .map((signal) => signal.reason),
   ]).slice(0, 10);
@@ -172,6 +198,37 @@ export default async function ArticleCaseboardPage({
   ).slice(0, 8);
   const defaultProductId = selectedThreads[0]?.productId ?? "";
   const defaultDefectId = selectedThreads[0]?.defects[0]?.id ?? "";
+  const toggleItems = [
+    {
+      mode: "current" as const,
+      label: "Classic three-layer clustering",
+      description: "Original dossier, article-case, and global reconciliation flow.",
+      href: buildClusteringModeHref(`/articles/${caseboard.articleId}`, "current"),
+    },
+    {
+      mode: "deterministic" as const,
+      label: "Deterministic issue grouping",
+      description: "Small per-product issue extraction with deterministic article grouping.",
+      href: buildClusteringModeHref(`/articles/${caseboard.articleId}`, "deterministic"),
+    },
+  ];
+  const pipelineLabel =
+    mode === "deterministic"
+      ? "Deterministic issue-grouping pipeline"
+      : "Classic three-layer pipeline";
+  const runnerDescription =
+    mode === "deterministic"
+      ? "Stage 1 reuses the shared article dossier, extracts a few bounded issue cards per product, then groups them deterministically before reconciling the latest article output into the deterministic global view."
+      : "Stage 1 builds deterministic product and article dossiers, Stage 2 drafts and reviews article-local cases, and Stage 3 reconciles the article against the latest global inventory. The output stays investigative and proposed.";
+  const outsideCaseSecondaryText =
+    mode === "deterministic"
+      ? caseboard.incidents.length || caseboard.noise.length
+        ? `${caseboard.incidents.length} single-product incidents and ${caseboard.noise.length} noise items stayed outside shared cases.`
+        : "No incidents or explicit noise items were emitted in the latest deterministic run."
+      : standaloneSignals.length
+        ? `${standaloneSignals.length} faults stayed real but non-clustered.`
+        : "No standalone faults were emitted in the latest run.";
+  const conflictingEvidence = getConflictingEvidence(selectedCase as Record<string, unknown> | null);
 
   return (
     <main className="min-h-screen">
@@ -192,6 +249,7 @@ export default async function ArticleCaseboardPage({
               </p>
               <div className="flex flex-wrap gap-2">
                 {caseboard.articleName ? <Badge variant="outline">{caseboard.articleName}</Badge> : null}
+                <Badge variant="outline">{pipelineLabel}</Badge>
                 {caseboard.dashboardCard ? (
                   <Badge variant="outline">
                     {caseboard.dashboardCard.productCount} products · {caseboard.dashboardCard.totalSignals} signals
@@ -211,7 +269,7 @@ export default async function ArticleCaseboardPage({
                 size="lg"
                 variant="outline"
                 render={
-                  <Link href="/articles">
+                  <Link href={buildClusteringModeHref("/articles", mode)}>
                     <ArrowLeft className="size-4" />
                     Back to proposed cases
                   </Link>
@@ -222,13 +280,26 @@ export default async function ArticleCaseboardPage({
           </div>
         </header>
 
+        <ClusteringPipelineToggle currentMode={mode} items={toggleItems} />
+
         <section className="grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)_390px]">
           <div className="space-y-6">
             <ArticleClusterRunner
+              key={`${mode}:${caseboard.latestRun?.id ?? "none"}:${proposedCases.length}`}
               articleId={caseboard.articleId}
               hasAi={capabilities.hasAi}
               latestRun={caseboard.latestRun}
               proposedCaseCount={proposedCases.length}
+              routePath={
+                mode === "deterministic"
+                  ? `/api/articles/${caseboard.articleId}/cluster-deterministic`
+                  : `/api/articles/${caseboard.articleId}/cluster`
+              }
+              pipelineLabel={pipelineLabel}
+              pipelineDescription={runnerDescription}
+              actionLabel={
+                mode === "deterministic" ? "deterministic clustering" : "article clustering"
+              }
             />
 
             <Card className="surface-sheet rounded-[30px] px-0 py-0">
@@ -248,7 +319,10 @@ export default async function ArticleCaseboardPage({
                     return (
                       <Link
                         key={candidate.id}
-                        href={`/articles/${caseboard.articleId}?case=${candidate.id}`}
+                        href={buildClusteringModeHref(
+                          `/articles/${caseboard.articleId}?case=${candidate.id}`,
+                          mode,
+                        )}
                         className={
                           isSelected
                             ? "block rounded-[22px] border border-[color:rgba(0,92,151,0.28)] bg-[color:rgba(0,92,151,0.08)] p-4"
@@ -306,11 +380,19 @@ export default async function ArticleCaseboardPage({
                 <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
                   <div className="eyebrow">Standalone faults</div>
                   <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                    {caseboard.standaloneSignals.length
-                      ? `${caseboard.standaloneSignals.length} faults stayed real but non-clustered.`
-                      : "No standalone faults were emitted in the latest run."}
+                    {outsideCaseSecondaryText}
                   </p>
                 </div>
+                {mode === "deterministic" ? (
+                  <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
+                    <div className="eyebrow">Watchlists</div>
+                    <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
+                      {caseboard.watchlists.length
+                        ? `${caseboard.watchlists.length} deterministic watchlists were kept visible without becoming article cases.`
+                        : "No deterministic watchlists were emitted in the latest run."}
+                    </p>
+                  </div>
+                ) : null}
               </CardContent>
             </Card>
           </div>
@@ -348,7 +430,7 @@ export default async function ArticleCaseboardPage({
                     <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
                       <div className="eyebrow">Suspected common mechanism</div>
                       <p className="mt-2 text-sm leading-6">
-                        {selectedCase.suspectedCommonRootCause}
+                        {getSuspectedMechanism(selectedCase as Record<string, unknown>)}
                       </p>
                     </div>
                     <div className="grid gap-3 md:grid-cols-3">
@@ -377,7 +459,7 @@ export default async function ArticleCaseboardPage({
                   selectedThreads.map((thread) => (
                     <article
                       key={thread.productId}
-                      className="rounded-[24px] border border-white/10 bg-[color:rgba(255,255,255,0.72)] p-4"
+                      className="rounded-[24px] border border-white/10 bg-[color:var(--raised-overlay-surface)] p-4"
                     >
                       <div className="flex flex-wrap gap-2">
                         <Badge>{thread.productId}</Badge>
@@ -402,7 +484,13 @@ export default async function ArticleCaseboardPage({
                         <Button
                           size="sm"
                           variant="outline"
-                          render={<Link href={`/products/${thread.productId}`}>Open product dossier</Link>}
+                          render={
+                            <Link
+                              href={buildClusteringModeHref(`/products/${thread.productId}`, mode)}
+                            >
+                              Open product dossier
+                            </Link>
+                          }
                         />
                       </div>
                     </article>
@@ -516,8 +604,8 @@ export default async function ArticleCaseboardPage({
                 <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
                   <div className="eyebrow">Conflicting evidence</div>
                   <div className="mt-2 space-y-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                    {selectedCase?.conflictingEvidence.length ? (
-                      selectedCase.conflictingEvidence.map((item) => <p key={item}>{item}</p>)
+                    {conflictingEvidence.length ? (
+                      conflictingEvidence.map((item) => <p key={item}>{item}</p>)
                     ) : (
                       <p>No strong conflict signals were highlighted for this case.</p>
                     )}

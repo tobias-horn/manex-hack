@@ -390,11 +390,11 @@ persisted candidates with reconstructed leftovers from the Stage 2 review JSON.
 Current versions in code:
 
 - prompt version:
-  `2026-04-18.case-clustering.v3`
+  `2026-04-19.case-clustering.v8`
 - product dossier schema:
-  `manex.product_dossier.v2`
+  `manex.product_dossier.v4`
 - article dossier schema:
-  `manex.article_dossier.v2`
+  `manex.article_dossier.v4`
 - article case set schema:
   `manex.article_case_set.v2`
 - global inventory schema:

@@ -1,4 +1,6 @@
-export const MANEX_CASE_CLUSTERING_PROMPT_VERSION = "2026-04-18.case-clustering.v7";
+import { stringifyUnicodeSafe } from "@/lib/json-unicode";
+
+export const MANEX_CASE_CLUSTERING_PROMPT_VERSION = "2026-04-19.case-clustering.v8";
 
 export function buildStage1SystemPrompt() {
   return [
@@ -12,7 +14,7 @@ export function buildStage1SystemPrompt() {
     "- chronology, temporal containment, and build-to-claim timing",
     "- whether the thread is defect-driven, claim-driven, test-driven, rework-driven, or mixed",
     "- whether there are field claims with no prior in-factory defect history",
-    "- reported parts, BOM positions, installed parts, supplier batches, supplier concentration, occurrence sections, detected sections, order IDs, and rework users",
+    "- reported parts, BOM positions, installed parts, supplier batches, part+batch anchors, co-occurring anchor bundles, neighboring products, supplier concentration, occurrence sections, detected sections, order IDs, and rework users",
     "- whether test anomalies are FAIL, MARGINAL, or only near-limit warnings, and whether they are isolated or repeated",
     "- whether notes indicate false positives, service/documentation issues, cosmetic-only issues, or contradictions",
     "",
@@ -57,8 +59,10 @@ export function buildStage1UserPrompt(payload: unknown) {
     "When summarizing evidence_features and suspicious_patterns, prioritize:",
     "- claim lag",
     "- no-prior-defect situations",
-    "- supplier-batch or installed-part anchors",
-    "- supplier or anchor concentration hints",
+    "- supplier-batch, part+batch, or installed-part anchors",
+    "- supplier or anchor concentration hints and anchor specificity",
+    "- nearby products that share the same strongest traceability anchors",
+    "- blast-radius suspects when one anchor fans out broadly",
     "- BOM positions / reported part numbers",
     "- occurrence-section versus detected-section differences",
     "- temporal containment or burst-and-fade patterns",
@@ -67,7 +71,7 @@ export function buildStage1UserPrompt(payload: unknown) {
     "- marginal-only versus fail behavior",
     "- false-positive or service/documentation clues",
     "",
-    JSON.stringify(payload),
+    stringifyUnicodeSafe(payload),
   ].join("\n");
 }
 
@@ -86,7 +90,7 @@ export function buildPassASystemPrompt() {
     "Your goal is to produce the cleanest investigation inventory for the article.",
     "",
     "Use all provided information, but reason from strongest anchors first:",
-    "1. shared traceability anchors: supplier batches, installed parts, reported parts, BOM positions",
+    "1. shared traceability anchors: supplier batches, part+batch anchors, installed parts, reported parts, BOM positions, and co-occurring anchor bundles",
     "2. shared temporal signatures: narrow week windows, build-to-claim lag bands, rise-and-disappear patterns",
     "3. shared process anchors: occurrence section, repeated rework language, repeated actions",
     "4. shared operational anchors: order IDs, dominant rework user, late-stage handling patterns",
@@ -102,6 +106,7 @@ export function buildPassASystemPrompt() {
     "",
     "For each proposed case, the strongest shared evidence must explain why these products belong together.",
     "Only emit multi-product cases when there is at least one shared structural anchor: traceability, temporal/process containment, claim-only lag behavior, or order/rework-user concentration.",
+    "If multiple single-product incidents repeat the same specific reported part, defect/test signature, or supplier-batch/order anchor, prefer one shared case over many isolated incidents.",
     "Return only structured JSON.",
   ].join("\n");
 }
@@ -123,11 +128,12 @@ export function buildPassAUserPrompt(payload: unknown) {
     "When evaluating each grouping, explicitly test for these questions:",
     "- What is the strongest shared anchor?",
     "- Is the anchor traceability, temporal, process, operational, or only textual?",
+    "- Is the anchor locally specific, or is it so article-wide that it should be down-weighted?",
     "- Is this truly multi-product?",
     "- Could this be explained by detection bias, false positives, low volume, or marginal-only screening?",
     "- Is this better framed as a case, an incident, a watchlist, a noise pattern, or a standalone signal?",
     "",
-    JSON.stringify(payload),
+    stringifyUnicodeSafe(payload),
   ].join("\n");
 }
 
@@ -163,6 +169,7 @@ export function buildPassBSystemPrompt() {
     "",
     "Preserve standalone signals when a fault is real but isolated.",
     "Use incidents, watchlists, and noise intentionally rather than letting weak patterns leak into cases.",
+    "When several incidents share the same specific structural anchors, promote that repeated family into a case instead of keeping them isolated.",
     "Return the same structured JSON contract, now representing the final reviewed proposal set.",
   ].join("\n");
 }
@@ -190,7 +197,7 @@ export function buildPassBUserPrompt(payload: unknown) {
     "Do not rebuild the article from raw evidence.",
     "Keep standalone signals explicit when the evidence suggests they should not be grouped into any proposed case.",
     "",
-    JSON.stringify(payload),
+    stringifyUnicodeSafe(payload),
   ].join("\n");
 }
 
@@ -241,6 +248,6 @@ export function buildStage3UserPrompt(payload: unknown) {
     "Think like a quality-review board, not like a clustering engine.",
     "A smaller, more credible inventory is better than a larger speculative one.",
     "",
-    JSON.stringify(payload),
+    stringifyUnicodeSafe(payload),
   ].join("\n");
 }

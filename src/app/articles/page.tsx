@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 
+import { ClusteringPipelineToggle } from "@/components/clustering-pipeline-toggle";
 import { GlobalPipelineRunner } from "@/components/global-pipeline-runner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,6 +25,15 @@ import {
   getProposedCasesDashboard,
   type GlobalInventoryItem,
 } from "@/lib/manex-case-clustering";
+import {
+  buildClusteringModeHref,
+  parseClusteringMode,
+  type ClusteringMode,
+} from "@/lib/manex-clustering-mode";
+import {
+  getDeterministicProposedCasesDashboard,
+  type DeterministicGlobalInventoryItem,
+} from "@/lib/manex-deterministic-case-clustering";
 import { formatUiDateTime } from "@/lib/ui-format";
 
 export const dynamic = "force-dynamic";
@@ -48,31 +58,38 @@ function Metric({
 
 const toneStyles: Record<string, string> = {
   validated_case: "bg-[color:rgba(0,92,151,0.08)] text-[var(--primary)]",
-  watchlist: "bg-[color:rgba(208,141,37,0.14)] text-amber-700",
+  watchlist: "bg-[color:rgba(208,141,37,0.14)] text-[var(--warning-foreground)]",
   noise_bucket: "bg-[color:rgba(20,32,42,0.08)] text-foreground",
   rejected_case: "bg-[color:rgba(178,69,63,0.1)] text-[var(--destructive)]",
 };
 
-function inventoryHref(item: GlobalInventoryItem) {
+function inventoryHref(
+  item: GlobalInventoryItem | DeterministicGlobalInventoryItem,
+  mode: ClusteringMode,
+) {
   const articleId = item.articleIds[0];
 
   if (!articleId) {
-    return "/articles";
+    return buildClusteringModeHref("/articles", mode);
   }
 
   const candidateId = item.linkedCandidateIds[0];
-  return candidateId ? `/articles/${articleId}?case=${candidateId}` : `/articles/${articleId}`;
+  return candidateId
+    ? buildClusteringModeHref(`/articles/${articleId}?case=${candidateId}`, mode)
+    : buildClusteringModeHref(`/articles/${articleId}`, mode);
 }
 
 function GlobalPatternSection({
   title,
   description,
   items,
+  mode,
   emptyText,
 }: {
   title: string;
   description: string;
-  items: GlobalInventoryItem[];
+  items: Array<GlobalInventoryItem | DeterministicGlobalInventoryItem>;
+  mode: ClusteringMode;
   emptyText: string;
 }) {
   return (
@@ -133,7 +150,7 @@ function GlobalPatternSection({
                     size="lg"
                     variant="outline"
                     render={
-                      <Link href={inventoryHref(item)}>
+                      <Link href={inventoryHref(item, mode)}>
                         <CircuitBoard className="size-4" />
                         Open article
                       </Link>
@@ -153,8 +170,17 @@ function GlobalPatternSection({
   );
 }
 
-export default async function ArticlesPage() {
-  const dashboard = await getProposedCasesDashboard();
+type ArticlesPageProps = {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+};
+
+export default async function ArticlesPage({ searchParams }: ArticlesPageProps) {
+  const search = await searchParams;
+  const mode = parseClusteringMode(search.pipeline);
+  const dashboard =
+    mode === "deterministic"
+      ? await getDeterministicProposedCasesDashboard()
+      : await getProposedCasesDashboard();
   const crossArticleCases =
     dashboard.globalInventory?.validatedCases.filter((item) => item.articleIds.length > 1) ?? [];
   const watchlists = dashboard.globalInventory?.watchlists ?? [];
@@ -163,6 +189,32 @@ export default async function ArticlesPage() {
   const globalPatterns = [...crossArticleCases, ...watchlists, ...noiseBuckets, ...rejectedCases];
   const articleQueues = dashboard.articleQueues;
   const activeRuns = dashboard.activeRuns;
+  const toggleItems = [
+    {
+      mode: "current" as const,
+      label: "Classic three-layer clustering",
+      description: "Original dossier, article-case, and global reconciliation flow.",
+      href: buildClusteringModeHref("/articles", "current"),
+    },
+    {
+      mode: "deterministic" as const,
+      label: "Deterministic issue grouping",
+      description: "Per-product issue extraction with deterministic article and global grouping.",
+      href: buildClusteringModeHref("/articles", "deterministic"),
+    },
+  ];
+  const pipelineLabel =
+    mode === "deterministic"
+      ? "Deterministic issue-grouping pipeline"
+      : "Classic three-layer pipeline";
+  const pipelineDescription =
+    mode === "deterministic"
+      ? "Run the bounded deterministic batch. Each article keeps its own issue extraction, then the batch reconciles the latest article-local outputs into a separate deterministic global view."
+      : "Launch the original full dataset pipeline from Global Intelligence. This reports queue depth, live stage distribution, and article-by-article outcomes while the batch is still running.";
+  const batchRoute =
+    mode === "deterministic"
+      ? "/api/articles/cluster-all-deterministic"
+      : "/api/articles/cluster-all";
 
   return (
     <main className="min-h-screen">
@@ -184,6 +236,7 @@ export default async function ArticlesPage() {
               </p>
               <div className="flex flex-wrap gap-2">
                 <Badge>{capabilities.hasAi ? "LLM pipeline live" : "OpenAI key missing"}</Badge>
+                <Badge variant="outline">{pipelineLabel}</Badge>
                 <Badge variant="outline">{globalPatterns.length} global patterns</Badge>
                 <Badge variant="outline">
                   {articleQueues.length} articles with proposed cases
@@ -203,6 +256,8 @@ export default async function ArticlesPage() {
             />
           </div>
         </header>
+
+        <ClusteringPipelineToggle currentMode={mode} items={toggleItems} />
 
         <section className="grid gap-6 xl:grid-cols-[minmax(0,1.35fr)_380px]">
           <div className="space-y-6">
@@ -249,18 +304,21 @@ export default async function ArticlesPage() {
                   title="Cross-Article Anomalies"
                   description="Patterns that appear to connect more than one article family."
                   items={crossArticleCases}
+                  mode={mode}
                   emptyText="No cross-article anomalies were promoted in the latest global pass."
                 />
                 <GlobalPatternSection
                   title="Watchlists"
                   description="Global monitoring patterns that should stay visible without becoming active cases."
                   items={watchlists}
+                  mode={mode}
                   emptyText="No watchlists were emitted in the latest global pass."
                 />
                 <GlobalPatternSection
                   title="Noise and distractors"
                   description="False positives, weak-only patterns, and suspected detection bias the system wants you to ignore or down-rank."
                   items={[...noiseBuckets, ...rejectedCases]}
+                  mode={mode}
                   emptyText="No explicit noise buckets were emitted in the latest global pass."
                 />
               </CardContent>
@@ -268,7 +326,20 @@ export default async function ArticlesPage() {
           </div>
 
           <div className="space-y-6">
-            <GlobalPipelineRunner hasAi={capabilities.hasAi} initialActiveRuns={activeRuns} />
+            <GlobalPipelineRunner
+              key={`${mode}:${dashboard.latestGlobalRun?.id ?? "none"}:${activeRuns.map((run) => run.id).join(",")}`}
+              hasAi={capabilities.hasAi}
+              initialActiveRuns={activeRuns}
+              routePath={batchRoute}
+              pipelineLabel={pipelineLabel}
+              pipelineDescription={pipelineDescription}
+              startButtonLabel={
+                mode === "deterministic"
+                  ? "Run deterministic batch"
+                  : "Run complete pipeline"
+              }
+              supportsStop
+            />
 
             <Card className="surface-panel rounded-[30px] px-0 py-0">
               <CardHeader className="px-6 pt-6">
@@ -371,7 +442,11 @@ export default async function ArticlesPage() {
                         <Button
                           size="sm"
                           variant="outline"
-                          render={<Link href={`/articles/${article.articleId}`}>Open article</Link>}
+                          render={
+                            <Link href={buildClusteringModeHref(`/articles/${article.articleId}`, mode)}>
+                              Open article
+                            </Link>
+                          }
                         />
                       </div>
                     </article>

@@ -143,7 +143,7 @@ function PartInstallCard({
   item: ProductTraceability["assemblies"][number]["items"][number];
 }) {
   return (
-    <article className="relative overflow-hidden rounded-[24px] border border-white/10 bg-white/78 p-4 shadow-[0_14px_36px_rgba(25,28,29,0.05)]">
+    <article className="relative overflow-hidden rounded-[24px] border border-white/10 bg-[color:var(--raised-overlay-surface)] p-4 shadow-[0_14px_36px_rgba(25,28,29,0.05)]">
       <div className={`absolute inset-x-0 top-0 h-20 bg-gradient-to-r ${tone}`} />
       <div className="relative space-y-4">
         <div className="flex items-start justify-between gap-3">
@@ -337,7 +337,7 @@ function ProductTraceCard({
             return (
               <section
                 key={assembly.assemblyLabel}
-                className="overflow-hidden rounded-[30px] border border-white/10 bg-[color:rgba(255,255,255,0.72)]"
+                className="overflow-hidden rounded-[30px] border border-white/10 bg-[color:var(--raised-overlay-surface)]"
               >
                 <div className={`bg-gradient-to-r ${tone} px-5 py-5`}>
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
@@ -502,7 +502,7 @@ function BlastRadiusCard({
             {blastRadius.relatedProducts.map((product, index) => (
               <article
                 key={product.productId}
-                className={`overflow-hidden rounded-[24px] border border-white/10 bg-white/78 shadow-[0_14px_36px_rgba(25,28,29,0.05)]`}
+                className={`overflow-hidden rounded-[24px] border border-white/10 bg-[color:var(--raised-overlay-surface)] shadow-[0_14px_36px_rgba(25,28,29,0.05)]`}
               >
                 <div
                   className={`h-18 bg-gradient-to-r ${assemblyTones[index % assemblyTones.length]} px-4 py-4`}

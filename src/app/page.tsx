@@ -37,13 +37,13 @@ const typeTone: Record<QualitySignalType, string> = {
   field_claim: "bg-[color:rgba(178,69,63,0.1)] text-[var(--destructive)]",
   defect: "bg-[color:rgba(0,92,151,0.1)] text-[var(--primary)]",
   bad_test: "bg-[color:rgba(178,69,63,0.12)] text-[var(--destructive)]",
-  marginal_test: "bg-[color:rgba(208,141,37,0.14)] text-amber-700",
+  marginal_test: "bg-[color:rgba(208,141,37,0.14)] text-[var(--warning-foreground)]",
 };
 
 const severityTone: Record<string, string> = {
   critical: "bg-[color:rgba(178,69,63,0.14)] text-[var(--destructive)]",
   high: "bg-[color:rgba(178,69,63,0.1)] text-[var(--destructive)]",
-  medium: "bg-[color:rgba(208,141,37,0.14)] text-amber-700",
+  medium: "bg-[color:rgba(208,141,37,0.14)] text-[var(--warning-foreground)]",
   low: "bg-[color:rgba(20,32,42,0.08)] text-foreground",
 };
 

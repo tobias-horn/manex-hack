@@ -7,14 +7,35 @@ import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import type { TeamCaseRunSummary } from "@/lib/manex-case-clustering-state";
 import { formatUiDateTime } from "@/lib/ui-format";
+
+type ArticleClusterRunSummary = {
+  id: string;
+  articleId: string;
+  articleName: string | null;
+  model: string;
+  status: "building" | "completed" | "failed";
+  currentStage: string;
+  stageDetail: string | null;
+  stageUpdatedAt: string | null;
+  startedAt: string;
+  completedAt: string | null;
+  errorMessage: string | null;
+  candidateCount: number;
+  reviewPayload?: unknown;
+  strategy?: string | null;
+  issueCount?: number;
+};
 
 type ArticleClusterRunnerProps = {
   articleId: string;
   hasAi: boolean;
-  latestRun: TeamCaseRunSummary | null;
+  latestRun: ArticleClusterRunSummary | null;
   proposedCaseCount: number;
+  routePath: string;
+  pipelineLabel: string;
+  pipelineDescription: string;
+  actionLabel: string;
 };
 
 type FeedbackState = {
@@ -27,9 +48,10 @@ type StatusPayload = {
   accepted?: boolean;
   articleId: string;
   isRunning: boolean;
-  latestRun: TeamCaseRunSummary | null;
+  latestRun: ArticleClusterRunSummary | null;
   runId: string | null;
   caseCount: number;
+  issueCount?: number;
   validatedCount: number;
   watchlistCount: number;
   noiseCount: number;
@@ -42,8 +64,10 @@ const stageLabels: Record<string, string> = {
   queued: "Queued",
   stage1_loading: "Stage 1: loading",
   stage1_synthesis: "Stage 1: synthesis",
+  stage1_issue_extraction: "Stage 1: issue extraction",
   stage2_draft: "Stage 2: draft clustering",
   stage2_review: "Stage 2: review",
+  stage2_grouping: "Stage 2: grouping",
   stage2_persisting: "Stage 2: persisting",
   stage3_reconciliation: "Stage 3: reconciliation",
   completed: "Completed",
@@ -53,9 +77,11 @@ const stageLabels: Record<string, string> = {
 const stageProgress: Record<string, number> = {
   queued: 4,
   stage1_loading: 12,
-  stage1_synthesis: 30,
-  stage2_draft: 56,
+  stage1_synthesis: 26,
+  stage1_issue_extraction: 42,
+  stage2_draft: 58,
   stage2_review: 74,
+  stage2_grouping: 76,
   stage2_persisting: 88,
   stage3_reconciliation: 96,
   completed: 100,
@@ -78,7 +104,7 @@ function getProgress(stage: string | null | undefined) {
   return stageProgress[stage] ?? stageProgress.queued;
 }
 
-function extractInventoryCounts(latestRun: TeamCaseRunSummary | null) {
+function extractInventoryCounts(latestRun: ArticleClusterRunSummary | null) {
   const reviewPayload =
     latestRun?.reviewPayload && typeof latestRun.reviewPayload === "object"
       ? (latestRun.reviewPayload as {
@@ -87,25 +113,31 @@ function extractInventoryCounts(latestRun: TeamCaseRunSummary | null) {
             watchlists?: unknown[];
             noiseBuckets?: unknown[];
           };
+          globalInventory?: {
+            validatedCases?: unknown[];
+            watchlists?: unknown[];
+            noiseBuckets?: unknown[];
+          };
         })
       : null;
+  const globalInventory = reviewPayload?.stage3 ?? reviewPayload?.globalInventory;
 
   return {
-    validatedCount: Array.isArray(reviewPayload?.stage3?.validatedCases)
-      ? reviewPayload.stage3.validatedCases.length
+    validatedCount: Array.isArray(globalInventory?.validatedCases)
+      ? globalInventory.validatedCases.length
       : 0,
-    watchlistCount: Array.isArray(reviewPayload?.stage3?.watchlists)
-      ? reviewPayload.stage3.watchlists.length
+    watchlistCount: Array.isArray(globalInventory?.watchlists)
+      ? globalInventory.watchlists.length
       : 0,
-    noiseCount: Array.isArray(reviewPayload?.stage3?.noiseBuckets)
-      ? reviewPayload.stage3.noiseBuckets.length
+    noiseCount: Array.isArray(globalInventory?.noiseBuckets)
+      ? globalInventory.noiseBuckets.length
       : 0,
   };
 }
 
 function buildInitialStatus(
   articleId: string,
-  latestRun: TeamCaseRunSummary | null,
+  latestRun: ArticleClusterRunSummary | null,
   proposedCaseCount: number,
 ): RunnerStatus {
   const inventoryCounts = extractInventoryCounts(latestRun);
@@ -117,6 +149,7 @@ function buildInitialStatus(
     latestRun,
     runId: latestRun?.id ?? null,
     caseCount: latestRun?.candidateCount ?? proposedCaseCount,
+    issueCount: latestRun?.issueCount ?? 0,
     ...inventoryCounts,
   };
 }
@@ -129,6 +162,7 @@ function mapPayloadToStatus(payload: StatusPayload): RunnerStatus {
     latestRun: payload.latestRun,
     runId: payload.runId,
     caseCount: payload.caseCount,
+    issueCount: payload.issueCount ?? 0,
     validatedCount: payload.validatedCount,
     watchlistCount: payload.watchlistCount,
     noiseCount: payload.noiseCount,
@@ -140,6 +174,10 @@ export function ArticleClusterRunner({
   hasAi,
   latestRun,
   proposedCaseCount,
+  routePath,
+  pipelineLabel,
+  pipelineDescription,
+  actionLabel,
 }: ArticleClusterRunnerProps) {
   const router = useRouter();
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -154,7 +192,7 @@ export function ArticleClusterRunner({
   }, [status]);
 
   const refreshStatus = useEffectEvent(async () => {
-    const response = await fetch(`/api/articles/${articleId}/cluster`, {
+    const response = await fetch(routePath, {
       method: "GET",
       cache: "no-store",
     });
@@ -169,9 +207,13 @@ export function ArticleClusterRunner({
 
     if (previousStatus.isRunning && !nextStatus.isRunning) {
       if (nextStatus.latestRun?.status === "completed") {
+        const issueSuffix =
+          nextStatus.issueCount && nextStatus.issueCount > 0
+            ? `, ${nextStatus.issueCount} extracted issues`
+            : "";
         setFeedback({
           tone: "success",
-          text: `Pipeline finished with ${nextStatus.caseCount} proposed cases, ${nextStatus.validatedCount} validated cases, ${nextStatus.watchlistCount} watchlists, and ${nextStatus.noiseCount} noise buckets.`,
+          text: `Pipeline finished with ${nextStatus.caseCount} proposed cases${issueSuffix}, ${nextStatus.validatedCount} validated cases, ${nextStatus.watchlistCount} watchlists, and ${nextStatus.noiseCount} noise buckets.`,
         });
       } else if (nextStatus.latestRun?.status === "failed") {
         setFeedback({
@@ -212,7 +254,7 @@ export function ArticleClusterRunner({
     setFeedback(null);
 
     try {
-      const response = await fetch(`/api/articles/${articleId}/cluster`, {
+      const response = await fetch(routePath, {
         method: "POST",
       });
       const payload = (await response.json()) as StatusPayload;
@@ -234,7 +276,7 @@ export function ArticleClusterRunner({
       setFeedback({
         tone: "success",
         text: payload.accepted
-          ? "Article pipeline started. This card will keep polling live stage progress."
+          ? `${pipelineLabel} started. This card will keep polling live stage progress.`
           : "This article already has an active clustering run. Live status is shown below.",
       });
     } catch (error) {
@@ -257,7 +299,7 @@ export function ArticleClusterRunner({
     <div className="space-y-4 rounded-[28px] border border-white/10 bg-[color:var(--surface-low)] p-5">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <div className="eyebrow">Three-stage clustering</div>
+          <div className="eyebrow">{pipelineLabel}</div>
           <div className="mt-2 text-lg font-semibold">Persist proposed case groups</div>
         </div>
         <div className="flex size-11 items-center justify-center rounded-full bg-[color:rgba(0,92,151,0.08)] text-[var(--primary)]">
@@ -266,15 +308,16 @@ export function ArticleClusterRunner({
       </div>
 
       <p className="text-sm leading-6 text-[var(--muted-foreground)]">
-        Stage 1 builds deterministic product and article dossiers, Stage 2 drafts and
-        reviews article-local cases, and Stage 3 reconciles the article against the
-        latest global inventory. The output stays investigative and proposed.
+        {pipelineDescription}
       </p>
 
       <div className="flex flex-wrap gap-2">
         <Badge>{hasAi ? "GPT clustering enabled" : "OpenAI key missing"}</Badge>
         {run ? <Badge variant="outline">{run.model}</Badge> : null}
-        {run ? <Badge variant="outline">{run.strategy}</Badge> : null}
+        {run?.strategy ? <Badge variant="outline">{run.strategy}</Badge> : null}
+        {status.issueCount ? (
+          <Badge variant="outline">{status.issueCount} extracted issues</Badge>
+        ) : null}
         <Badge variant="outline">{status.caseCount || proposedCaseCount} proposed cases</Badge>
       </div>
 
@@ -302,7 +345,8 @@ export function ArticleClusterRunner({
               : "No live run is active for this article right now.")}
         </p>
         <p className="mt-2 text-xs uppercase tracking-[0.16em] text-[var(--muted-foreground)]">
-          Updated {formatUiDateTime(run?.stageUpdatedAt ?? run?.startedAt ?? new Date().toISOString())}
+          Updated{" "}
+          {formatUiDateTime(run?.stageUpdatedAt ?? run?.startedAt ?? new Date().toISOString())}
         </p>
       </div>
 
@@ -334,17 +378,17 @@ export function ArticleClusterRunner({
         {isSubmitting ? (
           <>
             <LoaderCircle className="size-4 animate-spin" />
-            Starting clustering
+            Starting {actionLabel}
           </>
         ) : status.isRunning ? (
           <>
             <LoaderCircle className="size-4 animate-spin" />
-            Clustering in progress
+            {actionLabel} in progress
           </>
-        ) : latestRun ? (
-          "Refresh article clustering"
+        ) : run ? (
+          `Refresh ${actionLabel}`
         ) : (
-          "Run article clustering"
+          `Run ${actionLabel}`
         )}
       </Button>
 

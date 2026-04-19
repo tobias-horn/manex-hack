@@ -2,21 +2,34 @@
 
 import { LoaderCircle, Play, Square, Trash2, Workflow } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import type {
-  TeamCaseRunSummary,
-  TeamClusteringResetSummary,
-} from "@/lib/manex-case-clustering-state";
 import { formatUiDateTime } from "@/lib/ui-format";
+
+type PipelineRunSummary = {
+  id: string;
+  articleId: string;
+  articleName: string | null;
+  model: string;
+  status: "building" | "completed" | "failed";
+  currentStage: string;
+  stageDetail: string | null;
+  stageUpdatedAt: string | null;
+  startedAt: string;
+  completedAt: string | null;
+  errorMessage: string | null;
+  candidateCount: number;
+  issueCount?: number;
+};
 
 type BatchArticleResult = {
   articleId: string;
   ok: boolean;
   runId: string | null;
+  issueCount?: number;
   caseCount: number;
   validatedCount: number;
   watchlistCount: number;
@@ -39,16 +52,31 @@ type BatchStatus = {
   articleResults: BatchArticleResult[];
 };
 
+type ResetSummary =
+  | {
+      productDossiers: number;
+      articleDossiers: number;
+      runs: number;
+      candidates: number;
+      candidateMembers: number;
+    }
+  | {
+      runs: number;
+      batches: number;
+      candidates: number;
+      candidateMembers: number;
+    };
+
 type ResetStatus = {
   completedAt: string | null;
-  summary: TeamClusteringResetSummary | null;
+  summary: ResetSummary | null;
 };
 
 type StatusPayload = {
   ok: boolean;
   batch: BatchStatus;
   reset: ResetStatus;
-  activeRuns: TeamCaseRunSummary[];
+  activeRuns: PipelineRunSummary[];
   runningArticleCount: number;
   stageCounts: Record<string, number>;
   message?: string;
@@ -62,15 +90,22 @@ type FeedbackState = {
 
 type GlobalPipelineRunnerProps = {
   hasAi: boolean;
-  initialActiveRuns: TeamCaseRunSummary[];
+  initialActiveRuns: PipelineRunSummary[];
+  routePath: string;
+  pipelineLabel: string;
+  pipelineDescription: string;
+  startButtonLabel: string;
+  supportsStop?: boolean;
 };
 
 const stageLabels: Record<string, string> = {
   queued: "Queued",
   stage1_loading: "Stage 1: loading",
   stage1_synthesis: "Stage 1: synthesis",
+  stage1_issue_extraction: "Stage 1: issue extraction",
   stage2_draft: "Stage 2: draft clustering",
   stage2_review: "Stage 2: review",
+  stage2_grouping: "Stage 2: grouping",
   stage2_persisting: "Stage 2: persisting",
   stage3_reconciliation: "Stage 3: reconciliation",
   completed: "Completed",
@@ -82,16 +117,36 @@ function formatStage(stage: string) {
   return stageLabels[stage] ?? stage.replaceAll("_", " ");
 }
 
-function buildInitialStageCounts(activeRuns: TeamCaseRunSummary[]) {
+function buildInitialStageCounts(activeRuns: PipelineRunSummary[]) {
   return activeRuns.reduce<Record<string, number>>((counts, run) => {
     counts[run.currentStage] = (counts[run.currentStage] ?? 0) + 1;
     return counts;
   }, {});
 }
 
+function buildResetSuccessText(summary: ResetSummary | null) {
+  if (!summary) {
+    return "Clustering state cleared.";
+  }
+
+  if ("productDossiers" in summary) {
+    return `Clustering state cleared: ${summary.productDossiers} product dossiers, ${summary.articleDossiers} article dossiers, ${summary.runs} runs, and ${summary.candidates} proposed cases removed.`;
+  }
+
+  return `Clustering state cleared: ${summary.runs} runs, ${summary.batches} batches, ${summary.candidates} proposed cases, and ${summary.candidateMembers} memberships removed.`;
+}
+
+const actionButtonClass =
+  "h-auto min-h-12 w-full justify-start px-4 py-3 text-left whitespace-normal";
+
 export function GlobalPipelineRunner({
   hasAi,
   initialActiveRuns,
+  routePath,
+  pipelineLabel,
+  pipelineDescription,
+  startButtonLabel,
+  supportsStop = false,
 }: GlobalPipelineRunnerProps) {
   const router = useRouter();
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -132,8 +187,8 @@ export function GlobalPipelineRunner({
     isStopping ||
     isResetting;
 
-  async function refreshStatus() {
-    const response = await fetch("/api/articles/cluster-all", {
+  const refreshStatus = useEffectEvent(async () => {
+    const response = await fetch(routePath, {
       method: "GET",
       cache: "no-store",
     });
@@ -148,7 +203,7 @@ export function GlobalPipelineRunner({
     if (previousBatch.status === "running" && payload.batch.status === "completed") {
       setFeedback({
         tone: "success",
-        text: `Complete pipeline finished. ${payload.batch.okCount} article runs completed successfully.`,
+        text: `${pipelineLabel} finished. ${payload.batch.okCount} article runs completed successfully.`,
       });
     } else if (previousBatch.status === "running" && payload.batch.status === "failed") {
       if (payload.batch.errorMessage === STOPPED_PIPELINE_MESSAGE) {
@@ -171,7 +226,7 @@ export function GlobalPipelineRunner({
     setActiveRuns(payload.activeRuns);
     setStageCounts(payload.stageCounts);
     return payload;
-  }
+  });
 
   useEffect(() => {
     if (!shouldPoll) {
@@ -206,7 +261,7 @@ export function GlobalPipelineRunner({
     setFeedback(null);
 
     try {
-      const response = await fetch("/api/articles/cluster-all", {
+      const response = await fetch(routePath, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -233,7 +288,7 @@ export function GlobalPipelineRunner({
       setStageCounts(payload.stageCounts);
       setFeedback({
         tone: "success",
-        text: "Complete pipeline started. The dashboard will keep polling live stage progress.",
+        text: `${pipelineLabel} started. The dashboard will keep polling live stage progress.`,
       });
     } catch (error) {
       setFeedback({
@@ -250,7 +305,7 @@ export function GlobalPipelineRunner({
 
   async function resetClusteringState() {
     const confirmed = window.confirm(
-      "Delete all persisted clustering state? This removes generated product dossiers, article dossiers, case runs, and proposed candidates, but leaves source hackathon data untouched.",
+      `Delete all persisted state for ${pipelineLabel.toLowerCase()}? This removes generated pipeline output, but leaves source hackathon data untouched.`,
     );
 
     if (!confirmed) {
@@ -261,7 +316,7 @@ export function GlobalPipelineRunner({
     setFeedback(null);
 
     try {
-      const response = await fetch("/api/articles/cluster-all", {
+      const response = await fetch(routePath, {
         method: "DELETE",
       });
 
@@ -281,13 +336,9 @@ export function GlobalPipelineRunner({
       setReset(payload.reset);
       setActiveRuns(payload.activeRuns);
       setStageCounts(payload.stageCounts);
-
-      const summary = payload.reset.summary;
       setFeedback({
         tone: "success",
-        text: summary
-          ? `Clustering state cleared: ${summary.productDossiers} product dossiers, ${summary.articleDossiers} article dossiers, ${summary.runs} runs, and ${summary.candidates} proposed cases removed.`
-          : "Clustering state cleared.",
+        text: buildResetSuccessText(payload.reset.summary),
       });
       router.refresh();
     } catch (error) {
@@ -308,7 +359,7 @@ export function GlobalPipelineRunner({
     setFeedback(null);
 
     try {
-      const response = await fetch("/api/articles/cluster-all", {
+      const response = await fetch(routePath, {
         method: "PATCH",
       });
 
@@ -368,54 +419,97 @@ export function GlobalPipelineRunner({
     return "No full pipeline batch is running";
   }, [activeRuns.length, batch.okCount, batch.status]);
 
+  const progressCaption = useMemo(() => {
+    if (batch.status === "running" || activeRuns.length > 0) {
+      if (totalArticleCount) {
+        return `${finishedArticleCount} of ${totalArticleCount} articles have finished. The board keeps polling until the batch settles.`;
+      }
+
+      return "The board is polling for live article-level stage updates.";
+    }
+
+    if (batch.status === "completed") {
+      return batch.completedAt
+        ? `Last completed ${formatUiDateTime(batch.completedAt)}.`
+        : "The last batch completed successfully.";
+    }
+
+    if (batch.status === "failed") {
+      if (batch.errorMessage === STOPPED_PIPELINE_MESSAGE) {
+        return "The most recent batch was stopped before it finished.";
+      }
+
+      return batch.errorMessage ?? "The most recent batch finished with one or more article failures.";
+    }
+
+    return "Start a new run to refresh the shared global inventory from the latest article outputs.";
+  }, [
+    activeRuns.length,
+    batch.completedAt,
+    batch.errorMessage,
+    batch.status,
+    finishedArticleCount,
+    totalArticleCount,
+  ]);
+
   return (
-    <div className="space-y-4 rounded-[28px] border border-white/10 bg-[color:var(--surface-low)] p-5">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <div className="eyebrow">Complete pipeline</div>
-          <div className="mt-2 text-lg font-semibold">Run every article end to end</div>
+    <div className="surface-sheet ghost-border space-y-5 rounded-[32px] p-5 sm:p-6">
+      <div className="rounded-[28px] border border-white/10 bg-[color:var(--surface-low)] p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-3">
+            <div className="eyebrow">{pipelineLabel}</div>
+            <div className="font-heading text-[1.9rem] leading-[1.05] font-semibold tracking-[-0.03em] text-balance">
+              Run every article end to end
+            </div>
+            <p className="max-w-[32rem] text-sm leading-6 text-[var(--muted-foreground)]">
+              {pipelineDescription}
+            </p>
+          </div>
+          <div className="flex size-13 shrink-0 items-center justify-center rounded-[1.6rem] bg-[color:rgba(0,92,151,0.08)] text-[var(--primary)]">
+            <Workflow className="size-5" />
+          </div>
         </div>
-        <div className="flex size-11 items-center justify-center rounded-full bg-[color:rgba(0,92,151,0.08)] text-[var(--primary)]">
-          <Workflow className="size-4.5" />
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          <Badge>{hasAi ? "GPT pipeline enabled" : "OpenAI key missing"}</Badge>
+          <Badge variant="outline">{headline}</Badge>
+          {totalArticleCount ? <Badge variant="outline">{totalArticleCount} articles</Badge> : null}
+          {batch.concurrency ? (
+            <Badge variant="outline">Concurrency {batch.concurrency}</Badge>
+          ) : null}
         </div>
       </div>
 
-      <p className="text-sm leading-6 text-[var(--muted-foreground)]">
-        Launch the full dataset pipeline from Global Intelligence. This now reports
-        queue depth, live stage distribution, and article-by-article outcomes while
-        the batch is still running.
-      </p>
-
-      <div className="flex flex-wrap gap-2">
-        <Badge>{hasAi ? "GPT pipeline enabled" : "OpenAI key missing"}</Badge>
-        <Badge variant="outline">{headline}</Badge>
-        {totalArticleCount ? <Badge variant="outline">{totalArticleCount} articles</Badge> : null}
-        {batch.concurrency ? (
-          <Badge variant="outline">Concurrency {batch.concurrency}</Badge>
-        ) : null}
-      </div>
-
-      <div className="rounded-[22px] border border-white/10 bg-black/8 px-4 py-4">
-        <div className="mb-2 flex items-center justify-between gap-3 text-sm">
-          <span className="font-medium">Batch progress</span>
-          <span className="text-[var(--muted-foreground)]">{progressValue}%</span>
+      <div className="rounded-[28px] border border-white/10 bg-black/8 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="space-y-1">
+            <div className="text-base font-semibold">Batch progress</div>
+            <p className="max-w-[30rem] text-sm leading-6 text-[var(--muted-foreground)]">
+              {progressCaption}
+            </p>
+          </div>
+          <div className="rounded-full bg-[color:rgba(0,92,151,0.08)] px-3 py-1 text-sm font-semibold text-[var(--primary)]">
+            {progressValue}%
+          </div>
         </div>
-        <Progress value={progressValue} />
+        <div className="mt-4">
+          <Progress value={progressValue} />
+        </div>
 
-        <div className="mt-4 grid gap-3 sm:grid-cols-4">
-          <div className="rounded-[18px] bg-[color:var(--surface-low)] px-3 py-3">
+        <div className="mt-4 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(120px,1fr))]">
+          <div className="rounded-[22px] border border-white/8 bg-[color:var(--surface-lowest)] px-4 py-4">
             <div className="eyebrow">Queued</div>
             <div className="mt-2 text-2xl font-semibold">{queuedArticleCount}</div>
           </div>
-          <div className="rounded-[18px] bg-[color:var(--surface-low)] px-3 py-3">
+          <div className="rounded-[22px] border border-white/8 bg-[color:var(--surface-lowest)] px-4 py-4">
             <div className="eyebrow">Running</div>
             <div className="mt-2 text-2xl font-semibold">{activeRuns.length}</div>
           </div>
-          <div className="rounded-[18px] bg-[color:var(--surface-low)] px-3 py-3">
+          <div className="rounded-[22px] border border-white/8 bg-[color:var(--surface-lowest)] px-4 py-4">
             <div className="eyebrow">Completed</div>
             <div className="mt-2 text-2xl font-semibold">{batch.okCount}</div>
           </div>
-          <div className="rounded-[18px] bg-[color:var(--surface-low)] px-3 py-3">
+          <div className="rounded-[22px] border border-white/8 bg-[color:var(--surface-lowest)] px-4 py-4">
             <div className="eyebrow">Failed</div>
             <div className="mt-2 text-2xl font-semibold">{batch.errorCount}</div>
           </div>
@@ -432,7 +526,15 @@ export function GlobalPipelineRunner({
         ) : null}
       </div>
 
-      <div className="grid gap-3 md:grid-cols-3">
+      <div className="rounded-[28px] border border-white/10 bg-[color:var(--surface-low)] p-5">
+        <div className="space-y-1">
+          <div className="eyebrow">Controls</div>
+          <div className="text-base font-semibold">Start, stop, or clear generated pipeline state</div>
+          <p className="text-sm leading-6 text-[var(--muted-foreground)]">
+            Stop halts the active batch gracefully. Reset removes only persisted pipeline artifacts and leaves the source hackathon data untouched.
+          </p>
+        </div>
+
         <Button
           size="lg"
           onClick={runCompletePipeline}
@@ -443,81 +545,89 @@ export function GlobalPipelineRunner({
             batch.status === "running" ||
             !hasAi
           }
-          className="w-full"
+          className={`mt-4 ${actionButtonClass}`}
         >
           {isSubmitting ? (
             <>
               <LoaderCircle className="size-4 animate-spin" />
-              Starting complete pipeline
+              Starting batch
             </>
           ) : batch.status === "running" ? (
             <>
               <LoaderCircle className="size-4 animate-spin" />
-              Complete pipeline running
+              Batch running
             </>
           ) : (
             <>
               <Play className="size-4" />
-              Run complete pipeline
+              {startButtonLabel}
             </>
           )}
         </Button>
 
-        <Button
-          size="lg"
-          variant="outline"
-          onClick={stopPipeline}
-          disabled={
-            isSubmitting ||
-            isResetting ||
-            isStopping ||
-            (batch.status !== "running" && activeRuns.length === 0)
-          }
-          className="w-full"
-        >
-          {isStopping ? (
-            <>
-              <LoaderCircle className="size-4 animate-spin" />
-              Stopping pipeline
-            </>
-          ) : (
-            <>
-              <Square className="size-4" />
-              Stop pipeline
-            </>
-          )}
-        </Button>
+        <div className="mt-3 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(160px,1fr))]">
+          {supportsStop ? (
+            <Button
+              size="lg"
+              variant="outline"
+              onClick={stopPipeline}
+              disabled={
+                isSubmitting ||
+                isResetting ||
+                isStopping ||
+                (batch.status !== "running" && activeRuns.length === 0)
+              }
+              className={actionButtonClass}
+            >
+              {isStopping ? (
+                <>
+                  <LoaderCircle className="size-4 animate-spin" />
+                  Stopping pipeline
+                </>
+              ) : (
+                <>
+                  <Square className="size-4" />
+                  Stop pipeline
+                </>
+              )}
+            </Button>
+          ) : null}
 
-        <Button
-          size="lg"
-          variant="destructive"
-          onClick={resetClusteringState}
-          disabled={
-            isSubmitting ||
-            isStopping ||
-            isResetting ||
-            batch.status === "running" ||
-            activeRuns.length > 0
-          }
-          className="w-full"
-        >
-          {isResetting ? (
-            <>
-              <LoaderCircle className="size-4 animate-spin" />
-              Resetting clustering state
-            </>
-          ) : (
-            <>
-              <Trash2 className="size-4" />
-              Reset clustering state
-            </>
-          )}
-        </Button>
+          <Button
+            size="lg"
+            variant="destructive"
+            onClick={resetClusteringState}
+            disabled={
+              isSubmitting ||
+              isStopping ||
+              isResetting ||
+              batch.status === "running" ||
+              activeRuns.length > 0
+            }
+            className={actionButtonClass}
+          >
+            {isResetting ? (
+              <>
+                <LoaderCircle className="size-4 animate-spin" />
+                Resetting clustering state
+              </>
+            ) : (
+              <>
+                <Trash2 className="size-4" />
+                Reset clustering state
+              </>
+            )}
+          </Button>
+        </div>
       </div>
 
-      <div className="space-y-3">
-        {activeRuns.length ? (
-          activeRuns.map((run) => (
+      {activeRuns.length ? (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="eyebrow">Live article runs</div>
+            <Badge variant="outline">{activeRuns.length} active</Badge>
+          </div>
+          {activeRuns.map((run) => (
             <div
               key={run.id}
               className="rounded-[22px] border border-white/10 bg-black/8 px-4 py-4"
@@ -525,69 +635,59 @@ export function GlobalPipelineRunner({
               <div className="flex flex-wrap items-center gap-2">
                 <Badge>{run.articleId}</Badge>
                 <Badge variant="outline">{formatStage(run.currentStage)}</Badge>
-                <Badge variant="outline">{run.model}</Badge>
+                {run.issueCount ? (
+                  <Badge variant="outline">{run.issueCount} issues</Badge>
+                ) : null}
+                <Badge variant="outline">{run.candidateCount} cases</Badge>
               </div>
               <p className="mt-3 text-sm leading-6 text-[var(--muted-foreground)]">
-                {run.stageDetail ?? "Pipeline stage is updating."}
+                {run.stageDetail ?? "Pipeline is running."}
               </p>
               <p className="mt-2 text-xs uppercase tracking-[0.16em] text-[var(--muted-foreground)]">
                 Updated {formatUiDateTime(run.stageUpdatedAt ?? run.startedAt)}
-              </p>
-            </div>
-          ))
-        ) : (
-          <div className="rounded-[22px] border border-dashed border-white/10 bg-black/8 px-4 py-4 text-sm leading-6 text-[var(--muted-foreground)]">
-            {batch.status === "completed" || batch.status === "failed"
-              ? `Last batch finished at ${
-                  batch.completedAt ? formatUiDateTime(batch.completedAt) : "an unknown time"
-                }.`
-              : "No active article runs right now."}
-          </div>
-        )}
-      </div>
-
-      {batch.articleResults.length ? (
-        <div className="space-y-3">
-          <div className="eyebrow">Recent article outcomes</div>
-          {batch.articleResults.slice(0, 8).map((result) => (
-            <div
-              key={`${result.articleId}-${result.completedAt}`}
-              className="rounded-[22px] border border-white/10 bg-black/8 px-4 py-4"
-            >
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge>{result.articleId}</Badge>
-                <Badge
-                  className={
-                    result.ok
-                      ? "bg-[color:rgba(0,92,151,0.08)] text-[var(--primary)]"
-                      : "bg-[color:rgba(178,69,63,0.08)] text-[var(--destructive)]"
-                  }
-                >
-                  {result.ok ? "Completed" : "Failed"}
-                </Badge>
-                {result.runId ? <Badge variant="outline">{result.runId}</Badge> : null}
-              </div>
-              <p className="mt-3 text-sm leading-6 text-[var(--muted-foreground)]">
-                {result.ok
-                  ? `${result.caseCount} proposed cases, ${result.validatedCount} validated cases, ${result.watchlistCount} watchlists, and ${result.noiseCount} noise buckets.`
-                  : result.error ?? "This article run failed."}
-              </p>
-              <p className="mt-2 text-xs uppercase tracking-[0.16em] text-[var(--muted-foreground)]">
-                Updated {formatUiDateTime(result.completedAt)}
               </p>
             </div>
           ))}
         </div>
       ) : null}
 
-      {reset.summary ? (
+      {batch.articleResults.length ? (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="eyebrow">Recent article outcomes</div>
+            <Badge variant="outline">{batch.articleResults.length} recorded</Badge>
+          </div>
+          {batch.articleResults.slice(0, 6).map((result) => (
+            <div
+              key={`${result.articleId}:${result.completedAt}`}
+              className="rounded-[22px] border border-white/10 bg-black/8 px-4 py-4"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge>{result.articleId}</Badge>
+                <Badge variant={result.ok ? "default" : "destructive"}>
+                  {result.ok ? "Completed" : "Failed"}
+                </Badge>
+                {result.issueCount ? (
+                  <Badge variant="outline">{result.issueCount} issues</Badge>
+                ) : null}
+                <Badge variant="outline">{result.caseCount} cases</Badge>
+              </div>
+              <p className="mt-3 text-sm leading-6 text-[var(--muted-foreground)]">
+                {result.ok
+                  ? `${result.validatedCount} validated, ${result.watchlistCount} watchlists, ${result.noiseCount} noise buckets.`
+                  : (result.error ?? "This article run failed.")}
+              </p>
+              <p className="mt-2 text-xs uppercase tracking-[0.16em] text-[var(--muted-foreground)]">
+                Completed {formatUiDateTime(result.completedAt)}
+              </p>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {reset.completedAt ? (
         <div className="rounded-[22px] border border-white/10 bg-black/8 px-4 py-4 text-sm leading-6 text-[var(--muted-foreground)]">
-          Reset clustering state last ran{" "}
-          {reset.completedAt ? formatUiDateTime(reset.completedAt) : "recently"}.
-          Removed {reset.summary.productDossiers} product dossiers,{" "}
-          {reset.summary.articleDossiers} article dossiers, {reset.summary.runs} runs,{" "}
-          {reset.summary.candidates} candidates, and{" "}
-          {reset.summary.candidateMembers} candidate links.
+          Last reset {formatUiDateTime(reset.completedAt)}
         </div>
       ) : null}
 

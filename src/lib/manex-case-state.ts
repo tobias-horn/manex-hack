@@ -1,5 +1,6 @@
 import type { PoolClient, QueryResultRow } from "pg";
 import { connectPostgresClient, getPostgresPool } from "@/lib/postgres";
+import { stringifyUnicodeSafe } from "@/lib/json-unicode";
 
 export type ManexCaseStatus =
   | "open"
@@ -854,7 +855,7 @@ export async function saveFilter(input: SaveFilterInput) {
         input.id,
         input.name,
         input.scope,
-        JSON.stringify(input.filterPayload),
+        stringifyUnicodeSafe(input.filterPayload),
         input.createdBy ?? null,
       ],
     );

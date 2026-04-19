@@ -346,9 +346,9 @@ most recent completed run with valid Stage 3 output.
 Current constants in `src/lib/manex-case-clustering.ts` and
 `src/prompts/manex-case-clustering.ts`:
 
-- prompt version: `2026-04-18.case-clustering.v7`
-- product dossier schema: `manex.product_dossier.v3`
-- article dossier schema: `manex.article_dossier.v3`
+- prompt version: `2026-04-19.case-clustering.v8`
+- product dossier schema: `manex.product_dossier.v4`
+- article dossier schema: `manex.article_dossier.v4`
 - article case set schema: `manex.article_case_set.v2`
 - global reconciliation schema: `manex.global_case_inventory.v1`
 - review wrapper schema: `manex.case_pipeline_review.v1`

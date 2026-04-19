@@ -68,6 +68,77 @@ export type TraceabilityBlastRadiusHint = {
   sharedSuppliers: string[];
 };
 
+export type TraceabilityPartBatchAnchor = {
+  anchorValue: string;
+  partNumber: string;
+  batchRef: string;
+  batchId: string | null;
+  batchNumber: string | null;
+  count: number;
+  ratio: number;
+  relatedProductCount: number;
+  productIds: string[];
+  suppliers: string[];
+  bomPositions: string[];
+  findNumbers: string[];
+};
+
+export type TraceabilityNeighborhoodEntry = {
+  productId: string;
+  articleId: string | null;
+  articleName: string | null;
+  orderId: string | null;
+  buildTs: string | null;
+  matchedInstallCount: number;
+  sharedAnchorCount: number;
+  sharedAnchorTypes: Array<TraceabilityAnchorCandidate["anchorType"]>;
+  sharedAnchorValues: string[];
+  sharedBatchIds: string[];
+  sharedBatchNumbers: string[];
+  sharedPartNumbers: string[];
+  sharedPositions: string[];
+  sharedFindNumbers: string[];
+  sharedSuppliers: string[];
+};
+
+export type TraceabilityAnchorSpecificity = {
+  anchorType: TraceabilityAnchorCandidate["anchorType"] | "supplier";
+  anchorValue: string;
+  count: number;
+  ratio: number;
+  relatedProductCount: number;
+  scopeProductCount: number;
+  concentrationRatio: number;
+  specificity: "product_specific" | "local_cluster" | "article_wide";
+  reason: string;
+};
+
+export type TraceabilityCooccurringAnchorBundle = {
+  bundleKey: string;
+  partNumbers: string[];
+  batchRefs: string[];
+  bomPositions: string[];
+  supplierNames: string[];
+  localInstallCount: number;
+  relatedProductCount: number;
+  productIds: string[];
+  reason: string;
+};
+
+export type TraceabilityBlastRadiusSuspectHint = {
+  anchorType: TraceabilityAnchorCandidate["anchorType"];
+  anchorValue: string;
+  batchId: string | null;
+  batchNumber: string | null;
+  partNumber: string | null;
+  supplierNames: string[];
+  affectedProductCount: number;
+  matchedInstallCount: number;
+  concentrationRatio: number;
+  productIds: string[];
+  reason: string;
+};
+
 export type ProductTraceabilityEvidence = {
   installedPartCount: number;
   uniqueBatchCount: number;
@@ -91,7 +162,12 @@ export type ProductTraceabilityEvidence = {
   dominantSuppliers: TraceabilityAnchorSummary[];
   batchConcentrationHints: TraceabilityBatchConcentrationHint[];
   productAnchorCandidates: TraceabilityAnchorCandidate[];
+  partBatchAnchors: TraceabilityPartBatchAnchor[];
+  traceabilityNeighborhood: TraceabilityNeighborhoodEntry[];
+  anchorSpecificity: TraceabilityAnchorSpecificity[];
+  cooccurringAnchorBundles: TraceabilityCooccurringAnchorBundle[];
   blastRadiusHints: TraceabilityBlastRadiusHint[];
+  blastRadiusSuspects: TraceabilityBlastRadiusSuspectHint[];
 };
 
 export type TraceabilityRelatedProductSummary = {
@@ -378,6 +454,301 @@ const buildBlastRadiusHints = (
     )
     .slice(0, 6);
 
+const getScopeBucketForAnchor = (
+  scope: TraceabilityScope,
+  anchorType: TraceabilityAnchorCandidate["anchorType"] | "supplier",
+  anchorValue: string,
+) => {
+  switch (anchorType) {
+    case "supplier_batch":
+      return scope.byBatchRef.get(anchorValue) ?? null;
+    case "part_number":
+      return scope.byPartNumber.get(anchorValue) ?? null;
+    case "bom_position":
+      return scope.byBomPosition.get(anchorValue) ?? null;
+    case "part_batch":
+      return scope.byPartBatch.get(anchorValue) ?? null;
+    case "supplier":
+      return scope.bySupplier.get(anchorValue) ?? null;
+  }
+};
+
+const buildPartBatchAnchors = (
+  items: ManexInstalledPart[],
+  scope: TraceabilityScope,
+): TraceabilityPartBatchAnchor[] =>
+  topByCount(
+    [...groupBy(
+      items.filter((item) => Boolean(toPartBatchRef(item))),
+      (item) => toPartBatchRef(item) ?? "",
+    ).entries()]
+      .map(([anchorValue, localItems]) => {
+        const scopeBucket = scope.byPartBatch.get(anchorValue);
+        const head = localItems[0];
+
+        return {
+          anchorValue,
+          partNumber: head?.partNumber ?? anchorValue.split("@")[0] ?? anchorValue,
+          batchRef: head
+            ? (toBatchRef(head) ?? anchorValue.split("@")[1] ?? anchorValue)
+            : anchorValue,
+          batchId: normalizeTraceabilityText(head?.batchId),
+          batchNumber: normalizeTraceabilityText(head?.batchNumber),
+          count: localItems.length,
+          ratio: items.length > 0 ? localItems.length / items.length : 0,
+          relatedProductCount: scopeBucket?.productIds.size ?? 0,
+          productIds: scopeBucket
+            ? [...scopeBucket.productIds].sort((left, right) => left.localeCompare(right))
+            : [],
+          suppliers: uniqueFromBucket(localItems.map((item) => item.supplierName)),
+          bomPositions: uniqueFromBucket(localItems.map((item) => item.positionCode)),
+          findNumbers: uniqueFromBucket(localItems.map((item) => item.findNumber)),
+        } satisfies TraceabilityPartBatchAnchor;
+      })
+      .sort(
+        (left, right) =>
+          right.count - left.count ||
+          right.relatedProductCount - left.relatedProductCount ||
+          left.anchorValue.localeCompare(right.anchorValue),
+      ),
+    6,
+  );
+
+const buildTraceabilityNeighborhood = (
+  items: ManexInstalledPart[],
+  scope: TraceabilityScope,
+  candidates: TraceabilityAnchorCandidate[],
+): TraceabilityNeighborhoodEntry[] => {
+  const currentProductId = items[0]?.productId;
+
+  if (!currentProductId) {
+    return [];
+  }
+
+  const neighbors = new Map<
+    string,
+    {
+      items: ManexInstalledPart[];
+      sharedAnchorTypes: Set<TraceabilityAnchorCandidate["anchorType"]>;
+      sharedAnchorValues: Set<string>;
+    }
+  >();
+
+  for (const candidate of candidates.slice(0, 4)) {
+    const bucket = getScopeBucketForAnchor(scope, candidate.anchorType, candidate.anchorValue);
+
+    if (!bucket) {
+      continue;
+    }
+
+    for (const item of bucket.items) {
+      if (item.productId === currentProductId) {
+        continue;
+      }
+
+      const current = neighbors.get(item.productId) ?? {
+        items: [],
+        sharedAnchorTypes: new Set<TraceabilityAnchorCandidate["anchorType"]>(),
+        sharedAnchorValues: new Set<string>(),
+      };
+
+      current.items.push(item);
+      current.sharedAnchorTypes.add(candidate.anchorType);
+      current.sharedAnchorValues.add(candidate.anchorValue);
+      neighbors.set(item.productId, current);
+    }
+  }
+
+  return [...neighbors.entries()]
+    .map(([productId, match]) => {
+      const sortedItems = sortTraceabilityPartsForDisplay(match.items);
+      const head = sortedItems[0];
+
+      return {
+        productId,
+        articleId: head?.articleId ?? null,
+        articleName: head?.articleName ?? null,
+        orderId: head?.orderId ?? null,
+        buildTs: head?.productBuiltAt ?? null,
+        matchedInstallCount: sortedItems.length,
+        sharedAnchorCount: match.sharedAnchorValues.size,
+        sharedAnchorTypes: [...match.sharedAnchorTypes].sort((left, right) =>
+          left.localeCompare(right),
+        ),
+        sharedAnchorValues: [...match.sharedAnchorValues].sort((left, right) =>
+          left.localeCompare(right),
+        ),
+        sharedBatchIds: uniqueTraceabilityValues(sortedItems.map((item) => item.batchId)),
+        sharedBatchNumbers: uniqueTraceabilityValues(
+          sortedItems.map((item) => item.batchNumber),
+        ),
+        sharedPartNumbers: uniqueTraceabilityValues(
+          sortedItems.map((item) => item.partNumber),
+        ),
+        sharedPositions: uniqueTraceabilityValues(
+          sortedItems.map((item) => item.positionCode),
+        ),
+        sharedFindNumbers: uniqueTraceabilityValues(
+          sortedItems.map((item) => item.findNumber),
+        ),
+        sharedSuppliers: uniqueTraceabilityValues(
+          sortedItems.map((item) => item.supplierName),
+        ),
+      } satisfies TraceabilityNeighborhoodEntry;
+    })
+    .sort(
+      (left, right) =>
+        right.sharedAnchorCount - left.sharedAnchorCount ||
+        right.matchedInstallCount - left.matchedInstallCount ||
+        compareNullable(right.buildTs, left.buildTs) ||
+        left.productId.localeCompare(right.productId),
+    )
+    .slice(0, 6);
+};
+
+const buildAnchorSpecificity = (
+  scope: TraceabilityScope,
+  candidates: TraceabilityAnchorCandidate[],
+  dominantSuppliers: TraceabilityAnchorSummary[],
+): TraceabilityAnchorSpecificity[] => {
+  const allAnchors = [
+    ...candidates.map((candidate) => ({
+      anchorType: candidate.anchorType,
+      anchorValue: candidate.anchorValue,
+      count: candidate.count,
+      ratio: candidate.ratio,
+    })),
+    ...dominantSuppliers.slice(0, 2).map((supplier) => ({
+      anchorType: "supplier" as const,
+      anchorValue: supplier.value,
+      count: supplier.count,
+      ratio: supplier.ratio,
+    })),
+  ];
+
+  return allAnchors
+    .map((anchor) => {
+      const bucket = getScopeBucketForAnchor(scope, anchor.anchorType, anchor.anchorValue);
+      const relatedProductCount = bucket?.productIds.size ?? 0;
+      const concentrationRatio =
+        scope.totalProducts > 0 ? relatedProductCount / scope.totalProducts : 0;
+      const specificity =
+        relatedProductCount <= 1
+          ? ("product_specific" as const)
+          : concentrationRatio >= 0.6
+            ? ("article_wide" as const)
+            : ("local_cluster" as const);
+
+      return {
+        anchorType: anchor.anchorType,
+        anchorValue: anchor.anchorValue,
+        count: anchor.count,
+        ratio: anchor.ratio,
+        relatedProductCount,
+        scopeProductCount: scope.totalProducts,
+        concentrationRatio,
+        specificity,
+        reason:
+          specificity === "product_specific"
+            ? `${anchor.anchorValue} is unique to this product inside the current traceability scope.`
+            : specificity === "article_wide"
+              ? `${anchor.anchorValue} spans ${relatedProductCount} of ${scope.totalProducts} scoped products, so it is broad context rather than a narrow discriminator.`
+              : `${anchor.anchorValue} concentrates into ${relatedProductCount} of ${scope.totalProducts} scoped products, making it a useful local clustering anchor.`,
+      } satisfies TraceabilityAnchorSpecificity;
+    })
+    .sort(
+      (left, right) =>
+        right.relatedProductCount - left.relatedProductCount ||
+        right.count - left.count ||
+        left.anchorValue.localeCompare(right.anchorValue),
+    )
+    .slice(0, 8);
+};
+
+const buildCooccurringAnchorBundles = (
+  items: ManexInstalledPart[],
+  scope: TraceabilityScope,
+): TraceabilityCooccurringAnchorBundle[] =>
+  [...groupBy(items, (item) => {
+      const partNumber = normalizeTraceabilityText(item.partNumber) ?? "unknown-part";
+      const batchRef = toBatchRef(item) ?? "no-batch";
+      const bomPosition = toBomPosition(item) ?? "no-position";
+      return `${partNumber}__${batchRef}__${bomPosition}`;
+    }).entries()]
+      .map(([bundleKey, localItems]) => {
+        const head = localItems[0];
+        const partNumber = normalizeTraceabilityText(head?.partNumber);
+        const batchRef = head ? toBatchRef(head) : null;
+        const bomPosition = head ? toBomPosition(head) : null;
+        const partBucketItems = scope.byPartNumber.get(partNumber ?? "")?.items ?? [];
+        const relatedItems = scope.totalInstalls
+          ? partBucketItems.filter(
+              (item) =>
+                item.partNumber === partNumber &&
+                (batchRef ? toBatchRef(item) === batchRef : true) &&
+                (bomPosition ? toBomPosition(item) === bomPosition : true),
+            )
+          : [];
+        const productIds = uniqueTraceabilityValues(relatedItems.map((item) => item.productId));
+
+        return {
+          bundleKey,
+          partNumbers: uniqueTraceabilityValues(localItems.map((item) => item.partNumber)),
+          batchRefs: uniqueTraceabilityValues(localItems.map((item) => toBatchRef(item))),
+          bomPositions: uniqueTraceabilityValues(localItems.map((item) => toBomPosition(item))),
+          supplierNames: uniqueTraceabilityValues(localItems.map((item) => item.supplierName)),
+          localInstallCount: localItems.length,
+          relatedProductCount: productIds.length,
+          productIds,
+          reason: `${partNumber ?? "Part"} with ${bomPosition ?? "unmapped position"} and ${batchRef ?? "no batch"} recurs across ${productIds.length} scoped products.`,
+        } satisfies TraceabilityCooccurringAnchorBundle;
+      })
+      .sort(
+        (left, right) =>
+          right.localInstallCount - left.localInstallCount ||
+          right.relatedProductCount - left.relatedProductCount ||
+          left.bundleKey.localeCompare(right.bundleKey),
+      )
+    .slice(0, 6);
+
+const buildBlastRadiusSuspects = (
+  scope: TraceabilityScope,
+  hints: TraceabilityBlastRadiusHint[],
+): TraceabilityBlastRadiusSuspectHint[] =>
+  hints.slice(0, 4).map((hint) => {
+    const bucket = getScopeBucketForAnchor(scope, hint.anchorType, hint.anchorValue);
+    const head = bucket?.items[0];
+    const [partNumberFromAnchor, batchRefFromAnchor] =
+      hint.anchorType === "part_batch" ? hint.anchorValue.split("@") : [null, null];
+
+    return {
+      anchorType: hint.anchorType,
+      anchorValue: hint.anchorValue,
+      batchId:
+        normalizeTraceabilityText(head?.batchId) ??
+        (hint.anchorType === "supplier_batch" ? hint.anchorValue : batchRefFromAnchor),
+      batchNumber: normalizeTraceabilityText(head?.batchNumber),
+      partNumber:
+        normalizeTraceabilityText(head?.partNumber) ??
+        (hint.anchorType === "part_number"
+          ? hint.anchorValue
+          : hint.anchorType === "part_batch"
+            ? partNumberFromAnchor
+            : null),
+      supplierNames: uniqueTraceabilityValues(
+        bucket?.items.map((item) => item.supplierName) ?? hint.sharedSuppliers,
+      ),
+      affectedProductCount: hint.relatedProductCount,
+      matchedInstallCount: hint.relatedInstallCount,
+      concentrationRatio: hint.concentrationRatio,
+      productIds: hint.productIds,
+      reason:
+        hint.concentrationRatio >= 0.5
+          ? `${hint.anchorValue} reaches ${hint.relatedProductCount} of ${scope.totalProducts} scoped products and should be treated as a broad blast-radius suspect.`
+          : `${hint.anchorValue} links ${hint.relatedProductCount} scoped products and is worth checking as a concentrated suspect family.`,
+    } satisfies TraceabilityBlastRadiusSuspectHint;
+  });
+
 export const normalizeTraceabilityText = normalizeText;
 
 export const uniqueTraceabilityValues = (
@@ -483,6 +854,8 @@ export function buildProductTraceabilityEvidence(
     positions: dominantBomPositions,
     batches: dominantSupplierBatches,
   });
+  const partBatchAnchors = buildPartBatchAnchors(installedParts, scope);
+  const blastRadiusHints = buildBlastRadiusHints(scope, productAnchorCandidates);
 
   return {
     installedPartCount: installedParts.length,
@@ -518,7 +891,20 @@ export function buildProductTraceabilityEvidence(
     dominantSuppliers,
     batchConcentrationHints,
     productAnchorCandidates,
-    blastRadiusHints: buildBlastRadiusHints(scope, productAnchorCandidates),
+    partBatchAnchors,
+    traceabilityNeighborhood: buildTraceabilityNeighborhood(
+      installedParts,
+      scope,
+      productAnchorCandidates,
+    ),
+    anchorSpecificity: buildAnchorSpecificity(
+      scope,
+      productAnchorCandidates,
+      dominantSuppliers,
+    ),
+    cooccurringAnchorBundles: buildCooccurringAnchorBundles(installedParts, scope),
+    blastRadiusHints,
+    blastRadiusSuspects: buildBlastRadiusSuspects(scope, blastRadiusHints),
   };
 }
 

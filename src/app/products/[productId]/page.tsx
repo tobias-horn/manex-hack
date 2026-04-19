@@ -11,6 +11,7 @@ import {
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
+import { ClusteringPipelineToggle } from "@/components/clustering-pipeline-toggle";
 import { ProductActionPanel } from "@/components/product-action-panel";
 import { QualitySignalImage } from "@/components/quality-signal-image";
 import { ScreenState } from "@/components/screen-state";
@@ -26,6 +27,11 @@ import {
 import { DEMO_DOSSIER_PRODUCTS } from "@/lib/manex-demo";
 import { getProposedCasesForProduct } from "@/lib/manex-case-clustering";
 import {
+  buildClusteringModeHref,
+  parseClusteringMode,
+} from "@/lib/manex-clustering-mode";
+import { getDeterministicProposedCasesForProduct } from "@/lib/manex-deterministic-case-clustering";
+import {
   getProductDossier,
   type ProductDossierEvidenceFrame,
 } from "@/lib/manex-product-dossier";
@@ -35,18 +41,19 @@ export const dynamic = "force-dynamic";
 
 type ProductDossierPageProps = {
   params: Promise<{ productId: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 };
 
 const severityTone: Record<string, string> = {
   critical: "bg-[color:rgba(178,69,63,0.12)] text-[var(--destructive)]",
   high: "bg-[color:rgba(178,69,63,0.1)] text-[var(--destructive)]",
-  medium: "bg-[color:rgba(208,141,37,0.14)] text-amber-700",
+  medium: "bg-[color:rgba(208,141,37,0.14)] text-[var(--warning-foreground)]",
   low: "bg-[color:rgba(20,32,42,0.08)] text-foreground",
 };
 
 const statusTone: Record<string, string> = {
   FAIL: "bg-[color:rgba(178,69,63,0.12)] text-[var(--destructive)]",
-  MARGINAL: "bg-[color:rgba(208,141,37,0.14)] text-amber-700",
+  MARGINAL: "bg-[color:rgba(208,141,37,0.14)] text-[var(--warning-foreground)]",
 };
 
 function KeyMetric({
@@ -90,15 +97,20 @@ function EvidenceFrame({ frame }: { frame: ProductDossierEvidenceFrame }) {
 
 export default async function ProductDossierPage({
   params,
+  searchParams,
 }: ProductDossierPageProps) {
   const { productId } = await params;
+  const search = await searchParams;
+  const mode = parseClusteringMode(search.pipeline);
   let dossier;
   let proposedCases = [];
 
   try {
     [dossier, proposedCases] = await Promise.all([
       getProductDossier(productId),
-      getProposedCasesForProduct(productId),
+      mode === "deterministic"
+        ? getDeterministicProposedCasesForProduct(productId)
+        : getProposedCasesForProduct(productId),
     ]);
   } catch {
     return (
@@ -129,6 +141,24 @@ export default async function ProductDossierPage({
   }
 
   const product = dossier.product;
+  const toggleItems = [
+    {
+      mode: "current" as const,
+      label: "Classic three-layer clustering",
+      description: "Original dossier, article-case, and global reconciliation flow.",
+      href: buildClusteringModeHref(`/products/${dossier.requestedProductId}`, "current"),
+    },
+    {
+      mode: "deterministic" as const,
+      label: "Deterministic issue grouping",
+      description: "Small per-product issue extraction with deterministic article grouping.",
+      href: buildClusteringModeHref(`/products/${dossier.requestedProductId}`, "deterministic"),
+    },
+  ];
+  const pipelineLabel =
+    mode === "deterministic"
+      ? "Deterministic issue-grouping pipeline"
+      : "Classic three-layer pipeline";
 
   return (
     <main className="min-h-screen">
@@ -152,6 +182,7 @@ export default async function ProductDossierPage({
                 {product?.articleId ? (
                   <Badge variant="outline">{product.articleId}</Badge>
                 ) : null}
+                <Badge variant="outline">{pipelineLabel}</Badge>
                 {product?.articleName ? (
                   <Badge variant="outline">{product.articleName}</Badge>
                 ) : null}
@@ -188,7 +219,11 @@ export default async function ProductDossierPage({
                 <Button
                   size="lg"
                   variant="outline"
-                  render={<Link href={`/articles/${product.articleId}`}>Open article caseboard</Link>}
+                  render={
+                    <Link href={buildClusteringModeHref(`/articles/${product.articleId}`, mode)}>
+                      Open article caseboard
+                    </Link>
+                  }
                 />
               ) : null}
               <Button
@@ -199,6 +234,8 @@ export default async function ProductDossierPage({
             </div>
           </div>
         </header>
+
+        <ClusteringPipelineToggle currentMode={mode} items={toggleItems} />
 
         <section className="grid gap-6 xl:grid-cols-[minmax(0,1.42fr)_390px]">
           <div className="space-y-6">
@@ -446,7 +483,7 @@ export default async function ProductDossierPage({
                         {assembly.items.map((item) => (
                           <article
                             key={item.installId}
-                            className="rounded-[24px] border border-white/10 bg-[color:rgba(255,255,255,0.72)] p-4"
+                            className="rounded-[24px] border border-white/10 bg-[color:var(--raised-overlay-surface)] p-4"
                           >
                             <div className="grid gap-3 lg:grid-cols-[minmax(0,1.3fr)_180px_180px_170px]">
                               <div className="space-y-2">
@@ -556,7 +593,7 @@ export default async function ProductDossierPage({
                           variant="outline"
                           size="sm"
                           render={
-                            <Link href={`/articles/${candidate.articleId}`}>
+                            <Link href={buildClusteringModeHref(`/articles/${candidate.articleId}`, mode)}>
                               Open article caseboard
                             </Link>
                           }
@@ -596,7 +633,7 @@ export default async function ProductDossierPage({
                       <Button
                         variant="outline"
                         size="sm"
-                        render={<Link href={productJump.href}>Open</Link>}
+                        render={<Link href={buildClusteringModeHref(productJump.href, mode)}>Open</Link>}
                       />
                     </div>
                   </article>

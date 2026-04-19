@@ -50,7 +50,7 @@ type FeedbackState = {
 
 const priorityTone: Record<ManexCasePriority, string> = {
   low: "bg-[color:rgba(20,32,42,0.08)] text-foreground",
-  medium: "bg-[color:rgba(208,141,37,0.14)] text-amber-700",
+  medium: "bg-[color:rgba(208,141,37,0.14)] text-[var(--warning-foreground)]",
   high: "bg-[color:rgba(0,92,151,0.08)] text-[var(--primary)]",
   critical: "bg-[color:rgba(178,69,63,0.12)] text-[var(--destructive)]",
 };
