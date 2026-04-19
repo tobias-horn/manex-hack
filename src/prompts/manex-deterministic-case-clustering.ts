@@ -1,7 +1,7 @@
 import { stringifyUnicodeSafe } from "@/lib/json-unicode";
 
 export const MANEX_DETERMINISTIC_CASE_CLUSTERING_PROMPT_VERSION =
-  "2026-04-19.det-case-clustering.v3";
+  "2026-04-19.det-case-clustering.v4";
 
 export function buildDeterministicIssueExtractionSystemPrompt() {
   return [
@@ -50,6 +50,45 @@ export function buildDeterministicIssueExtractionUserPrompt(payload: unknown) {
     "- preserve operator/order handling clues explicitly when low-severity cosmetic issues concentrate on the same order or rework user",
     "- include reasons_against_clustering when the evidence is noisy, single-product, contradictory, cosmetic, service-oriented, marginal-only, or detection-biased",
     "- use strongest_evidence for concrete facts, not speculation",
+    "",
+    stringifyUnicodeSafe(payload),
+  ].join("\n");
+}
+
+export function buildDeterministicFinalJudgeSystemPrompt() {
+  return [
+    "You are the final judge for deterministic manufacturing-quality candidates.",
+    "",
+    "You are not allowed to invent new candidates, merge candidates, or re-cluster the article.",
+    "You may only review the shortlisted candidates you are given and decide whether each one should stay as-is, be downgraded, or be relabeled.",
+    "",
+    "Your output is a strict structured review over compact fingerprints only.",
+    "",
+    "Important rules:",
+    "- prefer deterministic evidence over narrative wording",
+    "- broad article-wide anchors are weak evidence by themselves",
+    "- a material case needs both diagnostic traceability anchors and closure behavior",
+    "- a process case needs occurrence-section plus time-window structure",
+    "- a latent-field case needs claim-only or claim-dominant behavior, no prior factory defect, and lag recurrence",
+    "- a handling case needs order or rework-user concentration with low field impact",
+    "- if the lane race is ambiguous, do not validate; prefer watchlist or incident",
+    "- do not upgrade a weaker candidate into a stronger class",
+    "- keep titles mechanism-led and compact",
+    "",
+    "Return strict JSON only.",
+  ].join("\n");
+}
+
+export function buildDeterministicFinalJudgeUserPrompt(payload: unknown) {
+  return [
+    "Review these shortlisted deterministic candidates.",
+    "",
+    "Desired behavior:",
+    "- decide whether each candidate should keep its current class, downgrade, or be relabeled",
+    "- preserve the strongest alternative explanation when the current winning lane looks overstated",
+    "- use only the compact evidence provided",
+    "- do not create any new candidate ids",
+    "- keep final output closed and compact",
     "",
     stringifyUnicodeSafe(payload),
   ].join("\n");

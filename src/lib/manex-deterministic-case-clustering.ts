@@ -24,6 +24,8 @@ import {
 } from "@/lib/manex-deterministic-case-clustering-state";
 import { queryPostgres } from "@/lib/postgres";
 import {
+  buildDeterministicFinalJudgeSystemPrompt,
+  buildDeterministicFinalJudgeUserPrompt,
   buildDeterministicIssueExtractionSystemPrompt,
   buildDeterministicIssueExtractionUserPrompt,
   MANEX_DETERMINISTIC_CASE_CLUSTERING_PROMPT_VERSION,
@@ -79,6 +81,23 @@ const DET_GLOBAL_CASE_PAIR_THRESHOLD = readPositiveInt(
   process.env.MANEX_DET_GLOBAL_CASE_PAIR_THRESHOLD,
   16,
 );
+const DET_FINAL_JUDGE_MODEL = process.env.MANEX_DET_FINAL_JUDGE_MODEL || "gpt-5.4-nano";
+const DET_FINAL_JUDGE_MAX_CANDIDATES = readPositiveInt(
+  process.env.MANEX_DET_FINAL_JUDGE_MAX_CANDIDATES,
+  12,
+);
+const DET_FINAL_JUDGE_MAX_OUTPUT_TOKENS = readPositiveInt(
+  process.env.MANEX_DET_FINAL_JUDGE_MAX_OUTPUT_TOKENS,
+  2200,
+);
+const DET_FINAL_JUDGE_REASONING_EFFORT =
+  (process.env.MANEX_DET_FINAL_JUDGE_REASONING_EFFORT as
+    | "none"
+    | "low"
+    | "medium"
+    | "high"
+    | "xhigh"
+    | undefined) ?? "low";
 
 const prioritySchema = z.enum(["low", "medium", "high", "critical"]);
 
@@ -218,6 +237,21 @@ const deterministicArticleInventorySchema = z.object({
   globalObservations: z.array(z.string().trim().min(1).max(240)).max(16),
 });
 
+const deterministicFinalJudgeItemSchema = z.object({
+  localId: z.string().trim().min(1).max(48),
+  finalClass: z.enum(["validated_case", "watchlist", "incident", "noise"]),
+  finalLane: z.enum(["material", "process", "latent_field", "handling"]),
+  action: z.enum(["keep", "downgrade", "relabel"]),
+  strongestAlternativeExplanation: z.string().trim().min(1).max(240),
+  recommendedTitle: z.string().trim().min(1).max(180).nullable(),
+  rationale: z.string().trim().min(1).max(320),
+});
+
+const deterministicFinalJudgeResponseSchema = z.object({
+  reviewSummary: z.string().trim().min(1).max(1000),
+  judgments: z.array(deterministicFinalJudgeItemSchema).max(24),
+});
+
 const deterministicGlobalInventoryItemSchema = z.object({
   inventoryTempId: z.string().trim().min(1).max(48),
   title: z.string().trim().min(8).max(180),
@@ -261,6 +295,7 @@ type ProductIssueSet = z.infer<typeof productIssueSetSchema>;
 type DeterministicArticleInventory = z.infer<typeof deterministicArticleInventorySchema>;
 type DeterministicGlobalInventory = z.infer<typeof deterministicGlobalInventorySchema>;
 type DeterministicCase = z.infer<typeof deterministicCaseSchema>;
+type DeterministicFinalJudgeResponse = z.infer<typeof deterministicFinalJudgeResponseSchema>;
 type DeterministicIssueCardBase = z.infer<typeof issueCardSchema>;
 type SignalType = ClusteredProductDossier["signals"][number]["signalType"];
 type ClaimLagBucket = z.infer<typeof issueAnchorSummarySchema.shape.claimLagBucket>;
@@ -355,6 +390,35 @@ type DeterministicReviewPayload = {
   contractVersion: typeof DET_RUN_REVIEW_SCHEMA_VERSION;
   localInventory: DeterministicArticleInventory;
   globalInventory: DeterministicGlobalInventory;
+  judgeReview?: DeterministicFinalJudgeResponse | null;
+};
+
+type DeterministicJudgeLane = "material" | "process" | "latent_field" | "handling";
+
+type DeterministicJudgeCandidateInput = {
+  localId: string;
+  currentClass: "validated_case" | "watchlist" | "incident";
+  currentLane: DeterministicJudgeLane;
+  title: string;
+  summary: string;
+  priority: z.infer<typeof prioritySchema>;
+  confidence: number;
+  linkedProductIds: string[];
+  linkedSignalIds: string[];
+  winningLaneScore: number;
+  runnerUpLaneScore: number;
+  winningLaneMargin: number;
+  topAnchors: string[];
+  closureEvidence: string[];
+  confounders: string[];
+  strongestEvidence: string[];
+  recommendedChecks: string[];
+  articleWideAnchorRisk: boolean;
+};
+
+type DeterministicArticleInventoryBuildResult = {
+  inventory: DeterministicArticleInventory;
+  judgeCandidates: DeterministicJudgeCandidateInput[];
 };
 
 export type DeterministicGlobalInventoryItem = z.infer<typeof deterministicGlobalInventoryItemSchema>;
@@ -416,6 +480,22 @@ type DeterministicCaseClusteringBatchResult = DeterministicCaseBatchArticleResul
 
 function createId(prefix: string) {
   return `${prefix}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+}
+
+function toJudgeLane(lane: DeterministicCandidateLane): DeterministicJudgeLane {
+  if (lane === "material_traceability") {
+    return "material";
+  }
+
+  if (lane === "process_temporal") {
+    return "process";
+  }
+
+  if (lane === "latent_field") {
+    return "latent_field";
+  }
+
+  return "handling";
 }
 
 function trimPreview(value: string | null | undefined, max = 180) {
@@ -1238,6 +1318,52 @@ async function generateIssueSetObject(input: {
         providerOptions: {
           openai: {
             reasoningEffort: DET_REASONING_EFFORT,
+            store: false,
+            textVerbosity: "low",
+          },
+        },
+        abortSignal: input.abortSignal,
+      });
+
+      return result.object;
+    } catch (error) {
+      lastError = error;
+
+      if (!isRetryableModelError(error) || attempt >= DET_MODEL_CALL_MAX_ATTEMPTS) {
+        throw error;
+      }
+
+      await sleep(700 * 2 ** (attempt - 1), input.abortSignal);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+async function generateFinalJudgeObject(input: {
+  articleId: string;
+  payload: unknown;
+  abortSignal?: AbortSignal;
+}) {
+  const openai = getOpenAiClient();
+  let lastError: unknown = null;
+
+  for (let attempt = 1; attempt <= DET_MODEL_CALL_MAX_ATTEMPTS; attempt += 1) {
+    throwIfDeterministicPipelineAborted(input.abortSignal);
+
+    try {
+      const result = await generateObject({
+        model: openai.responses(DET_FINAL_JUDGE_MODEL),
+        schema: deterministicFinalJudgeResponseSchema,
+        schemaName: "manex_deterministic_final_judge",
+        schemaDescription:
+          "Closed-output review over shortlisted deterministic article-local candidates.",
+        system: buildDeterministicFinalJudgeSystemPrompt(),
+        prompt: buildDeterministicFinalJudgeUserPrompt(input.payload),
+        maxOutputTokens: DET_FINAL_JUDGE_MAX_OUTPUT_TOKENS,
+        providerOptions: {
+          openai: {
+            reasoningEffort: DET_FINAL_JUDGE_REASONING_EFFORT,
             store: false,
             textVerbosity: "low",
           },
@@ -2164,7 +2290,14 @@ function getDominantClusterSignature(issues: DeterministicIssueCard[]) {
   return [...counts.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0]?.[0] ?? null;
 }
 
-function buildClusterTitle(issues: DeterministicIssueCard[], strongestAnchorTokens: string[]) {
+function buildClusterTitle(
+  issues: DeterministicIssueCard[],
+  strongestAnchorTokens: string[],
+  options?: {
+    preferredLane?: DeterministicCandidateLane;
+    watchlist?: boolean;
+  },
+) {
   const dominantSignature = getDominantClusterSignature(issues);
   const anchor = strongestAnchorTokens[0];
   const firstIssue = issues[0];
@@ -2177,6 +2310,69 @@ function buildClusterTitle(issues: DeterministicIssueCard[], strongestAnchorToke
   const firstWeek = uniqueValues(issues.map((issue) => issue.firstFactorySignalWeek))[0] ?? null;
   const lastWeek =
     uniqueValues(issues.map((issue) => issue.lastFactorySignalWeek)).at(-1) ?? null;
+  const preferredLane = options?.preferredLane;
+  const watchlistPrefix = options?.watchlist ? "Watchlist: " : "";
+
+  if (preferredLane === "latent_field") {
+    if (topPart && topBom) {
+      return `${watchlistPrefix}Claim-only latent drift around ${topPart} / ${topBom}`;
+    }
+
+    if (topPart) {
+      return `${watchlistPrefix}Claim-only latent drift around ${topPart}`;
+    }
+
+    if (topBom) {
+      return `${watchlistPrefix}Claim-only latent drift at ${topBom}`;
+    }
+
+    return `${watchlistPrefix}Delayed field claim pattern without prior factory defects`;
+  }
+
+  if (preferredLane === "material_traceability") {
+    if (topPartBatch) {
+      const [partNumber, batchRef] = topPartBatch.split("@");
+      return `${watchlistPrefix}Supplier-batch solder issue around ${partNumber} / ${batchRef}`;
+    }
+
+    if (topPart && anchor?.startsWith("supplier_batch:")) {
+      return `${watchlistPrefix}Supplier-linked issue around ${topPart} / ${anchor.replace("supplier_batch:", "")}`;
+    }
+
+    if (topPart) {
+      return `${watchlistPrefix}Supplier-linked issue around ${topPart}`;
+    }
+
+    if (anchor?.startsWith("supplier_batch:")) {
+      return `${watchlistPrefix}Supplier-linked issue on batch ${anchor.replace("supplier_batch:", "")}`;
+    }
+  }
+
+  if (preferredLane === "process_temporal") {
+    if (topOccurrence && firstWeek && lastWeek) {
+      return `${watchlistPrefix}${topOccurrence} vibration drift, ${firstWeek.slice(0, 10)} to ${lastWeek.slice(0, 10)}`;
+    }
+
+    if (topOccurrence) {
+      return `${watchlistPrefix}${topOccurrence} process-window drift`;
+    }
+
+    return `${watchlistPrefix}Contained process-window drift`;
+  }
+
+  if (preferredLane === "handling_operational") {
+    if (topOrder && topReworkUser) {
+      return `${watchlistPrefix}Handling pattern on ${topOrder} with ${topReworkUser}`;
+    }
+
+    if (topOrder) {
+      return `${watchlistPrefix}Handling pattern on ${topOrder}`;
+    }
+
+    if (topReworkUser) {
+      return `${watchlistPrefix}Handling pattern around ${topReworkUser}`;
+    }
+  }
 
   if (dominantSignature === "latent_field") {
     if (topPart && topBom) {
@@ -2498,6 +2694,10 @@ function buildWeakFamilyTitle(
     return `Detected-section hotspot family ${familyKey.replace("noise:detection_bias:", "")}`;
   }
 
+  if (familyKey === "noise:material_traceability:broad_anchor") {
+    return "Broad-anchor material noise family";
+  }
+
   if (familyKey === "noise:low_volume") {
     return "Low-volume noise family";
   }
@@ -2619,9 +2819,12 @@ type DeterministicClusterLaneValidation = {
   winnerScore: number;
   runnerUpScore: number;
   winnerMargin: number;
-  classification: "case" | "watchlist" | "incident";
+  classification: "case" | "watchlist" | "incident" | "noise";
   familyKey: string | null;
   rationale: string[];
+  closureEvidence: string[];
+  confounders: string[];
+  articleWideAnchorRisk: boolean;
 };
 
 function countValueFrequency(groups: string[][]) {
@@ -2828,6 +3031,16 @@ function validateClusterLane(input: {
   const runnerUpScore = laneScores[runnerUpLane];
   const winnerMargin = winnerScore - runnerUpScore;
   const rationale: string[] = [];
+  const closureEvidence: string[] = [];
+  const confounders: string[] = [];
+  const articleWideAnchorRisk =
+    winningLane === "material_traceability" &&
+    input.issues.reduce((sum, issue) => sum + issue.fingerprint.broadTokens.length, 0) >
+      input.issues.reduce(
+        (sum, issue) =>
+          sum + issue.fingerprint.diagnosticTokens.length + issue.fingerprint.localClusterTokens.length,
+        0,
+      );
 
   const materialClosureEvidence =
     repeatedPartBatchAnchors.length > 0 &&
@@ -2857,10 +3070,51 @@ function validateClusterLane(input: {
     !input.issues.some((issue) => issue.fingerprint.fieldImpactPresent) &&
     (repeatedOrders.length > 0 || repeatedReworkUsers.length > 0);
 
+  if (repeatedPartBatchAnchors.length > 0) {
+    closureEvidence.push(`Repeated part+batch anchors: ${repeatedPartBatchAnchors.slice(0, 2).join(", ")}.`);
+  }
+
+  if (repeatedBundles.length > 0) {
+    closureEvidence.push(`Recurring anchor bundles: ${repeatedBundles.slice(0, 2).join(", ")}.`);
+  }
+
+  if (repeatedOccurrenceSections.length > 0 && hasTimeWindow) {
+    closureEvidence.push(
+      `Occurrence-section time window holds on ${repeatedOccurrenceSections.slice(0, 2).join(", ")}.`,
+    );
+  }
+
+  if (claimOnlyNoPriorCount >= 2 && mediumLongLagCount >= 2) {
+    closureEvidence.push(
+      `Claim-only lag recurrence appears without prior factory defects in ${mediumLongLagCount} threads.`,
+    );
+  }
+
+  if (repeatedOrders.length > 0 || repeatedReworkUsers.length > 0) {
+    closureEvidence.push(
+      `Order/user concentration: ${repeatedOrders[0] ?? repeatedReworkUsers[0]}.`,
+    );
+  }
+
   if (winnerMargin < DET_CASE_LANE_MARGIN) {
     rationale.push(
       `Winning lane ${winningLane.replaceAll("_", " ")} only beat ${runnerUpLane.replaceAll("_", " ")} by ${winnerMargin}, below the ${DET_CASE_LANE_MARGIN}-point margin.`,
     );
+  }
+
+  if (articleWideAnchorRisk) {
+    rationale.push(
+      "Material explanation is leaning on article-wide anchors more than diagnostic/local anchors.",
+    );
+    confounders.push("Article-wide traceability anchors dominate the current material explanation.");
+  }
+
+  if (input.issues.some((issue) => issue.profile.detectionBiasRisk)) {
+    confounders.push("Detected-section hotspot risk is present in this cluster.");
+  }
+
+  if (input.issues.some((issue) => issue.profile.marginalOnly || issue.profile.nearLimitOnly)) {
+    confounders.push("Marginal or near-limit signals could be inflating the cluster.");
   }
 
   if (winningLane === "material_traceability" && !materialClosureEvidence) {
@@ -2903,6 +3157,29 @@ function validateClusterLane(input: {
       classification: "case",
       familyKey: null,
       rationale,
+      closureEvidence: closureEvidence.slice(0, 6),
+      confounders: confounders.slice(0, 6),
+      articleWideAnchorRisk,
+    } satisfies DeterministicClusterLaneValidation;
+  }
+
+  if (
+    winningLane === "material_traceability" &&
+    articleWideAnchorRisk &&
+    !materialClosureEvidence
+  ) {
+    return {
+      winningLane,
+      runnerUpLane,
+      winnerScore,
+      runnerUpScore,
+      winnerMargin,
+      classification: "noise",
+      familyKey: "noise:material_traceability:broad_anchor",
+      rationale,
+      closureEvidence: closureEvidence.slice(0, 6),
+      confounders: confounders.slice(0, 6),
+      articleWideAnchorRisk,
     } satisfies DeterministicClusterLaneValidation;
   }
 
@@ -2924,6 +3201,9 @@ function validateClusterLane(input: {
       ? buildClusterWatchlistFamilyKey(winningLane, input.issues)
       : null,
     rationale,
+    closureEvidence: closureEvidence.slice(0, 6),
+    confounders: confounders.slice(0, 6),
+    articleWideAnchorRisk,
   } satisfies DeterministicClusterLaneValidation;
 }
 
@@ -2931,7 +3211,7 @@ function buildDeterministicArticleInventory(input: {
   dossier: ClusteredArticleDossier;
   issues: DeterministicIssueCard[];
   productReviewSummaries: string[];
-}) {
+}): DeterministicArticleInventoryBuildResult {
   const candidateIssues = input.issues.filter((issue) => !issueLooksNoisy(issue));
   const pairScores = candidateIssues
     .flatMap((left, index) =>
@@ -2950,6 +3230,7 @@ function buildDeterministicArticleInventory(input: {
   const incidents: z.infer<typeof deterministicIncidentSchema>[] = [];
   const watchlistSeeds: DeterministicWeakFamilySeed[] = [];
   const noiseSeeds: DeterministicWeakFamilySeed[] = [];
+  const judgeCandidates: DeterministicJudgeCandidateInput[] = [];
   const assignedIssueIds = new Set<string>();
 
   for (const component of caseComponents) {
@@ -2991,6 +3272,8 @@ function buildDeterministicArticleInventory(input: {
       laneValidation.classification === "watchlist" ||
       component.every((issue) => issueLooksWatchlistLike(issue));
     const laneValidationEvidence = laneValidation.rationale.slice(0, 2);
+    const laneClosureEvidence = laneValidation.closureEvidence.slice(0, 2);
+    const laneConfounders = laneValidation.confounders.slice(0, 2);
     const caseConfidence = clampScore(
       componentConfidence -
         (laneValidation.winnerMargin < DET_CASE_LANE_MARGIN ? 0.06 : 0) -
@@ -3007,16 +3290,21 @@ function buildDeterministicArticleInventory(input: {
     }
 
     if (laneValidation.classification === "case" && componentProductIds.length >= 2 && !watchlistLike) {
+      const title = buildClusterTitle(component, fingerprintTokens, {
+        preferredLane: laneValidation.winningLane,
+      });
       cases.push({
         caseTempId: createId("DCASE"),
-        title: buildClusterTitle(component, fingerprintTokens),
+        title,
         caseKind: chooseCaseKind(component),
         summary: summarizeCluster(component, componentProductIds.length, strongestEvidence),
         confidence: caseConfidence,
         priority: choosePriority(component.map((issue) => issue.priority)),
         includedProductIds: componentProductIds,
         includedSignalIds: componentSignalIds,
-        strongestEvidence,
+        strongestEvidence: uniqueValues(
+          strongestEvidence.concat(laneClosureEvidence),
+        ).slice(0, 8),
         recommendedNextTraceChecks: recommendedChecks,
         fingerprintTokens,
         anchorKinds,
@@ -3024,21 +3312,73 @@ function buildDeterministicArticleInventory(input: {
         lastFactorySignalWeek,
         sourceIssueIds: component.map((issue) => issue.id),
       });
+      judgeCandidates.push({
+        localId: cases[cases.length - 1].caseTempId,
+        currentClass: "validated_case",
+        currentLane: toJudgeLane(laneValidation.winningLane),
+        title,
+        summary: summarizeCluster(component, componentProductIds.length, strongestEvidence),
+        priority: choosePriority(component.map((issue) => issue.priority)),
+        confidence: caseConfidence,
+        linkedProductIds: componentProductIds,
+        linkedSignalIds: componentSignalIds,
+        winningLaneScore: laneValidation.winnerScore,
+        runnerUpLaneScore: laneValidation.runnerUpScore,
+        winningLaneMargin: laneValidation.winnerMargin,
+        topAnchors: fingerprintTokens.slice(0, 8),
+        closureEvidence: laneValidation.closureEvidence.slice(0, 6),
+        confounders: laneValidation.confounders.slice(0, 6),
+        strongestEvidence: uniqueValues(
+          strongestEvidence.concat(laneClosureEvidence),
+        ).slice(0, 6),
+        recommendedChecks: recommendedChecks.slice(0, 6),
+        articleWideAnchorRisk: laneValidation.articleWideAnchorRisk,
+      });
       continue;
     }
 
     const leadIssue = component[0];
 
     if (
+      laneValidation.classification === "noise"
+    ) {
+      const title = buildClusterTitle(component, fingerprintTokens, {
+        preferredLane: laneValidation.winningLane,
+        watchlist: true,
+      });
+      noiseSeeds.push({
+        familyKey: laneValidation.familyKey ?? chooseWeakFamilyKey(leadIssue, "noise"),
+        title,
+        issueKind: chooseCaseKind(component),
+        summary: [downgradedSummary]
+          .concat(laneConfounders)
+          .join(" "),
+        confidence: clampScore(componentConfidence, 0.2, 0.7),
+        priority: choosePriority(component.map((issue) => issue.priority)),
+        linkedProductIds: componentProductIds,
+        linkedSignalIds: componentSignalIds,
+        strongestEvidence: uniqueValues(
+          strongestEvidence.concat(laneConfounders),
+        ).slice(0, 6),
+        mechanismLane: laneValidation.winningLane,
+      });
+      continue;
+    }
+
+    if (
       laneValidation.classification === "watchlist" ||
       watchlistLike ||
       leadIssue.scopeHint === "watchlist"
     ) {
+      const title = buildClusterTitle(component, fingerprintTokens, {
+        preferredLane: laneValidation.winningLane,
+        watchlist: true,
+      });
       watchlistSeeds.push({
         familyKey:
           laneValidation.familyKey ??
           chooseWeakFamilyKey(leadIssue, "watchlist"),
-        title: buildClusterTitle(component, fingerprintTokens),
+        title,
         issueKind: chooseCaseKind(component),
         summary: downgradedSummary,
         confidence: clampScore(componentConfidence, 0.25, 0.88),
@@ -3046,7 +3386,7 @@ function buildDeterministicArticleInventory(input: {
         linkedProductIds: componentProductIds,
         linkedSignalIds: componentSignalIds,
         strongestEvidence: uniqueValues(
-          strongestEvidence.concat(laneValidationEvidence),
+          strongestEvidence.concat(laneValidationEvidence).concat(laneClosureEvidence),
         ).slice(0, 6),
         mechanismLane: laneValidation.winningLane,
       });
@@ -3136,7 +3476,7 @@ function buildDeterministicArticleInventory(input: {
       reason: "No deterministic multi-product anchor cleared the clustering threshold.",
     }));
 
-  return deterministicArticleInventorySchema.parse(
+  const inventory = deterministicArticleInventorySchema.parse(
     normalizeDeterministicLocalInventory({
       reviewSummary:
         `Deterministic grouping reviewed ${input.issues.length} extracted issue cards across ${input.dossier.article.productCount} products.`,
@@ -3157,6 +3497,310 @@ function buildDeterministicArticleInventory(input: {
       ],
     }),
   );
+
+  return {
+    inventory,
+    judgeCandidates: sortByPriorityConfidence(
+      judgeCandidates.map((candidate) => ({
+        ...candidate,
+        title: candidate.title,
+      })),
+    ).slice(0, DET_FINAL_JUDGE_MAX_CANDIDATES),
+  };
+}
+
+function buildDeterministicFinalJudgePayload(input: {
+  articleId: string;
+  articleName: string | null;
+  candidates: DeterministicJudgeCandidateInput[];
+}) {
+  return {
+    article: {
+      articleId: input.articleId,
+      articleName: input.articleName,
+    },
+    reviewScope: {
+      candidateCount: input.candidates.length,
+      instructions:
+        "Review only these shortlisted deterministic candidates. Keep, downgrade, or relabel. Do not create new candidates.",
+    },
+    candidates: input.candidates.map((candidate) => ({
+      localId: candidate.localId,
+      currentClass: candidate.currentClass,
+      currentLane: candidate.currentLane,
+      title: candidate.title,
+      summary: trimPreview(candidate.summary, 260),
+      priority: candidate.priority,
+      confidence: candidate.confidence,
+      linkedProductIds: candidate.linkedProductIds.slice(0, 12),
+      linkedSignalIds: candidate.linkedSignalIds.slice(0, 20),
+      winningLaneScore: candidate.winningLaneScore,
+      runnerUpLaneScore: candidate.runnerUpLaneScore,
+      winningLaneMargin: candidate.winningLaneMargin,
+      topAnchors: candidate.topAnchors.slice(0, 8),
+      closureEvidence: candidate.closureEvidence.slice(0, 6),
+      confounders: candidate.confounders.slice(0, 6),
+      strongestEvidence: candidate.strongestEvidence.slice(0, 6),
+      recommendedChecks: candidate.recommendedChecks.slice(0, 6),
+      articleWideAnchorRisk: candidate.articleWideAnchorRisk,
+    })),
+  };
+}
+
+function buildDeterministicAcceptanceChecks(input: {
+  issues: DeterministicIssueCard[];
+  inventory: DeterministicArticleInventory;
+}) {
+  const notes: string[] = [];
+  const issueById = new Map(input.issues.map((issue) => [issue.id, issue]));
+  const hasNonMaterialCase = input.inventory.cases.some(
+    (item) => !item.fingerprintTokens.includes("lane:material_traceability"),
+  );
+  const hasWatchlist = input.inventory.watchlists.length > 0;
+  const broadOnlyValidated = input.inventory.cases.some((item) => {
+    const sourceIssues = item.sourceIssueIds
+      .map((id) => issueById.get(id))
+      .filter((issue): issue is DeterministicIssueCard => Boolean(issue));
+    const broadCount = sourceIssues.reduce(
+      (sum, issue) => sum + issue.fingerprint.broadTokens.length,
+      0,
+    );
+    const diagnosticOrLocalCount = sourceIssues.reduce(
+      (sum, issue) =>
+        sum +
+        issue.fingerprint.diagnosticTokens.length +
+        issue.fingerprint.localClusterTokens.length,
+      0,
+    );
+    const structuralTokens = item.fingerprintTokens.filter(
+      (token) =>
+        token.startsWith("part_batch:") ||
+        token.startsWith("bundle:") ||
+        token.startsWith("occurrence:") ||
+        token.startsWith("claim_lag:") ||
+        token.startsWith("order:") ||
+        token.startsWith("rework_user:"),
+    );
+
+    return broadCount > diagnosticOrLocalCount && structuralTokens.length === 0;
+  });
+  const hotspotNoiseSwallowingSignal = input.inventory.noise.some((item) => {
+    const linkedIssues = input.issues.filter((issue) => item.linkedProductIds.includes(issue.productId));
+    return linkedIssues.some(
+      (issue) =>
+        issue.fingerprint.occurrenceSections.length > 0 ||
+        (issue.fingerprint.fieldClaimWithoutFactoryDefect &&
+          (issue.fingerprint.reportedPartNumbers.length > 0 ||
+            issue.fingerprint.bomFindNumbers.length > 0)) ||
+        ((issue.fingerprint.orderIds.length > 0 || issue.fingerprint.reworkUsers.length > 0) &&
+          !issue.fingerprint.fieldImpactPresent),
+    );
+  });
+  const buriedHandling = !input.inventory.cases.some((item) =>
+    item.fingerprintTokens.includes("lane:handling_operational"),
+  ) &&
+    !input.inventory.watchlists.some((item) => /handling/i.test(item.title));
+
+  notes.push(
+    hasNonMaterialCase
+      ? "Acceptance check: at least one validated case is not material-lane dominant."
+      : "Acceptance warning: every validated case is still material-lane dominant.",
+  );
+  notes.push(
+    hasWatchlist
+      ? "Acceptance check: at least one weak-but-real pattern survived as a watchlist."
+      : "Acceptance warning: no watchlist survived the current deterministic pipeline.",
+  );
+  notes.push(
+    broadOnlyValidated
+      ? "Acceptance warning: at least one validated case still leans on broad anchors without enough structure."
+      : "Acceptance check: no validated case relies only on broad anchors.",
+  );
+  notes.push(
+    hotspotNoiseSwallowingSignal
+      ? "Acceptance warning: hotspot noise still contains products with stronger occurrence, lag, or handling structure."
+      : "Acceptance check: hotspot noise is not swallowing stronger structured patterns.",
+  );
+  notes.push(
+    buriedHandling
+      ? "Acceptance warning: handling/order-user concentration is not visible in cases or watchlists."
+      : "Acceptance check: handling/order-user concentration remains visible above generic noise.",
+  );
+
+  return notes;
+}
+
+async function runDeterministicFinalJudge(input: {
+  articleId: string;
+  articleName: string | null;
+  localInventory: DeterministicArticleInventory;
+  judgeCandidates: DeterministicJudgeCandidateInput[];
+  issues: DeterministicIssueCard[];
+  abortSignal?: AbortSignal;
+}) {
+  if (!input.judgeCandidates.length) {
+    const acceptanceChecks = buildDeterministicAcceptanceChecks({
+      issues: input.issues,
+      inventory: input.localInventory,
+    });
+
+    return {
+      localInventory: deterministicArticleInventorySchema.parse(
+        normalizeDeterministicLocalInventory({
+          ...input.localInventory,
+          globalObservations: [...input.localInventory.globalObservations, ...acceptanceChecks],
+        }),
+      ),
+      judgeReview: null,
+    };
+  }
+
+  const payload = buildDeterministicFinalJudgePayload({
+    articleId: input.articleId,
+    articleName: input.articleName,
+    candidates: input.judgeCandidates,
+  });
+
+  try {
+    const judgeReview = await generateFinalJudgeObject({
+      articleId: input.articleId,
+      payload,
+      abortSignal: input.abortSignal,
+    });
+    const nextCases: DeterministicArticleInventory["cases"] = [];
+    const nextWatchlists = [...input.localInventory.watchlists];
+    const nextIncidents = [...input.localInventory.incidents];
+    const nextNoise = [...input.localInventory.noise];
+    const judgeNotes = [judgeReview.reviewSummary];
+
+    for (const item of input.localInventory.cases) {
+      const judgment = judgeReview.judgments.find((candidate) => candidate.localId === item.caseTempId);
+
+      if (!judgment) {
+        nextCases.push(item);
+        continue;
+      }
+
+      const recommendedTitle =
+        judgment.action === "relabel" && judgment.recommendedTitle
+          ? judgment.recommendedTitle
+          : item.title;
+
+      if (judgment.finalClass === "validated_case") {
+        nextCases.push({
+          ...item,
+          title: recommendedTitle,
+          summary:
+            judgment.action === "relabel"
+              ? `${item.summary} Judge note: ${judgment.rationale}`
+              : item.summary,
+        });
+        continue;
+      }
+
+      judgeNotes.push(
+        `${item.caseTempId} ${judgment.action} -> ${judgment.finalClass} (${judgment.finalLane}); alt: ${judgment.strongestAlternativeExplanation}`,
+      );
+
+      if (judgment.finalClass === "watchlist") {
+        nextWatchlists.push({
+          watchlistTempId: createId("DWATCH"),
+          title: recommendedTitle,
+          issueKind: item.caseKind,
+          summary: `${item.summary} Judge note: ${judgment.rationale}`,
+          confidence: clampScore(item.confidence - 0.08, 0.2, 0.9),
+          priority: item.priority,
+          linkedProductIds: item.includedProductIds,
+          linkedSignalIds: item.includedSignalIds,
+          strongestEvidence: uniqueValues(
+            item.strongestEvidence.concat(judgment.strongestAlternativeExplanation),
+          ).slice(0, 8),
+        });
+        continue;
+      }
+
+      if (judgment.finalClass === "noise") {
+        nextNoise.push({
+          noiseTempId: createId("DNOISE"),
+          title: recommendedTitle,
+          issueKind: item.caseKind,
+          summary: `${item.summary} Judge note: ${judgment.rationale}`,
+          linkedProductIds: item.includedProductIds,
+          linkedSignalIds: item.includedSignalIds,
+          strongestEvidence: uniqueValues(
+            item.strongestEvidence.concat(judgment.strongestAlternativeExplanation),
+          ).slice(0, 8),
+        });
+        continue;
+      }
+
+      nextWatchlists.push({
+        watchlistTempId: createId("DWATCH"),
+        title: recommendedTitle,
+        issueKind: item.caseKind,
+        summary: `${item.summary} Judge downgraded this shared case to a local incident: ${judgment.rationale}`,
+        confidence: clampScore(item.confidence - 0.12, 0.2, 0.85),
+        priority: item.priority,
+        linkedProductIds: item.includedProductIds,
+        linkedSignalIds: item.includedSignalIds,
+        strongestEvidence: uniqueValues(
+          item.strongestEvidence.concat(judgment.strongestAlternativeExplanation),
+        ).slice(0, 8),
+      });
+    }
+
+    const postJudgeInventory = deterministicArticleInventorySchema.parse(
+      normalizeDeterministicLocalInventory({
+        ...input.localInventory,
+        reviewSummary: `${input.localInventory.reviewSummary} Final judge reviewed ${judgeReview.judgments.length} shortlisted candidates.`,
+        cases: nextCases,
+        incidents: nextIncidents,
+        watchlists: nextWatchlists,
+        noise: nextNoise,
+        globalObservations: [
+          ...input.localInventory.globalObservations,
+          `Final judge reviewed ${judgeReview.judgments.length} shortlisted case candidates.`,
+          ...judgeNotes,
+        ],
+      }),
+    );
+    const acceptanceChecks = buildDeterministicAcceptanceChecks({
+      issues: input.issues,
+      inventory: postJudgeInventory,
+    });
+
+    return {
+      localInventory: deterministicArticleInventorySchema.parse(
+        normalizeDeterministicLocalInventory({
+          ...postJudgeInventory,
+          globalObservations: [
+            ...postJudgeInventory.globalObservations,
+            ...acceptanceChecks,
+          ],
+        }),
+      ),
+      judgeReview,
+    };
+  } catch {
+    const acceptanceChecks = buildDeterministicAcceptanceChecks({
+      issues: input.issues,
+      inventory: input.localInventory,
+    });
+
+    return {
+      localInventory: deterministicArticleInventorySchema.parse(
+        normalizeDeterministicLocalInventory({
+          ...input.localInventory,
+          globalObservations: [
+            ...input.localInventory.globalObservations,
+            "Final judge was skipped after a model error; deterministic classification was kept.",
+            ...acceptanceChecks,
+          ],
+        }),
+      ),
+      judgeReview: null,
+    };
+  }
 }
 
 function materializeDeterministicCandidates(input: {
@@ -3828,18 +4472,37 @@ export async function runDeterministicArticleCaseClustering(
 
     throwIfDeterministicPipelineAborted(options?.abortSignal);
     const extractedIssues = issueSets.flatMap((set) => set.issues);
-    const localInventory = buildDeterministicArticleInventory({
+    const localBuild = buildDeterministicArticleInventory({
       dossier,
       issues: extractedIssues,
       productReviewSummaries: issueSets.map((set) => set.reviewSummary),
     });
+    const preJudgeInventory = localBuild.inventory;
 
     await updateDeterministicCaseRunStage({
       id: runId,
       currentStage: "stage2_grouping",
       stageDetail:
-        `Grouped ${extractedIssues.length} issue cards into ${localInventory.cases.length} candidate cases.`,
+        `Grouped ${extractedIssues.length} issue cards into ${preJudgeInventory.cases.length} candidate cases.`,
       issueCount: extractedIssues.length,
+    });
+
+    await updateDeterministicCaseRunStage({
+      id: runId,
+      currentStage: "stage2_final_judge",
+      stageDetail:
+        `Reviewing ${Math.min(localBuild.judgeCandidates.length, DET_FINAL_JUDGE_MAX_CANDIDATES)} shortlisted candidates with the final judge.`,
+      issueCount: extractedIssues.length,
+    });
+
+    throwIfDeterministicPipelineAborted(options?.abortSignal);
+    const { localInventory, judgeReview } = await runDeterministicFinalJudge({
+      articleId: dossier.article.articleId,
+      articleName: dossier.article.articleName,
+      localInventory: preJudgeInventory,
+      judgeCandidates: localBuild.judgeCandidates,
+      issues: extractedIssues,
+      abortSignal: options?.abortSignal,
     });
 
     const candidates = materializeDeterministicCandidates({
@@ -3886,6 +4549,7 @@ export async function runDeterministicArticleCaseClustering(
       contractVersion: DET_RUN_REVIEW_SCHEMA_VERSION,
       localInventory,
       globalInventory,
+      judgeReview,
     };
 
     await completeDeterministicCaseRun({

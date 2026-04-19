@@ -16,6 +16,7 @@ export type DeterministicCaseRunStage =
   | "stage1_synthesis"
   | "stage1_issue_extraction"
   | "stage2_grouping"
+  | "stage2_final_judge"
   | "stage2_persisting"
   | "stage3_reconciliation"
   | "completed"

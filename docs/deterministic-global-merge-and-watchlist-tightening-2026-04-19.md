@@ -111,6 +111,53 @@ The deterministic local inventory now adds benchmark-oriented coverage notes to
 
 These are evaluation notes, not hardcoded outputs.
 
+### 8. A small final judge now reviews shortlisted case candidates
+
+After deterministic Stage 2 grouping, the pipeline now runs a compact final
+judge over shortlisted article-local case candidates only.
+
+Important constraints:
+
+- it only sees compact candidate fingerprints, not raw dossiers
+- it can only keep, downgrade, or relabel
+- it cannot invent new candidates or re-cluster the article
+- if the judge call fails, the deterministic result is kept
+
+The judge receives:
+
+- current class
+- current lane
+- winning and runner-up lane scores
+- winning margin
+- top anchors
+- closure evidence
+- confounders
+- strongest evidence
+- recommended checks
+- article-wide-anchor risk flag
+
+The judge can return:
+
+- `validated_case`
+- `watchlist`
+- `incident`
+- `noise`
+
+plus a final lane, relabel suggestion, and strongest alternative explanation.
+
+The implementation intentionally keeps this pass narrow so it improves precision
+without reintroducing a giant prompt-driven clustering step.
+
+### 9. Hard acceptance checks are now attached to each run
+
+Each deterministic article run now emits acceptance-style observations covering:
+
+- whether at least one validated case is not material-lane dominant
+- whether at least one weak-but-real pattern survived as a watchlist
+- whether any validated case still leans too heavily on broad anchors
+- whether hotspot noise swallowed stronger occurrence, lag, or handling signals
+- whether handling/order-user concentration is visible above generic noise
+
 ## Verification
 
 - `npx eslint src/lib/manex-deterministic-case-clustering.ts src/prompts/manex-deterministic-case-clustering.ts`
