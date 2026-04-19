@@ -71,6 +71,14 @@ const DET_CASE_PAIR_THRESHOLD = readPositiveInt(
   process.env.MANEX_DET_CASE_PAIR_THRESHOLD,
   14,
 );
+const DET_CASE_LANE_MARGIN = readPositiveInt(
+  process.env.MANEX_DET_CASE_LANE_MARGIN,
+  5,
+);
+const DET_GLOBAL_CASE_PAIR_THRESHOLD = readPositiveInt(
+  process.env.MANEX_DET_GLOBAL_CASE_PAIR_THRESHOLD,
+  16,
+);
 
 const prioritySchema = z.enum(["low", "medium", "high", "critical"]);
 
@@ -1658,14 +1666,30 @@ function scoreTemporalOverlap(left: DeterministicIssueCard, right: Deterministic
 }
 
 function issueLooksNoisy(issue: DeterministicIssueCard) {
+  const hasStructuralEvidence =
+    issue.fingerprint.partBatchAnchorValues.length > 0 ||
+    issue.fingerprint.cooccurringBundleKeys.length > 0 ||
+    (issue.fingerprint.occurrenceSections.length > 0 &&
+      Boolean(issue.firstFactorySignalWeek && issue.lastFactorySignalWeek) &&
+      (issue.profile.dominantDefectCode !== null || issue.profile.dominantTestKey !== null)) ||
+    (issue.fingerprint.fieldClaimWithoutFactoryDefect &&
+      issue.fingerprint.claimLagBucket !== "none" &&
+      (issue.fingerprint.reportedPartNumbers.length > 0 ||
+        issue.fingerprint.bomFindNumbers.length > 0)) ||
+    (!issue.fingerprint.fieldImpactPresent &&
+      (issue.fingerprint.lowSeverityOnly || issue.fingerprint.cosmeticOnly) &&
+      (issue.fingerprint.orderIds.length > 0 || issue.fingerprint.reworkUsers.length > 0));
+
   return (
     issue.scopeHint === "noise" ||
     issue.issueKind === "false_positive" ||
     issue.issueKind === "screening_noise" ||
     issue.profile.falsePositive ||
-    issue.profile.marginalOnly ||
-    issue.profile.detectionBiasRisk ||
-    issue.profile.nearLimitOnly
+    ((issue.profile.marginalOnly || issue.profile.nearLimitOnly) && !hasStructuralEvidence) ||
+    (issue.profile.detectionBiasRisk &&
+      !hasStructuralEvidence &&
+      issue.fingerprint.occurrenceSections.length === 0) ||
+    (issue.profile.lowVolumeRisk && !hasStructuralEvidence)
   );
 }
 
@@ -1676,7 +1700,15 @@ function issueLooksWatchlistLike(issue: DeterministicIssueCard) {
     issue.issueKind === "cosmetic_issue" ||
     issue.profile.serviceDocumentation ||
     issue.profile.cosmeticOnly ||
-    hasIssueSignature(issue, "handling_cosmetic")
+    hasIssueSignature(issue, "handling_cosmetic") ||
+    (hasIssueSignature(issue, "latent_field") &&
+      issue.profile.fieldClaimWithoutFactoryDefect &&
+      issue.profile.claimLagBucket !== "none") ||
+    ((issue.profile.marginalOnly || issue.profile.nearLimitOnly) &&
+      !issueLooksNoisy(issue) &&
+      (issue.fingerprint.occurrenceSections.length > 0 ||
+        issue.fingerprint.partBatchAnchorValues.length > 0 ||
+        issue.fingerprint.reportedPartNumbers.length > 0))
   );
 }
 
@@ -1747,6 +1779,18 @@ function scoreIssuePair(left: DeterministicIssueCard, right: DeterministicIssueC
     sharedPartBatchAnchors.length > 0 ||
     sharedBundles.length > 0 ||
     sharedDiagnosticTokens.some((token) => token.includes("part_batch"));
+  const supportingDefectOrTest =
+    sharedDefectCodes.length > 0 ||
+    sharedTestKeys.length > 0 ||
+    left.profile.testOutcomeProfile === "fail_present" ||
+    left.profile.testOutcomeProfile === "mixed_factory" ||
+    right.profile.testOutcomeProfile === "fail_present" ||
+    right.profile.testOutcomeProfile === "mixed_factory";
+  const supportingClaimOrLag =
+    Boolean(sharedLagBucket && (sharedLagBucket === "medium" || sharedLagBucket === "long")) ||
+    ((left.fingerprint.fieldClaimWithoutFactoryDefect ||
+      right.fingerprint.fieldClaimWithoutFactoryDefect) &&
+      (sharedParts.length > 0 || sharedBom.length > 0));
 
   if (!sameLane && !strongCrossLane) {
     return null;
@@ -1759,22 +1803,28 @@ function scoreIssuePair(left: DeterministicIssueCard, right: DeterministicIssueC
     (sameLane && left.fingerprint.mechanismLane === "material_traceability") || strongCrossLane
       ? sharedPartBatchAnchors.length > 0 &&
         (sharedBundles.length > 0 ||
+          mutualNeighborhood ||
           sharedPartCandidates.length > 0 ||
-          sharedParts.length > 0 ||
-          sharedSupplierBatches.length > 0)
+          sharedParts.length > 0) &&
+        (supportingDefectOrTest || supportingClaimOrLag)
       : false;
   const processWindowSignature =
     sameLane &&
     left.fingerprint.mechanismLane === "process_temporal" &&
     sharedOccurrenceSections.length > 0 &&
     temporalOverlap > 0 &&
-    (sharedDefectCodes.length > 0 || sharedTestKeys.length > 0);
+    (sharedDefectCodes.length > 0 ||
+      sharedTestKeys.length > 0 ||
+      supportingDefectOrTest ||
+      sharedReworkUsers.length > 0);
   const latentFieldSignature =
     sameLane &&
     left.fingerprint.mechanismLane === "latent_field" &&
+    left.fingerprint.claimOnly &&
+    right.fingerprint.claimOnly &&
     left.fingerprint.fieldClaimWithoutFactoryDefect &&
     right.fingerprint.fieldClaimWithoutFactoryDefect &&
-    Boolean(sharedLagBucket) &&
+    Boolean(sharedLagBucket && (sharedLagBucket === "medium" || sharedLagBucket === "long")) &&
     (sharedParts.length > 0 || sharedBom.length > 0 || sharedPartCandidates.length > 0);
   const handlingCosmeticSignature =
     sameLane &&
@@ -2117,49 +2167,77 @@ function getDominantClusterSignature(issues: DeterministicIssueCard[]) {
 function buildClusterTitle(issues: DeterministicIssueCard[], strongestAnchorTokens: string[]) {
   const dominantSignature = getDominantClusterSignature(issues);
   const anchor = strongestAnchorTokens[0];
+  const firstIssue = issues[0];
+  const topPartBatch = firstIssue?.fingerprint.partBatchAnchorValues[0] ?? null;
+  const topOrder = firstIssue?.fingerprint.orderIds[0] ?? null;
+  const topReworkUser = firstIssue?.fingerprint.reworkUsers[0] ?? null;
+  const topOccurrence = firstIssue?.fingerprint.occurrenceSections[0] ?? null;
+  const topPart = firstIssue?.fingerprint.reportedPartNumbers[0] ?? null;
+  const topBom = firstIssue?.fingerprint.bomFindNumbers[0] ?? null;
+  const firstWeek = uniqueValues(issues.map((issue) => issue.firstFactorySignalWeek))[0] ?? null;
+  const lastWeek =
+    uniqueValues(issues.map((issue) => issue.lastFactorySignalWeek)).at(-1) ?? null;
 
   if (dominantSignature === "latent_field") {
-    const partAnchor = strongestAnchorTokens.find((token) => token.startsWith("part:") || token.startsWith("bom:"));
-
-    if (partAnchor?.startsWith("part:")) {
-      return `Delayed field claim pattern around ${partAnchor.replace("part:", "")}`;
+    if (topPart && topBom) {
+      return `Claim-only latent drift around ${topPart} / ${topBom}`;
     }
 
-    if (partAnchor?.startsWith("bom:")) {
-      return `Delayed field claim pattern at position ${partAnchor.replace("bom:", "")}`;
+    if (topPart) {
+      return `Claim-only latent drift around ${topPart}`;
+    }
+
+    if (topBom) {
+      return `Claim-only latent drift at ${topBom}`;
     }
 
     return "Delayed field claim pattern without prior factory defects";
   }
 
   if (dominantSignature === "supplier_material") {
-    if (anchor?.startsWith("supplier_batch:")) {
-      return `Supplier-linked drift on batch ${anchor.replace("supplier_batch:", "")}`;
+    if (topPartBatch) {
+      const [partNumber, batchRef] = topPartBatch.split("@");
+      return `Supplier-batch issue around ${partNumber} / ${batchRef}`;
     }
 
-    if (anchor?.startsWith("part:")) {
-      return `Supplier-linked drift around ${anchor.replace("part:", "")}`;
+    if (topPart && anchor?.startsWith("supplier_batch:")) {
+      return `Supplier-linked issue around ${topPart} / ${anchor.replace("supplier_batch:", "")}`;
+    }
+
+    if (topPart) {
+      return `Supplier-linked issue around ${topPart}`;
     }
   }
 
   if (dominantSignature === "process_window") {
-    const occurrenceAnchor = strongestAnchorTokens.find((token) => token.startsWith("occurrence:"));
+    if (topOccurrence && firstWeek && lastWeek) {
+      return `${topOccurrence} process drift, ${firstWeek.slice(0, 10)} to ${lastWeek.slice(0, 10)}`;
+    }
 
-    if (occurrenceAnchor) {
-      return `Contained process drift in ${occurrenceAnchor.replace("occurrence:", "")}`;
+    if (topOccurrence) {
+      return `${topOccurrence} process-window drift`;
     }
 
     return "Contained process-window drift";
   }
 
   if (dominantSignature === "handling_cosmetic") {
-    if (anchor?.startsWith("order:")) {
-      return `Handling pattern on order ${anchor.replace("order:", "")}`;
+    if (topOrder && topReworkUser) {
+      return `Handling pattern on ${topOrder} with ${topReworkUser}`;
     }
 
-    if (anchor?.startsWith("rework_user:")) {
-      return `Handling pattern around rework user ${anchor.replace("rework_user:", "")}`;
+    if (topOrder) {
+      return `Handling pattern on ${topOrder}`;
     }
+
+    if (topReworkUser) {
+      return `Handling pattern around ${topReworkUser}`;
+    }
+  }
+
+  if (anchor?.startsWith("part_batch:")) {
+    const [partNumber, batchRef] = anchor.replace("part_batch:", "").split("@");
+    return `Recurring supplier-batch issue ${partNumber} / ${batchRef}`;
   }
 
   if (anchor?.startsWith("supplier_batch:")) {
@@ -2186,19 +2264,19 @@ function summarizeCluster(issues: DeterministicIssueCard[], productCount: number
   const dominantSignature = getDominantClusterSignature(issues);
 
   if (dominantSignature === "latent_field") {
-    return `${productCount} products show delayed claim-led issues without prior factory defects. ${lead}`;
+    return `${productCount} products show claim-only delayed issues without prior factory defects and recurring claim anchors. ${lead}`;
   }
 
   if (dominantSignature === "supplier_material") {
-    return `${productCount} products share a concentrated supplier/material signature. ${lead}`;
+    return `${productCount} products share concentrated supplier/material anchors rather than a broad position-only pattern. ${lead}`;
   }
 
   if (dominantSignature === "process_window") {
-    return `${productCount} products align on a tight process-window signature. ${lead}`;
+    return `${productCount} products align on a tight occurrence-section process window rather than a detected-section hotspot. ${lead}`;
   }
 
   if (dominantSignature === "handling_cosmetic") {
-    return `${productCount} products share a low-severity handling pattern rather than a field failure story. ${lead}`;
+    return `${productCount} products share a low-severity order/user handling pattern rather than a field failure story. ${lead}`;
   }
 
   return `${productCount} products are linked by deterministic evidence. ${lead}`;
@@ -2235,6 +2313,79 @@ function buildFingerprintTokens(issues: DeterministicIssueCard[]) {
   ).slice(0, 32);
 }
 
+function buildBenchmarkCoverageNotes(input: {
+  issues: DeterministicIssueCard[];
+  cases: DeterministicCase[];
+  watchlists: z.infer<typeof deterministicWatchlistSchema>[];
+}) {
+  const notes: string[] = [];
+  const hasMaterialObject = input.cases.some(
+    (item) =>
+      item.fingerprintTokens.some((token) => token.startsWith("part_batch:")) &&
+      item.fingerprintTokens.some(
+        (token) =>
+          token.startsWith("bundle:") ||
+          token.startsWith("part:") ||
+          token.startsWith("supplier_batch:"),
+      ),
+  );
+  const hasProcessObject = input.cases.some(
+    (item) =>
+      item.fingerprintTokens.some((token) => token.startsWith("occurrence:")) &&
+      Boolean(item.firstFactorySignalWeek && item.lastFactorySignalWeek),
+  );
+  const hasLatentObject =
+    input.cases.some(
+      (item) =>
+        item.fingerprintTokens.includes("signature:latent_field") &&
+        item.fingerprintTokens.some((token) => token.startsWith("claim_lag:")) &&
+        item.fingerprintTokens.some(
+          (token) => token.startsWith("part:") || token.startsWith("bom:"),
+        ),
+    ) ||
+    input.watchlists.some(
+      (item) =>
+        /claim-only|latent/i.test(item.title) &&
+        /claim|lag/i.test(item.summary),
+    );
+  const hasHandlingObject =
+    input.cases.some(
+      (item) =>
+        item.fingerprintTokens.includes("signature:handling_cosmetic") &&
+        item.fingerprintTokens.some(
+          (token) => token.startsWith("order:") || token.startsWith("rework_user:"),
+        ),
+    ) ||
+    input.watchlists.some((item) => /handling/i.test(item.title));
+
+  notes.push(
+    hasMaterialObject
+      ? "Benchmark check: a material/traceability object is present with specific concentrated anchors."
+      : "Benchmark check: no traceability-led case cleared the current threshold yet.",
+  );
+  notes.push(
+    hasProcessObject
+      ? "Benchmark check: a process/temporal object is present with occurrence-section plus time-window evidence."
+      : "Benchmark check: no occurrence-section process-window object cleared the current threshold yet.",
+  );
+  notes.push(
+    hasLatentObject
+      ? "Benchmark check: a latent field object is present for claim-only / no-prior-defect lag behavior."
+      : "Benchmark check: no claim-only latent-field object cleared the current threshold yet.",
+  );
+  notes.push(
+    hasHandlingObject
+      ? "Benchmark check: a handling / operational object is present with order or rework-user concentration."
+      : "Benchmark check: no handling/order-user object cleared the current threshold yet.",
+  );
+
+  if (!input.issues.some((issue) => issue.fingerprint.mechanismLane === "noise_confounder")) {
+    notes.push("Benchmark check: no strong noise-conflater lane dominated this article run.");
+  }
+
+  return notes;
+}
+
 type DeterministicWeakFamilySeed = {
   familyKey: string;
   issueKind: string;
@@ -2261,6 +2412,19 @@ function chooseWeakFamilyKey(
   }
 
   if (familyType === "watchlist") {
+    if (issue.fingerprint.mechanismLane === "material_traceability") {
+      return `watchlist:material:${
+        issue.fingerprint.partBatchAnchorValues[0] ??
+        issue.profile.dominantSupplierBatch ??
+        issue.profile.dominantReportedPartNumber ??
+        "generic"
+      }`;
+    }
+
+    if (issue.fingerprint.mechanismLane === "process_temporal") {
+      return `watchlist:process:${issue.profile.dominantOccurrenceSection ?? "generic"}`;
+    }
+
     if (issue.fingerprint.mechanismLane === "handling_operational") {
       return `watchlist:handling:${
         issue.profile.dominantOrderId ??
@@ -2301,6 +2465,14 @@ function buildWeakFamilyTitle(
   familyType: "watchlist" | "noise",
   fallbackTitle: string,
 ) {
+  if (familyKey.startsWith("watchlist:material:")) {
+    return `Material / traceability watchlist ${familyKey.replace("watchlist:material:", "")}`;
+  }
+
+  if (familyKey.startsWith("watchlist:process:")) {
+    return `Process / temporal watchlist ${familyKey.replace("watchlist:process:", "")}`;
+  }
+
   if (familyKey.startsWith("watchlist:handling:")) {
     return `Handling / operational family ${familyKey.replace("watchlist:handling:", "")}`;
   }
@@ -2438,6 +2610,323 @@ function aggregateWeakFamilies(
   })) satisfies z.infer<typeof deterministicNoiseSchema>[];
 }
 
+type DeterministicCandidateLane =
+  Exclude<DeterministicIssueMechanismLane, "noise_confounder">;
+
+type DeterministicClusterLaneValidation = {
+  winningLane: DeterministicCandidateLane;
+  runnerUpLane: DeterministicCandidateLane;
+  winnerScore: number;
+  runnerUpScore: number;
+  winnerMargin: number;
+  classification: "case" | "watchlist" | "incident";
+  familyKey: string | null;
+  rationale: string[];
+};
+
+function countValueFrequency(groups: string[][]) {
+  const counts = new Map<string, number>();
+
+  for (const group of groups) {
+    for (const value of new Set(group)) {
+      counts.set(value, (counts.get(value) ?? 0) + 1);
+    }
+  }
+
+  return counts;
+}
+
+function repeatedValues(groups: string[][], minCount = 2) {
+  return [...countValueFrequency(groups).entries()]
+    .filter(([, count]) => count >= minCount)
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .map(([value]) => value);
+}
+
+function buildClusterWatchlistFamilyKey(
+  lane: DeterministicCandidateLane,
+  issues: DeterministicIssueCard[],
+) {
+  const repeatedPartBatchAnchors = repeatedValues(
+    issues.map((issue) => issue.fingerprint.partBatchAnchorValues),
+  );
+  const repeatedOccurrenceSections = repeatedValues(
+    issues.map((issue) => issue.fingerprint.occurrenceSections),
+  );
+  const repeatedParts = repeatedValues(
+    issues.map((issue) => issue.fingerprint.reportedPartNumbers),
+  );
+  const repeatedBom = repeatedValues(
+    issues.map((issue) => issue.fingerprint.bomFindNumbers),
+  );
+  const repeatedOrders = repeatedValues(
+    issues.map((issue) => issue.fingerprint.orderIds),
+  );
+  const repeatedReworkUsers = repeatedValues(
+    issues.map((issue) => issue.fingerprint.reworkUsers),
+  );
+  const lagBuckets = repeatedValues(
+    issues.map((issue) =>
+      issue.fingerprint.claimLagBucket !== "none" ? [issue.fingerprint.claimLagBucket] : [],
+    ),
+  );
+
+  if (lane === "material_traceability") {
+    return `watchlist:material:${repeatedPartBatchAnchors[0] ?? repeatedParts[0] ?? "generic"}`;
+  }
+
+  if (lane === "process_temporal") {
+    return `watchlist:process:${repeatedOccurrenceSections[0] ?? "generic"}`;
+  }
+
+  if (lane === "latent_field") {
+    return `watchlist:latent_field:${lagBuckets[0] ?? "generic"}:${repeatedParts[0] ?? repeatedBom[0] ?? "generic"}`;
+  }
+
+  return `watchlist:handling:${repeatedOrders[0] ?? repeatedReworkUsers[0] ?? "generic"}`;
+}
+
+function validateClusterLane(input: {
+  issues: DeterministicIssueCard[];
+  relatedPairs: Array<{
+    leftId: string;
+    rightId: string;
+    score: number;
+    reasons: string[];
+    anchorKinds: string[];
+  }>;
+  productCount: number;
+}) {
+  const laneOrder: DeterministicCandidateLane[] = [
+    "material_traceability",
+    "process_temporal",
+    "latent_field",
+    "handling_operational",
+  ];
+  const laneScoresBase: Record<DeterministicCandidateLane, number> = {
+    material_traceability: 0,
+    process_temporal: 0,
+    latent_field: 0,
+    handling_operational: 0,
+  };
+
+  for (const issue of input.issues) {
+    for (const lane of laneOrder) {
+      laneScoresBase[lane] += issue.fingerprint.laneScores[lane];
+    }
+  }
+
+  const repeatedPartBatchAnchors = repeatedValues(
+    input.issues.map((issue) => issue.fingerprint.partBatchAnchorValues),
+  );
+  const repeatedBundles = repeatedValues(
+    input.issues.map((issue) => issue.fingerprint.cooccurringBundleKeys),
+  );
+  const repeatedParts = repeatedValues(
+    input.issues.map((issue) => issue.fingerprint.reportedPartNumbers),
+  );
+  const repeatedBom = repeatedValues(
+    input.issues.map((issue) => issue.fingerprint.bomFindNumbers),
+  );
+  const repeatedOrders = repeatedValues(
+    input.issues.map((issue) => issue.fingerprint.orderIds),
+  );
+  const repeatedReworkUsers = repeatedValues(
+    input.issues.map((issue) => issue.fingerprint.reworkUsers),
+  );
+  const repeatedOccurrenceSections = repeatedValues(
+    input.issues.map((issue) => issue.fingerprint.occurrenceSections),
+  );
+  const repeatedSupplierBatches = repeatedValues(
+    input.issues.map((issue) => issue.fingerprint.supplierBatches),
+  );
+  const repeatedDefectCodes = repeatedValues(
+    input.issues.map((issue) => issue.anchorSummary.defectCodes),
+  );
+  const repeatedTestKeys = repeatedValues(
+    input.issues.map((issue) => issue.anchorSummary.testKeys),
+  );
+  const repeatedLagBuckets = repeatedValues(
+    input.issues.map((issue) =>
+      issue.fingerprint.claimLagBucket !== "none" ? [issue.fingerprint.claimLagBucket] : [],
+    ),
+  );
+
+  const pairAnchorKinds = new Set(input.relatedPairs.flatMap((pair) => pair.anchorKinds));
+  const hasTimeWindow = pairAnchorKinds.has("time_window");
+  const hasOccurrencePair = pairAnchorKinds.has("occurrence_section");
+  const hasMaterialPair =
+    pairAnchorKinds.has("part_batch") ||
+    pairAnchorKinds.has("cooccurring_bundle") ||
+    pairAnchorKinds.has("signature_material_traceability");
+  const hasHandlingPair =
+    pairAnchorKinds.has("order") || pairAnchorKinds.has("rework_user");
+  const hasLatentPair =
+    pairAnchorKinds.has("claim_lag") ||
+    pairAnchorKinds.has("signature_latent_field");
+  const failOrMixedCount = input.issues.filter(
+    (issue) =>
+      issue.profile.testOutcomeProfile === "fail_present" ||
+      issue.profile.testOutcomeProfile === "mixed_factory",
+  ).length;
+  const claimOnlyNoPriorCount = input.issues.filter(
+    (issue) =>
+      issue.fingerprint.claimOnly &&
+      issue.fingerprint.fieldClaimWithoutFactoryDefect &&
+      !issue.fingerprint.hasPriorFactoryDefect,
+  ).length;
+  const mediumLongLagCount = input.issues.filter((issue) =>
+    issue.fingerprint.claimLagBucket === "medium" || issue.fingerprint.claimLagBucket === "long",
+  ).length;
+  const lowSeverityHandlingCount = input.issues.filter(
+    (issue) =>
+      !issue.fingerprint.fieldImpactPresent &&
+      (issue.fingerprint.lowSeverityOnly || issue.fingerprint.cosmeticOnly),
+  ).length;
+
+  const laneScores: Record<DeterministicCandidateLane, number> = {
+    material_traceability:
+      laneScoresBase.material_traceability +
+      repeatedPartBatchAnchors.length * 6 +
+      repeatedBundles.length * 4 +
+      repeatedSupplierBatches.length * 2 +
+      (hasMaterialPair ? 5 : 0) +
+      (failOrMixedCount >= 2 || repeatedDefectCodes.length > 0 || repeatedTestKeys.length > 0 ? 5 : 0) +
+      (claimOnlyNoPriorCount >= 2 && mediumLongLagCount >= 2 && (repeatedParts.length > 0 || repeatedBom.length > 0)
+        ? 2
+        : 0),
+    process_temporal:
+      laneScoresBase.process_temporal +
+      repeatedOccurrenceSections.length * 7 +
+      (hasOccurrencePair ? 5 : 0) +
+      (hasTimeWindow ? 7 : 0) +
+      (repeatedDefectCodes.length > 0 || repeatedTestKeys.length > 0 ? 4 : 0) +
+      (failOrMixedCount >= 2 ? 4 : 0),
+    latent_field:
+      laneScoresBase.latent_field +
+      claimOnlyNoPriorCount * 5 +
+      mediumLongLagCount * 4 +
+      (hasLatentPair ? 4 : 0) +
+      (repeatedParts.length > 0 ? 4 : 0) +
+      (repeatedBom.length > 0 ? 4 : 0),
+    handling_operational:
+      laneScoresBase.handling_operational +
+      lowSeverityHandlingCount * 4 +
+      repeatedOrders.length * 5 +
+      repeatedReworkUsers.length * 5 +
+      (hasHandlingPair ? 4 : 0),
+  };
+
+  const rankedLanes = laneOrder
+    .slice()
+    .sort(
+      (left, right) => laneScores[right] - laneScores[left] || left.localeCompare(right),
+    );
+  const winningLane = rankedLanes[0];
+  const runnerUpLane = rankedLanes[1];
+  const winnerScore = laneScores[winningLane];
+  const runnerUpScore = laneScores[runnerUpLane];
+  const winnerMargin = winnerScore - runnerUpScore;
+  const rationale: string[] = [];
+
+  const materialClosureEvidence =
+    repeatedPartBatchAnchors.length > 0 &&
+    (repeatedBundles.length > 0 ||
+      hasMaterialPair ||
+      input.issues.some((issue) => issue.fingerprint.neighborhoodProductIds.length > 0)) &&
+    (failOrMixedCount >= 2 ||
+      repeatedDefectCodes.length > 0 ||
+      repeatedTestKeys.length > 0 ||
+      (claimOnlyNoPriorCount >= 2 &&
+        mediumLongLagCount >= 2 &&
+        (repeatedParts.length > 0 || repeatedBom.length > 0)));
+  const processClosureEvidence =
+    repeatedOccurrenceSections.length > 0 &&
+    hasTimeWindow &&
+    (repeatedDefectCodes.length > 0 ||
+      repeatedTestKeys.length > 0 ||
+      failOrMixedCount >= 2 ||
+      input.issues.some((issue) => issue.fingerprint.reworkUsers.length > 0));
+  const latentClosureEvidence =
+    claimOnlyNoPriorCount >= 2 &&
+    mediumLongLagCount >= 2 &&
+    (repeatedLagBuckets.includes("medium") || repeatedLagBuckets.includes("long")) &&
+    (repeatedParts.length > 0 || repeatedBom.length > 0);
+  const handlingClosureEvidence =
+    lowSeverityHandlingCount >= 2 &&
+    !input.issues.some((issue) => issue.fingerprint.fieldImpactPresent) &&
+    (repeatedOrders.length > 0 || repeatedReworkUsers.length > 0);
+
+  if (winnerMargin < DET_CASE_LANE_MARGIN) {
+    rationale.push(
+      `Winning lane ${winningLane.replaceAll("_", " ")} only beat ${runnerUpLane.replaceAll("_", " ")} by ${winnerMargin}, below the ${DET_CASE_LANE_MARGIN}-point margin.`,
+    );
+  }
+
+  if (winningLane === "material_traceability" && !materialClosureEvidence) {
+    rationale.push(
+      "Material / traceability evidence did not show enough closure beyond anchor concentration.",
+    );
+  }
+
+  if (winningLane === "process_temporal" && !processClosureEvidence) {
+    rationale.push(
+      "Process / temporal evidence did not preserve both occurrence-section and tight time-window structure.",
+    );
+  }
+
+  if (winningLane === "latent_field" && !latentClosureEvidence) {
+    rationale.push(
+      "Latent-field evidence did not recur strongly enough on claim-only, no-prior-defect, lagged part/BOM anchors.",
+    );
+  }
+
+  if (winningLane === "handling_operational" && !handlingClosureEvidence) {
+    rationale.push(
+      "Handling / operational evidence did not show strong enough order or rework-user concentration.",
+    );
+  }
+
+  const laneHasClosure =
+    (winningLane === "material_traceability" && materialClosureEvidence) ||
+    (winningLane === "process_temporal" && processClosureEvidence) ||
+    (winningLane === "latent_field" && latentClosureEvidence) ||
+    (winningLane === "handling_operational" && handlingClosureEvidence);
+
+  if (input.productCount >= 2 && winnerMargin >= DET_CASE_LANE_MARGIN && laneHasClosure) {
+    return {
+      winningLane,
+      runnerUpLane,
+      winnerScore,
+      runnerUpScore,
+      winnerMargin,
+      classification: "case",
+      familyKey: null,
+      rationale,
+    } satisfies DeterministicClusterLaneValidation;
+  }
+
+  const classifyAsWatchlist =
+    input.productCount >= 2 ||
+    winningLane === "latent_field" ||
+    winningLane === "handling_operational" ||
+    input.issues.some((issue) => issueLooksWatchlistLike(issue)) ||
+    (input.productCount >= 2 && laneHasClosure);
+
+  return {
+    winningLane,
+    runnerUpLane,
+    winnerScore,
+    runnerUpScore,
+    winnerMargin,
+    classification: classifyAsWatchlist ? "watchlist" : "incident",
+    familyKey: classifyAsWatchlist
+      ? buildClusterWatchlistFamilyKey(winningLane, input.issues)
+      : null,
+    rationale,
+  } satisfies DeterministicClusterLaneValidation;
+}
+
 function buildDeterministicArticleInventory(input: {
   dossier: ClusteredArticleDossier;
   issues: DeterministicIssueCard[];
@@ -2493,19 +2982,37 @@ function buildDeterministicArticleInventory(input: {
       0.2,
       0.95,
     );
-    const watchlistLike = component.every((issue) => issueLooksWatchlistLike(issue));
+    const laneValidation = validateClusterLane({
+      issues: component,
+      relatedPairs,
+      productCount: componentProductIds.length,
+    });
+    const watchlistLike =
+      laneValidation.classification === "watchlist" ||
+      component.every((issue) => issueLooksWatchlistLike(issue));
+    const laneValidationEvidence = laneValidation.rationale.slice(0, 2);
+    const caseConfidence = clampScore(
+      componentConfidence -
+        (laneValidation.winnerMargin < DET_CASE_LANE_MARGIN ? 0.06 : 0) -
+        (laneValidation.rationale.length > 0 ? 0.04 : 0),
+      0.2,
+      0.95,
+    );
+    const downgradedSummary = [summarizeCluster(component, componentProductIds.length, strongestEvidence)]
+      .concat(laneValidationEvidence)
+      .join(" ");
 
     for (const issue of component) {
       assignedIssueIds.add(issue.id);
     }
 
-    if (componentProductIds.length >= 2 && !watchlistLike) {
+    if (laneValidation.classification === "case" && componentProductIds.length >= 2 && !watchlistLike) {
       cases.push({
         caseTempId: createId("DCASE"),
         title: buildClusterTitle(component, fingerprintTokens),
         caseKind: chooseCaseKind(component),
         summary: summarizeCluster(component, componentProductIds.length, strongestEvidence),
-        confidence: componentConfidence,
+        confidence: caseConfidence,
         priority: choosePriority(component.map((issue) => issue.priority)),
         includedProductIds: componentProductIds,
         includedSignalIds: componentSignalIds,
@@ -2522,18 +3029,26 @@ function buildDeterministicArticleInventory(input: {
 
     const leadIssue = component[0];
 
-    if (watchlistLike || leadIssue.scopeHint === "watchlist") {
+    if (
+      laneValidation.classification === "watchlist" ||
+      watchlistLike ||
+      leadIssue.scopeHint === "watchlist"
+    ) {
       watchlistSeeds.push({
-        familyKey: chooseWeakFamilyKey(leadIssue, "watchlist"),
+        familyKey:
+          laneValidation.familyKey ??
+          chooseWeakFamilyKey(leadIssue, "watchlist"),
         title: buildClusterTitle(component, fingerprintTokens),
         issueKind: chooseCaseKind(component),
-        summary: summarizeCluster(component, componentProductIds.length, strongestEvidence),
-        confidence: componentConfidence,
+        summary: downgradedSummary,
+        confidence: clampScore(componentConfidence, 0.25, 0.88),
         priority: choosePriority(component.map((issue) => issue.priority)),
         linkedProductIds: componentProductIds,
         linkedSignalIds: componentSignalIds,
-        strongestEvidence: strongestEvidence.slice(0, 6),
-        mechanismLane: leadIssue.fingerprint.mechanismLane,
+        strongestEvidence: uniqueValues(
+          strongestEvidence.concat(laneValidationEvidence),
+        ).slice(0, 6),
+        mechanismLane: laneValidation.winningLane,
       });
       continue;
     }
@@ -2601,6 +3116,11 @@ function buildDeterministicArticleInventory(input: {
 
   const watchlists = aggregateWeakFamilies(watchlistSeeds, "watchlist");
   const noise = aggregateWeakFamilies(noiseSeeds, "noise");
+  const benchmarkCoverageNotes = buildBenchmarkCoverageNotes({
+    issues: input.issues,
+    cases,
+    watchlists,
+  });
 
   const classifiedProductIds = new Set<string>([
     ...cases.flatMap((item) => item.includedProductIds),
@@ -2633,6 +3153,7 @@ function buildDeterministicArticleInventory(input: {
         watchlists.length > 0
           ? `${watchlists.length} weaker patterns were held back as watchlists.`
           : null,
+        ...benchmarkCoverageNotes,
       ],
     }),
   );
@@ -2778,9 +3299,49 @@ function scoreCandidatePair(
     return null;
   }
 
+  if (leftFingerprint.mechanismLane !== rightFingerprint.mechanismLane) {
+    return null;
+  }
+
   const sharedTokens = intersect(leftFingerprint.fingerprintTokens, rightFingerprint.fingerprintTokens);
+  const sharedPartBatch = sharedTokens.filter((token) => token.startsWith("part_batch:"));
+  const sharedBundles = sharedTokens.filter((token) => token.startsWith("bundle:"));
+  const sharedOccurrence = sharedTokens.filter((token) => token.startsWith("occurrence:"));
+  const sharedClaimLag = sharedTokens.filter((token) => token.startsWith("claim_lag:"));
+  const sharedOrders = sharedTokens.filter((token) => token.startsWith("order:"));
+  const sharedReworkUsers = sharedTokens.filter((token) => token.startsWith("rework_user:"));
+  const sharedParts = sharedTokens.filter((token) => token.startsWith("part:"));
+  const sharedBom = sharedTokens.filter((token) => token.startsWith("bom:"));
+  const sharedFamily = sharedTokens.filter((token) => token.startsWith("family:"));
+  const sharedSupplierBatches = sharedTokens.filter((token) => token.startsWith("supplier_batch:"));
 
   if (!sharedTokens.length) {
+    return null;
+  }
+
+  const temporalOverlap =
+    leftFingerprint.firstFactorySignalWeek &&
+    leftFingerprint.lastFactorySignalWeek &&
+    rightFingerprint.firstFactorySignalWeek &&
+    rightFingerprint.lastFactorySignalWeek &&
+    leftFingerprint.firstFactorySignalWeek <= rightFingerprint.lastFactorySignalWeek &&
+    rightFingerprint.firstFactorySignalWeek <= leftFingerprint.lastFactorySignalWeek;
+
+  const strongStructuralBasis =
+    (leftFingerprint.mechanismLane === "material_traceability" &&
+      sharedPartBatch.length > 0 &&
+      (sharedBundles.length > 0 || sharedParts.length > 0 || sharedSupplierBatches.length > 0)) ||
+    (leftFingerprint.mechanismLane === "process_temporal" &&
+      sharedOccurrence.length > 0 &&
+      temporalOverlap) ||
+    (leftFingerprint.mechanismLane === "latent_field" &&
+      sharedClaimLag.length > 0 &&
+      (sharedParts.length > 0 || sharedBom.length > 0 || sharedFamily.length > 0)) ||
+    (leftFingerprint.mechanismLane === "handling_operational" &&
+      (sharedOrders.length > 0 || sharedReworkUsers.length > 0) &&
+      sharedFamily.length > 0);
+
+  if (!strongStructuralBasis) {
     return null;
   }
 
@@ -2807,7 +3368,7 @@ function scoreCandidatePair(
     }
 
     if (token.startsWith("supplier_batch:")) {
-      score += 8;
+      score += 4;
       reasons.push(`Shared supplier batch ${token.replace("supplier_batch:", "")}.`);
       continue;
     }
@@ -2819,7 +3380,7 @@ function scoreCandidatePair(
     }
 
     if (token.startsWith("occurrence:")) {
-      score += 2;
+      score += 5;
       reasons.push(`Shared occurrence section ${token.replace("occurrence:", "")}.`);
       continue;
     }
@@ -2835,8 +3396,28 @@ function scoreCandidatePair(
     }
 
     if (token.startsWith("claim_lag:")) {
-      score += 1;
+      score += 4;
+      continue;
     }
+
+    if (token.startsWith("rework_user:")) {
+      score += 4;
+      reasons.push(`Shared rework user ${token.replace("rework_user:", "")}.`);
+      continue;
+    }
+
+    if (token.startsWith("family:")) {
+      score += 5;
+      continue;
+    }
+  }
+
+  if (temporalOverlap) {
+    score += 4;
+  }
+
+  if (sharedPartBatch.length === 0 && sharedBundles.length === 0 && sharedOccurrence.length === 0 && sharedClaimLag.length === 0 && sharedFamily.length === 0 && sharedReworkUsers.length === 0) {
+    return null;
   }
 
   return {
@@ -2924,7 +3505,7 @@ async function runDeterministicGlobalReconciliation(input: {
         .map((right) => scoreCandidatePair(left, right))
         .filter((value): value is NonNullable<ReturnType<typeof scoreCandidatePair>> => Boolean(value)),
     )
-    .filter((edge) => edge.score >= 10);
+    .filter((edge) => edge.score >= DET_GLOBAL_CASE_PAIR_THRESHOLD);
   const candidateComponents = buildConnectedComponents(
     allCandidates.map((candidate) => {
       const candidateFingerprint = getCandidateFingerprint(candidate);
@@ -3069,10 +3650,7 @@ async function runDeterministicGlobalReconciliation(input: {
       cases.reduce((total, item) => total + (item.confidence ?? 0.5), 0) / cases.length;
     const inventoryItem = {
       inventoryTempId: createId("DGLOB"),
-      title:
-        cases.length > 1
-          ? `Merged ${cases[0]?.title ?? "deterministic case"}`
-          : cases[0]?.title ?? "Deterministic case",
+      title: cases[0]?.title ?? "Deterministic case",
       inventoryKind:
         articleIds.length > 1 || confidence >= 0.75 ? "validated_case" : "rejected_case",
       caseTypeHint: strongestEvidence.some((item) => /supplier batch/i.test(item))
@@ -3152,12 +3730,12 @@ async function runDeterministicGlobalReconciliation(input: {
       noiseBuckets,
       rejectedCases,
       caseMergeLog: candidateEdges
-        .filter((edge) => edge.score >= 10)
+        .filter((edge) => edge.score >= DET_GLOBAL_CASE_PAIR_THRESHOLD)
         .slice(0, 12)
         .map((edge) => `${edge.leftId} merged with ${edge.rightId} at score ${edge.score}.`),
       confidenceNotes: [
-        "Global reconciliation is deterministic and prioritizes explicit anchor overlap over label similarity.",
-        "Single-article cases stay visible, but cross-article merges require stronger anchor reuse.",
+        "Global reconciliation is deterministic and now blocks broad-anchor-only validation.",
+        "Cross-article merges require same-lane structural evidence such as part+batch, occurrence-window, claim-lag family, or order/rework-user concentration.",
       ],
     }),
   );
