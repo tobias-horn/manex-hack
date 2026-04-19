@@ -1,6 +1,7 @@
 import { ArrowLeft, FolderGit2 } from "lucide-react";
 import Link from "next/link";
 
+import { AskTheAgent } from "@/components/ask-the-agent";
 import { CaseWorkbench } from "@/components/case-workbench";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -107,6 +108,7 @@ export default async function CasesPage() {
           </div>
         </section>
       </div>
+      <AskTheAgent />
     </main>
   );
 }
