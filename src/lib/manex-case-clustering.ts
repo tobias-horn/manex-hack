@@ -71,6 +71,24 @@ const readPositiveInt = (value: string | undefined, fallback: number) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+const uniqueBy = <T,>(
+  items: T[],
+  keyFn: (item: T) => string | null | undefined,
+) => {
+  const seen = new Set<string>();
+
+  return items.filter((item) => {
+    const key = keyFn(item);
+
+    if (!key || seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+};
+
 const PRODUCT_CHUNK_SIZE = readPositiveInt(
   process.env.MANEX_STAGE2_PRODUCT_CHUNK_SIZE,
   5,
@@ -2529,7 +2547,7 @@ function ensureThreadHypothesisSignals(
 function buildSupplierBatchCandidates(
   dossier: ClusteredArticleDossier,
   context: ArticleMechanismContext,
-) {
+): Stage2CandidateFamily[] {
   const buckets = new Map<
     string,
     {
@@ -2680,7 +2698,7 @@ function buildSupplierBatchCandidates(
 function buildProcessWindowCandidates(
   dossier: ClusteredArticleDossier,
   context: ArticleMechanismContext,
-) {
+): Stage2CandidateFamily[] {
   const buckets = new Map<
     string,
     {
@@ -2811,7 +2829,7 @@ function buildProcessWindowCandidates(
 function buildDesignEscapeCandidates(
   dossier: ClusteredArticleDossier,
   context: ArticleMechanismContext,
-) {
+): Stage2CandidateFamily[] {
   const buckets = new Map<
     string,
     {
@@ -2950,7 +2968,7 @@ function buildDesignEscapeCandidates(
 function buildHandlingCandidates(
   dossier: ClusteredArticleDossier,
   context: ArticleMechanismContext,
-) {
+): Stage2CandidateFamily[] {
   const buckets = new Map<string, { userId: string; threads: ClusteredProductDossier[] }>();
 
   for (const thread of dossier.productThreads) {
@@ -3056,7 +3074,7 @@ function buildHandlingCandidates(
 function buildDetectorHotspotCandidates(
   dossier: ClusteredArticleDossier,
   context: ArticleMechanismContext,
-) {
+): Stage2CandidateFamily[] {
   const buckets = new Map<string, { anchor: string; threads: ClusteredProductDossier[] }>();
 
   for (const thread of dossier.productThreads) {
@@ -3146,7 +3164,7 @@ function buildDetectorHotspotCandidates(
 function buildFalsePositiveCandidates(
   dossier: ClusteredArticleDossier,
   context: ArticleMechanismContext,
-) {
+): Stage2CandidateFamily[] {
   const threads = dossier.productThreads.filter(
     (thread) => ensureThreadHypothesisSignals(thread, dossier, context).falsePositiveFlag,
   );
@@ -3164,9 +3182,9 @@ function buildFalsePositiveCandidates(
   return [
     {
       candidateFamilyId: "CFAM-false-positive-noise",
-      family: "false_positive_noise",
+      family: "false_positive_noise" as const,
       title: "False-positive cluster",
-      shouldReviewAs: "noise",
+      shouldReviewAs: "noise" as const,
       dominantAnchor: "false-positive language",
       supportingProductIds: threads.map((thread) => thread.productId),
       supportingSignalIds: uniqueValues(
@@ -3189,14 +3207,14 @@ function buildFalsePositiveCandidates(
       strongestCounterevidence: [],
       bestCompetingFamilies: [],
       statistics: stats,
-    },
+    } satisfies Stage2CandidateFamily,
   ];
 }
 
 function buildNearLimitCandidates(
   dossier: ClusteredArticleDossier,
   context: ArticleMechanismContext,
-) {
+): Stage2CandidateFamily[] {
   const buckets = new Map<string, { testKey: string; threads: ClusteredProductDossier[] }>();
 
   for (const thread of dossier.productThreads) {
@@ -3282,7 +3300,7 @@ function buildStage2CandidateFamilies(
   dossier: ClusteredArticleDossier,
   context = buildArticleMechanismContext(dossier),
 ) {
-  const candidates = [
+  const candidates: Stage2CandidateFamily[] = [
     ...buildSupplierBatchCandidates(dossier, context),
     ...buildProcessWindowCandidates(dossier, context),
     ...buildDesignEscapeCandidates(dossier, context),
@@ -3407,6 +3425,16 @@ function buildFallbackProductThreadSynthesis(input: {
         ? `Why does ${input.mechanismEvidence.traceabilityEvidence.blastRadiusHints[0].anchorValue} connect to ${input.mechanismEvidence.traceabilityEvidence.blastRadiusHints[0].relatedProductCount} scoped products?`
         : null,
     ].filter((value): value is string => Boolean(value)),
+    strongestExplanation:
+      input.mechanismEvidence.traceabilityEvidence.blastRadiusHints[0]?.anchorValue
+        ? `Strongest current anchor: ${input.mechanismEvidence.traceabilityEvidence.blastRadiusHints[0].anchorValue}.`
+        : input.summaryFeatures.fieldClaimWithoutFactoryDefect
+          ? "Strongest current anchor: field claims appear without a factory defect trail."
+          : "Strongest current anchor: confirmed defect and test evidence remain the leading signal.",
+    strongestCompetingExplanation:
+      input.mechanismEvidence.confounderEvidence.detectionBiasRisk[0] ??
+      input.mechanismEvidence.confounderEvidence.lowVolumePeriodRisk[0] ??
+      "Strongest competing explanation: the visible pattern may be driven by broad article context.",
   } satisfies ProductThreadSynthesis;
 }
 

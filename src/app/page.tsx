@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 
+import { AskTheAgent } from "@/components/ask-the-agent";
 import { ScreenState } from "@/components/screen-state";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -402,6 +403,7 @@ export default async function Home({ searchParams }: HomeProps) {
           </div>
         </section>
       </div>
+      <AskTheAgent />
     </main>
   );
 }
