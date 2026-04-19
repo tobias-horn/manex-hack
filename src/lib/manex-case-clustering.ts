@@ -86,11 +86,11 @@ const STAGE2_CHUNK_PROMPT_CHAR_BUDGET = readPositiveInt(
 const MINI_MODEL_CONCURRENCY_MULTIPLIER = /mini/i.test(env.OPENAI_MODEL) ? 1 : 0;
 const STAGE1_PRODUCT_SYNTHESIS_CONCURRENCY = readPositiveInt(
   process.env.MANEX_STAGE1_PRODUCT_SYNTHESIS_CONCURRENCY,
-  7 + MINI_MODEL_CONCURRENCY_MULTIPLIER,
+  9 + MINI_MODEL_CONCURRENCY_MULTIPLIER,
 );
 const STAGE2_CHUNK_PROPOSAL_CONCURRENCY = readPositiveInt(
   process.env.MANEX_STAGE2_CHUNK_PROPOSAL_CONCURRENCY,
-  4,
+  6,
 );
 const STAGE3_ARTICLE_LOAD_CONCURRENCY = readPositiveInt(
   process.env.MANEX_STAGE3_ARTICLE_LOAD_CONCURRENCY,
@@ -98,7 +98,7 @@ const STAGE3_ARTICLE_LOAD_CONCURRENCY = readPositiveInt(
 );
 const ARTICLE_PIPELINE_CONCURRENCY = readPositiveInt(
   process.env.MANEX_ARTICLE_PIPELINE_CONCURRENCY,
-  4,
+  5,
 );
 const MODEL_CALL_MAX_ATTEMPTS = readPositiveInt(
   process.env.MANEX_MODEL_CALL_MAX_ATTEMPTS,
@@ -122,7 +122,7 @@ const MAX_STAGE2_RAW_SNIPPETS = readPositiveInt(
 );
 const MAX_STAGE2_REVIEW_EVIDENCE_PRODUCTS = readPositiveInt(
   process.env.MANEX_STAGE2_REVIEW_EVIDENCE_PRODUCT_LIMIT,
-  10,
+  8,
 );
 const MAX_STAGE2_REVIEW_RAW_EVENTS = readPositiveInt(
   process.env.MANEX_STAGE2_REVIEW_RAW_EVENT_LIMIT,
@@ -130,7 +130,7 @@ const MAX_STAGE2_REVIEW_RAW_EVENTS = readPositiveInt(
 );
 const STAGE1_MAX_OUTPUT_TOKENS = readPositiveInt(
   process.env.MANEX_STAGE1_MAX_OUTPUT_TOKENS,
-  1800,
+  1400,
 );
 const STAGE2_DRAFT_MAX_OUTPUT_TOKENS = readPositiveInt(
   process.env.MANEX_STAGE2_DRAFT_MAX_OUTPUT_TOKENS,
@@ -185,8 +185,6 @@ const productThreadSynthesisSchema = z.object({
   suspiciousPatterns: z.array(z.string().trim().min(1).max(220)).max(10),
   possibleNoiseFlags: z.array(z.string().trim().min(1).max(220)).max(10),
   openQuestions: z.array(z.string().trim().min(1).max(220)).max(10),
-  strongestExplanation: z.string().trim().min(10).max(240),
-  strongestCompetingExplanation: z.string().trim().min(10).max(240),
 });
 
 const proposalPrioritySchema = z.enum(["low", "medium", "high", "critical"]);
@@ -239,24 +237,6 @@ const proposalCaseSchema = z.object({
     .array(z.string().trim().min(1).max(280))
     .min(1)
     .max(8),
-  requiredEvidencePresent: z.array(z.string().trim().min(1).max(220)).min(1).max(8),
-  requiredEvidenceMissing: z.array(z.string().trim().min(1).max(220)).max(8),
-  dominantAnchor: z.string().trim().min(1).max(180),
-  discriminativeScore: z.number().min(0).max(1),
-  backgroundPrevalencePenalty: z.number().min(0).max(1),
-  bestCompetingFamily: mechanismFamilySchema.nullable(),
-  shouldValidate: z.boolean(),
-  strongestCounterevidence: z.array(z.string().trim().min(1).max(220)).max(6),
-  affectedProductCount: z.number().int().min(1).max(512),
-  articleBackgroundCount: z.number().int().min(0).max(512),
-  lift: z.number().min(0).max(100),
-  weekConcentrationScore: z.number().min(0).max(1),
-  orderConcentrationScore: z.number().min(0).max(1),
-  reworkUserConcentrationScore: z.number().min(0).max(1),
-  claimOnlyRatio: z.number().min(0).max(1),
-  preClaimFactoryDefectRatio: z.number().min(0).max(1),
-  detectedVsOccurrenceMismatchRate: z.number().min(0).max(1),
-  sourceCandidateFamilyIds: z.array(z.string().trim().min(1).max(80)).min(1).max(12),
   signalTypesPresent: z.array(z.string().trim().min(1).max(40)).max(8),
   defectCodesPresent: z.array(z.string().trim().min(1).max(80)).max(24),
   testKeysPresent: z.array(z.string().trim().min(1).max(80)).max(24),
@@ -295,8 +275,6 @@ const proposalIncidentSchema = z.object({
   includedSignalIds: z.array(z.string().trim().min(1).max(80)).max(120),
   strongestEvidence: z.array(z.string().trim().min(1).max(280)).min(1).max(8),
   conflictingEvidence: z.array(z.string().trim().min(1).max(280)).max(8),
-  strongestCounterevidence: z.array(z.string().trim().min(1).max(220)).max(6),
-  bestCompetingFamily: mechanismFamilySchema.nullable(),
   recommendedNextTraceChecks: z.array(z.string().trim().min(1).max(280)).max(8),
   reasonNotCase: z.string().trim().min(1).max(280),
   signalTypesPresent: z.array(z.string().trim().min(1).max(40)).max(8),
@@ -328,8 +306,6 @@ const proposalWatchlistSchema = z.object({
   linkedProductIds: z.array(z.string().trim().min(1).max(80)).min(1).max(64),
   linkedSignalIds: z.array(z.string().trim().min(1).max(80)).max(240),
   strongestEvidence: z.array(z.string().trim().min(1).max(280)).min(1).max(8),
-  strongestCounterevidence: z.array(z.string().trim().min(1).max(220)).max(6),
-  bestCompetingFamily: mechanismFamilySchema.nullable(),
   confounders: z.array(z.string().trim().min(1).max(280)).max(8),
   recommendedNextTraceChecks: z.array(z.string().trim().min(1).max(280)).max(8),
 });
@@ -352,8 +328,6 @@ const proposalNoiseSchema = z.object({
   linkedProductIds: z.array(z.string().trim().min(1).max(80)).max(64),
   linkedSignalIds: z.array(z.string().trim().min(1).max(80)).max(240),
   strongestEvidence: z.array(z.string().trim().min(1).max(280)).max(8),
-  strongestCounterevidence: z.array(z.string().trim().min(1).max(220)).max(6),
-  bestCompetingFamily: mechanismFamilySchema.nullable(),
 });
 
 const clusteringProposalSchema = z.object({
@@ -878,6 +852,44 @@ export type ArticleCaseboardReadModel = {
   globalInventory: GlobalReconciliationOutput | null;
 };
 
+export type EconomicBlastRadiusAnchorType =
+  | "supplier_batch"
+  | "bom_position"
+  | "occurrence_section"
+  | "production_order"
+  | "rework_user";
+
+export type EconomicBlastRadiusCostSummary = {
+  defectCost: number;
+  claimCost: number;
+  reworkCost: number;
+  totalCost: number;
+  claimShare: number;
+};
+
+export type EconomicBlastRadiusItem = {
+  anchorType: EconomicBlastRadiusAnchorType;
+  anchorLabel: string;
+  anchorValue: string;
+  affectedProductCount: number;
+  productIds: string[];
+  cost: EconomicBlastRadiusCostSummary;
+};
+
+export type EconomicBlastRadiusLane = {
+  anchorType: EconomicBlastRadiusAnchorType;
+  anchorLabel: string;
+  items: EconomicBlastRadiusItem[];
+};
+
+export type EconomicBlastRadius = {
+  summary: EconomicBlastRadiusCostSummary & {
+    affectedProductCount: number;
+    anchorCount: number;
+  };
+  lanes: EconomicBlastRadiusLane[];
+};
+
 type ProposalOutput = z.infer<typeof clusteringProposalSchema>;
 type ProposalStandaloneSignal = ProposalOutput["standaloneSignals"][number];
 type ProposalIncident = ProposalOutput["incidents"][number];
@@ -918,6 +930,13 @@ type ModelCallStageName =
 
 type PipelineExecutionOptions = {
   abortSignal?: AbortSignal;
+};
+
+type EconomicBlastRadiusProductCostRow = {
+  product_id: string;
+  defect_cost: number | string | null;
+  claim_cost: number | string | null;
+  rework_cost: number | string | null;
 };
 
 const CLAIM_STOP_WORDS = new Set([
@@ -976,6 +995,16 @@ const normalizeNullableText = (value: string | null | undefined) => {
   return text || null;
 };
 
+const roundEconomicCost = (value: number) => Number(value.toFixed(2));
+
+const economicBlastRadiusLabel: Record<EconomicBlastRadiusAnchorType, string> = {
+  supplier_batch: "Supplier batch",
+  bom_position: "BOM position",
+  occurrence_section: "Occurrence section",
+  production_order: "Production order",
+  rework_user: "Rework user",
+};
+
 const uniqueValues = (values: Array<string | null | undefined>) =>
   Array.from(
     new Set(
@@ -984,6 +1013,338 @@ const uniqueValues = (values: Array<string | null | undefined>) =>
         .filter((value): value is string => Boolean(value)),
     ),
   ).sort((left, right) => left.localeCompare(right));
+
+const uniqueBy = <T,>(items: T[], keyFn: (item: T) => string | null | undefined) => {
+  const seen = new Set<string>();
+
+  return items.filter((item) => {
+    const key = keyFn(item);
+
+    if (!key || seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+};
+
+function normalizeEconomicCost(value: number | null | undefined) {
+  return Number.isFinite(value) ? Number(value) : 0;
+}
+
+function buildEconomicCostSummary(input: {
+  defectCost: number;
+  claimCost: number;
+  reworkCost: number;
+}): EconomicBlastRadiusCostSummary {
+  const totalCost = input.defectCost + input.claimCost + input.reworkCost;
+
+  return {
+    defectCost: roundEconomicCost(input.defectCost),
+    claimCost: roundEconomicCost(input.claimCost),
+    reworkCost: roundEconomicCost(input.reworkCost),
+    totalCost: roundEconomicCost(totalCost),
+    claimShare: totalCost > 0 ? Number((input.claimCost / totalCost).toFixed(4)) : 0,
+  };
+}
+
+function threadNeedsLiveEconomicCosts(thread: ClusteredProductDossier) {
+  const defectCostsMissing =
+    thread.defects.length > 0 &&
+    !thread.defects.some((item) => typeof item.cost === "number");
+  const claimCostsMissing =
+    thread.claims.length > 0 &&
+    !thread.claims.some((item) => typeof item.cost === "number");
+
+  return defectCostsMissing || claimCostsMissing;
+}
+
+function collectThreadEconomicAnchors(
+  thread: ClusteredProductDossier,
+): Record<EconomicBlastRadiusAnchorType, string[]> {
+  return {
+    supplier_batch: uniqueValues([
+      ...thread.mechanismEvidence.traceabilityEvidence.partBatchAnchors.map((item) => item.batchRef),
+      ...thread.mechanismEvidence.traceabilityEvidence.dominantSupplierBatches.map((item) => item.value),
+      ...thread.summaryFeatures.supplierBatches.slice(0, 3),
+    ]).slice(0, 4),
+    bom_position: uniqueValues([
+      ...thread.summaryFeatures.bomFindNumbers,
+      ...thread.mechanismEvidence.traceabilityEvidence.dominantBomPositions.map((item) => item.value),
+    ]).slice(0, 4),
+    occurrence_section: uniqueValues([
+      ...thread.mechanismEvidence.temporalProcessEvidence.dominantOccurrenceSections.map(
+        (item) => item.value,
+      ),
+      ...thread.defects.map((item) => item.occurrenceSectionName ?? item.occurrenceSectionId),
+    ]).slice(0, 4),
+    production_order: uniqueValues([thread.orderId]).slice(0, 1),
+    rework_user: uniqueValues([
+      ...thread.mechanismEvidence.operatorHandlingEvidence.dominantReworkUsers.map(
+        (item) => item.userId,
+      ),
+      ...thread.rework.map((item) => item.userId),
+    ]).slice(0, 4),
+  };
+}
+
+function getThreadEconomicCostSummary(
+  thread: ClusteredProductDossier,
+  liveCosts?: Map<string, EconomicBlastRadiusCostSummary>,
+) {
+  const liveSummary = liveCosts?.get(thread.productId);
+
+  if (liveSummary) {
+    return liveSummary;
+  }
+
+  return buildEconomicCostSummary({
+    defectCost: thread.defects.reduce(
+      (sum, item) => sum + normalizeEconomicCost(item.cost),
+      0,
+    ),
+    claimCost: thread.claims.reduce(
+      (sum, item) => sum + normalizeEconomicCost(item.cost),
+      0,
+    ),
+    reworkCost: thread.rework.reduce(
+      (sum, item) => sum + normalizeEconomicCost(item.cost),
+      0,
+    ),
+  });
+}
+
+function groupEconomicBlastRadiusItems(items: EconomicBlastRadiusItem[]) {
+  return (
+    Object.entries(
+      items.reduce(
+        (groups, item) => {
+          const bucket = groups[item.anchorType] ?? [];
+          bucket.push(item);
+          groups[item.anchorType] = bucket;
+          return groups;
+        },
+        {} as Record<EconomicBlastRadiusAnchorType, EconomicBlastRadiusItem[]>,
+      ),
+    ) as Array<[EconomicBlastRadiusAnchorType, EconomicBlastRadiusItem[]]>
+  )
+    .map(([anchorType, groupedItems]) => ({
+      anchorType,
+      anchorLabel: economicBlastRadiusLabel[anchorType],
+      items: groupedItems.sort((left, right) => {
+        if (right.cost.totalCost !== left.cost.totalCost) {
+          return right.cost.totalCost - left.cost.totalCost;
+        }
+
+        if (right.affectedProductCount !== left.affectedProductCount) {
+          return right.affectedProductCount - left.affectedProductCount;
+        }
+
+        if (right.cost.claimShare !== left.cost.claimShare) {
+          return right.cost.claimShare - left.cost.claimShare;
+        }
+
+        return left.anchorValue.localeCompare(right.anchorValue);
+      }),
+    }))
+    .sort((left, right) => {
+      const leftTopCost = left.items[0]?.cost.totalCost ?? 0;
+      const rightTopCost = right.items[0]?.cost.totalCost ?? 0;
+
+      if (rightTopCost !== leftTopCost) {
+        return rightTopCost - leftTopCost;
+      }
+
+      return left.anchorLabel.localeCompare(right.anchorLabel);
+    });
+}
+
+function buildEconomicBlastRadiusFromThreads(input: {
+  threads: ClusteredProductDossier[];
+  liveCosts?: Map<string, EconomicBlastRadiusCostSummary>;
+}): EconomicBlastRadius | null {
+  if (!input.threads.length) {
+    return null;
+  }
+
+  const uniqueProductIds = uniqueValues(input.threads.map((thread) => thread.productId));
+  const summary = input.threads.reduce(
+    (totals, thread) => {
+      const cost = getThreadEconomicCostSummary(thread, input.liveCosts);
+
+      return {
+        defectCost: totals.defectCost + cost.defectCost,
+        claimCost: totals.claimCost + cost.claimCost,
+        reworkCost: totals.reworkCost + cost.reworkCost,
+      };
+    },
+    {
+      defectCost: 0,
+      claimCost: 0,
+      reworkCost: 0,
+    },
+  );
+
+  const grouped = new Map<
+    string,
+    {
+      anchorType: EconomicBlastRadiusAnchorType;
+      anchorValue: string;
+      productIds: Set<string>;
+      defectCost: number;
+      claimCost: number;
+      reworkCost: number;
+    }
+  >();
+
+  for (const thread of input.threads) {
+    const cost = getThreadEconomicCostSummary(thread, input.liveCosts);
+    const anchors = collectThreadEconomicAnchors(thread);
+
+    for (const [anchorType, anchorValues] of Object.entries(anchors) as Array<
+      [EconomicBlastRadiusAnchorType, string[]]
+    >) {
+      for (const anchorValue of anchorValues) {
+        const key = `${anchorType}:${anchorValue}`;
+        const current = grouped.get(key) ?? {
+          anchorType,
+          anchorValue,
+          productIds: new Set<string>(),
+          defectCost: 0,
+          claimCost: 0,
+          reworkCost: 0,
+        };
+
+        if (current.productIds.has(thread.productId)) {
+          continue;
+        }
+
+        current.productIds.add(thread.productId);
+        current.defectCost += cost.defectCost;
+        current.claimCost += cost.claimCost;
+        current.reworkCost += cost.reworkCost;
+        grouped.set(key, current);
+      }
+    }
+  }
+
+  const items = Array.from(grouped.values())
+    .map((item) => ({
+      anchorType: item.anchorType,
+      anchorLabel: economicBlastRadiusLabel[item.anchorType],
+      anchorValue: item.anchorValue,
+      affectedProductCount: item.productIds.size,
+      productIds: Array.from(item.productIds).sort((left, right) => left.localeCompare(right)),
+      cost: buildEconomicCostSummary({
+        defectCost: item.defectCost,
+        claimCost: item.claimCost,
+        reworkCost: item.reworkCost,
+      }),
+    }))
+    .filter((item) => item.affectedProductCount > 0);
+
+  if (!items.length) {
+    return {
+      summary: {
+        affectedProductCount: uniqueProductIds.length,
+        anchorCount: 0,
+        ...buildEconomicCostSummary(summary),
+      },
+      lanes: [],
+    };
+  }
+
+  return {
+    summary: {
+      affectedProductCount: uniqueProductIds.length,
+      anchorCount: items.length,
+      ...buildEconomicCostSummary(summary),
+    },
+    lanes: groupEconomicBlastRadiusItems(items),
+  };
+}
+
+async function loadEconomicBlastRadiusCostMap(productIds: string[]) {
+  if (!productIds.length) {
+    return new Map<string, EconomicBlastRadiusCostSummary>();
+  }
+
+  const rows =
+    (await queryPostgres<EconomicBlastRadiusProductCostRow>(
+      `
+        WITH selected_product AS (
+          SELECT UNNEST($1::text[]) AS product_id
+        ),
+        defect_totals AS (
+          SELECT product_id, SUM(COALESCE(cost, 0)) AS defect_cost
+          FROM defect
+          WHERE product_id = ANY($1::text[])
+          GROUP BY product_id
+        ),
+        claim_totals AS (
+          SELECT product_id, SUM(COALESCE(cost, 0)) AS claim_cost
+          FROM field_claim
+          WHERE product_id = ANY($1::text[])
+          GROUP BY product_id
+        ),
+        rework_totals AS (
+          SELECT product_id, SUM(COALESCE(cost, 0)) AS rework_cost
+          FROM rework
+          WHERE product_id = ANY($1::text[])
+          GROUP BY product_id
+        )
+        SELECT
+          selected_product.product_id,
+          defect_totals.defect_cost,
+          claim_totals.claim_cost,
+          rework_totals.rework_cost
+        FROM selected_product
+        LEFT JOIN defect_totals ON defect_totals.product_id = selected_product.product_id
+        LEFT JOIN claim_totals ON claim_totals.product_id = selected_product.product_id
+        LEFT JOIN rework_totals ON rework_totals.product_id = selected_product.product_id
+      `,
+      [productIds],
+    )) ?? [];
+
+  return new Map(
+    rows.map((row) => [
+      row.product_id,
+      buildEconomicCostSummary({
+        defectCost: normalizeEconomicCost(
+          row.defect_cost === null || row.defect_cost === undefined
+            ? null
+            : Number(row.defect_cost),
+        ),
+        claimCost: normalizeEconomicCost(
+          row.claim_cost === null || row.claim_cost === undefined
+            ? null
+            : Number(row.claim_cost),
+        ),
+        reworkCost: normalizeEconomicCost(
+          row.rework_cost === null || row.rework_cost === undefined
+            ? null
+            : Number(row.rework_cost),
+        ),
+      }),
+    ]),
+  );
+}
+
+export async function buildEconomicBlastRadiusForCase(input: {
+  threads: ClusteredProductDossier[];
+}) {
+  const productIds = uniqueValues(input.threads.map((thread) => thread.productId));
+  const shouldLoadLiveCosts = input.threads.some(threadNeedsLiveEconomicCosts);
+  const liveCosts = shouldLoadLiveCosts
+    ? await loadEconomicBlastRadiusCostMap(productIds)
+    : undefined;
+
+  return buildEconomicBlastRadiusFromThreads({
+    threads: input.threads,
+    liveCosts,
+  });
+}
 
 const createId = (prefix: string) =>
   `${prefix}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
@@ -1177,6 +1538,38 @@ function throwIfPipelineAborted(abortSignal?: AbortSignal) {
         ? abortSignal.reason
         : STOPPED_PIPELINE_MESSAGE,
     );
+  }
+}
+
+async function withStageHeartbeat<T>(input: {
+  intervalMs?: number;
+  beat: () => Promise<void>;
+  run: () => Promise<T>;
+}) {
+  const intervalMs = input.intervalMs ?? 20_000;
+  let closed = false;
+  let heartbeatInFlight = false;
+  const timer = setInterval(() => {
+    if (closed || heartbeatInFlight) {
+      return;
+    }
+
+    heartbeatInFlight = true;
+    void input
+      .beat()
+      .catch(() => {
+        // Best-effort liveness only. The main model call should not fail because a status refresh failed.
+      })
+      .finally(() => {
+        heartbeatInFlight = false;
+      });
+  }, intervalMs);
+
+  try {
+    return await input.run();
+  } finally {
+    closed = true;
+    clearInterval(timer);
   }
 }
 
@@ -3146,7 +3539,7 @@ function buildDetectorHotspotCandidates(
 function buildFalsePositiveCandidates(
   dossier: ClusteredArticleDossier,
   context: ArticleMechanismContext,
-) {
+): Stage2CandidateFamily[] {
   const threads = dossier.productThreads.filter(
     (thread) => ensureThreadHypothesisSignals(thread, dossier, context).falsePositiveFlag,
   );
@@ -3164,9 +3557,9 @@ function buildFalsePositiveCandidates(
   return [
     {
       candidateFamilyId: "CFAM-false-positive-noise",
-      family: "false_positive_noise",
+      family: "false_positive_noise" as const,
       title: "False-positive cluster",
-      shouldReviewAs: "noise",
+      shouldReviewAs: "noise" as const,
       dominantAnchor: "false-positive language",
       supportingProductIds: threads.map((thread) => thread.productId),
       supportingSignalIds: uniqueValues(
@@ -3189,7 +3582,7 @@ function buildFalsePositiveCandidates(
       strongestCounterevidence: [],
       bestCompetingFamilies: [],
       statistics: stats,
-    },
+    } satisfies Stage2CandidateFamily,
   ];
 }
 
@@ -3278,7 +3671,7 @@ function buildNearLimitCandidates(
     });
 }
 
-function buildStage2CandidateFamilies(
+export function buildStage2CandidateFamilies(
   dossier: ClusteredArticleDossier,
   context = buildArticleMechanismContext(dossier),
 ) {
@@ -3332,13 +3725,6 @@ function buildStage2CandidateFamilies(
       return left.title.localeCompare(right.title);
     })
     .slice(0, 48);
-}
-
-function ensureStage2CandidateFamilies(
-  dossier: ClusteredArticleDossier,
-  context = buildArticleMechanismContext(dossier),
-) {
-  return dossier.candidateFamilies ?? buildStage2CandidateFamilies(dossier, context);
 }
 
 function buildFallbackProductThreadSynthesis(input: {
@@ -3424,13 +3810,13 @@ function buildStage1PromptPayload(input: {
   actions: ManexWorkflowAction[];
   installedParts: ManexInstalledPart[];
 }) {
-  const recentTimeline = input.signalTimeline.slice(-16);
-  const recentDefects = input.defects.slice(-10);
-  const recentClaims = input.claims.slice(-8);
-  const recentTests = input.tests.slice(-10);
-  const recentRework = input.rework.slice(-8);
-  const recentActions = input.actions.slice(-8);
-  const installedPartSample = input.installedParts.slice(0, 20);
+  const recentTimeline = input.signalTimeline.slice(-12);
+  const recentDefects = input.defects.slice(-6);
+  const recentClaims = input.claims.slice(-4);
+  const recentTests = input.tests.slice(-6);
+  const recentRework = input.rework.slice(-4);
+  const recentActions = input.actions.slice(-4);
+  const installedPartSample = input.installedParts.slice(0, 12);
 
   return {
     product: {
@@ -3485,35 +3871,35 @@ function buildStage1PromptPayload(input: {
     mechanismEvidence: {
       traceabilityEvidence: {
         productAnchorCandidates:
-          input.mechanismEvidence.traceabilityEvidence.productAnchorCandidates.slice(0, 4),
+          input.mechanismEvidence.traceabilityEvidence.productAnchorCandidates.slice(0, 3),
         partBatchAnchors: input.mechanismEvidence.traceabilityEvidence.partBatchAnchors
-          .slice(0, 3)
+          .slice(0, 2)
           .map((item) => ({
             anchorValue: item.anchorValue,
             partNumber: item.partNumber,
             batchRef: item.batchRef,
             relatedProductCount: item.relatedProductCount,
-            bomPositions: item.bomPositions.slice(0, 4),
-            suppliers: item.suppliers.slice(0, 4),
+            bomPositions: item.bomPositions.slice(0, 3),
+            suppliers: item.suppliers.slice(0, 3),
           })),
         dominantTraceAnchors:
-          input.mechanismEvidence.traceabilityEvidence.dominantTraceAnchors.slice(0, 4),
+          input.mechanismEvidence.traceabilityEvidence.dominantTraceAnchors.slice(0, 3),
         traceabilityNeighborhood:
           input.mechanismEvidence.traceabilityEvidence.traceabilityNeighborhood
-            .slice(0, 3)
+            .slice(0, 2)
             .map((item) => ({
               productId: item.productId,
               orderId: item.orderId,
               buildTs: item.buildTs,
               matchedInstallCount: item.matchedInstallCount,
               sharedAnchorTypes: item.sharedAnchorTypes,
-              sharedAnchorValues: item.sharedAnchorValues.slice(0, 4),
-              sharedPartNumbers: item.sharedPartNumbers.slice(0, 4),
-              sharedFindNumbers: item.sharedFindNumbers.slice(0, 4),
-              sharedBatchNumbers: item.sharedBatchNumbers.slice(0, 4),
+              sharedAnchorValues: item.sharedAnchorValues.slice(0, 3),
+              sharedPartNumbers: item.sharedPartNumbers.slice(0, 3),
+              sharedFindNumbers: item.sharedFindNumbers.slice(0, 3),
+              sharedBatchNumbers: item.sharedBatchNumbers.slice(0, 3),
             })),
         anchorSpecificity: input.mechanismEvidence.traceabilityEvidence.anchorSpecificity
-          .slice(0, 4)
+          .slice(0, 3)
           .map((item) => ({
             anchorType: item.anchorType,
             anchorValue: item.anchorValue,
@@ -3523,28 +3909,28 @@ function buildStage1PromptPayload(input: {
           })),
         cooccurringAnchorBundles:
           input.mechanismEvidence.traceabilityEvidence.cooccurringAnchorBundles
-            .slice(0, 3)
+            .slice(0, 2)
             .map((item) => ({
               bundleKey: item.bundleKey,
-              partNumbers: item.partNumbers,
-              batchRefs: item.batchRefs,
-              bomPositions: item.bomPositions,
+              partNumbers: item.partNumbers.slice(0, 3),
+              batchRefs: item.batchRefs.slice(0, 3),
+              bomPositions: item.bomPositions.slice(0, 3),
               relatedProductCount: item.relatedProductCount,
               reason: trimPreview(item.reason, 140),
             })),
         blastRadiusHints: input.mechanismEvidence.traceabilityEvidence.blastRadiusHints
-          .slice(0, 2)
+          .slice(0, 1)
           .map((item) => ({
             anchorType: item.anchorType,
             anchorValue: item.anchorValue,
             relatedProductCount: item.relatedProductCount,
-            sharedPartNumbers: item.sharedPartNumbers.slice(0, 6),
-            sharedBomPositions: item.sharedBomPositions.slice(0, 6),
-            sharedSupplierBatches: item.sharedSupplierBatches.slice(0, 6),
+            sharedPartNumbers: item.sharedPartNumbers.slice(0, 4),
+            sharedBomPositions: item.sharedBomPositions.slice(0, 4),
+            sharedSupplierBatches: item.sharedSupplierBatches.slice(0, 4),
           })),
         blastRadiusSuspects:
           input.mechanismEvidence.traceabilityEvidence.blastRadiusSuspects
-            .slice(0, 2)
+            .slice(0, 1)
             .map((item) => ({
               anchorType: item.anchorType,
               anchorValue: item.anchorValue,
@@ -3555,9 +3941,9 @@ function buildStage1PromptPayload(input: {
               reason: trimPreview(item.reason, 140),
             })),
         batchConcentrationHints:
-          input.mechanismEvidence.traceabilityEvidence.batchConcentrationHints.slice(0, 4),
+          input.mechanismEvidence.traceabilityEvidence.batchConcentrationHints.slice(0, 2),
         traceabilityConcentrationHints:
-          input.mechanismEvidence.traceabilityEvidence.traceabilityConcentrationHints.slice(0, 4),
+          input.mechanismEvidence.traceabilityEvidence.traceabilityConcentrationHints.slice(0, 3),
       },
       temporalProcessEvidence: {
         buildWeek: input.mechanismEvidence.temporalProcessEvidence.buildWeek,
@@ -3565,68 +3951,68 @@ function buildStage1PromptPayload(input: {
           input.mechanismEvidence.temporalProcessEvidence.firstFactorySignalWeek,
         lastFactorySignalWeek:
           input.mechanismEvidence.temporalProcessEvidence.lastFactorySignalWeek,
-        defectWeeks: input.mechanismEvidence.temporalProcessEvidence.defectWeeks.slice(-6),
-        testWeeks: input.mechanismEvidence.temporalProcessEvidence.testWeeks.slice(-6),
+        defectWeeks: input.mechanismEvidence.temporalProcessEvidence.defectWeeks.slice(-4),
+        testWeeks: input.mechanismEvidence.temporalProcessEvidence.testWeeks.slice(-4),
         dominantOccurrenceSections:
-          input.mechanismEvidence.temporalProcessEvidence.dominantOccurrenceSections.slice(0, 4),
+          input.mechanismEvidence.temporalProcessEvidence.dominantOccurrenceSections.slice(0, 3),
         dominantDetectedSections:
-          input.mechanismEvidence.temporalProcessEvidence.dominantDetectedSections.slice(0, 4),
+          input.mechanismEvidence.temporalProcessEvidence.dominantDetectedSections.slice(0, 3),
         dominantTestResults:
           input.mechanismEvidence.temporalProcessEvidence.dominantTestResults.slice(0, 2),
         occurrenceDetectedMismatch:
           input.mechanismEvidence.temporalProcessEvidence.occurrenceDetectedMismatch,
         temporalBurstHints:
-          input.mechanismEvidence.temporalProcessEvidence.temporalBurstHints.slice(0, 4),
+          input.mechanismEvidence.temporalProcessEvidence.temporalBurstHints.slice(0, 3),
         postWindowQuietHints:
-          input.mechanismEvidence.temporalProcessEvidence.postWindowQuietHints.slice(0, 3),
+          input.mechanismEvidence.temporalProcessEvidence.postWindowQuietHints.slice(0, 2),
         temporalContainmentHints:
-          input.mechanismEvidence.temporalProcessEvidence.temporalContainmentHints.slice(0, 4),
+          input.mechanismEvidence.temporalProcessEvidence.temporalContainmentHints.slice(0, 3),
         marginalVsFailHints:
-          input.mechanismEvidence.temporalProcessEvidence.marginalVsFailHints.slice(0, 4),
+          input.mechanismEvidence.temporalProcessEvidence.marginalVsFailHints.slice(0, 3),
       },
       fieldLeakEvidence: {
         claimOnlyThread: input.mechanismEvidence.fieldLeakEvidence.claimOnlyThread,
         hasPriorFactoryDefect:
           input.mechanismEvidence.fieldLeakEvidence.hasPriorFactoryDefect,
-        buildToClaimDays: input.mechanismEvidence.fieldLeakEvidence.buildToClaimDays.slice(0, 8),
+        buildToClaimDays: input.mechanismEvidence.fieldLeakEvidence.buildToClaimDays.slice(0, 6),
         claimLagBucket: input.mechanismEvidence.fieldLeakEvidence.claimLagBucket,
         claimLagStats: input.mechanismEvidence.fieldLeakEvidence.claimLagStats,
         dominantClaimReportedParts:
-          input.mechanismEvidence.fieldLeakEvidence.dominantClaimReportedParts.slice(0, 4),
+          input.mechanismEvidence.fieldLeakEvidence.dominantClaimReportedParts.slice(0, 3),
         dominantClaimBomPositions:
-          input.mechanismEvidence.fieldLeakEvidence.dominantClaimBomPositions.slice(0, 4),
+          input.mechanismEvidence.fieldLeakEvidence.dominantClaimBomPositions.slice(0, 3),
         latentFailureHints:
-          input.mechanismEvidence.fieldLeakEvidence.latentFailureHints.slice(0, 4),
+          input.mechanismEvidence.fieldLeakEvidence.latentFailureHints.slice(0, 3),
       },
       operatorHandlingEvidence: {
         orderId: input.mechanismEvidence.operatorHandlingEvidence.orderId,
         dominantReworkUsers:
-          input.mechanismEvidence.operatorHandlingEvidence.dominantReworkUsers.slice(0, 4),
+          input.mechanismEvidence.operatorHandlingEvidence.dominantReworkUsers.slice(0, 3),
         orderClusterHints:
-          input.mechanismEvidence.operatorHandlingEvidence.orderClusterHints.slice(0, 4),
+          input.mechanismEvidence.operatorHandlingEvidence.orderClusterHints.slice(0, 3),
         userConcentrationHints:
-          input.mechanismEvidence.operatorHandlingEvidence.userConcentrationHints.slice(0, 4),
+          input.mechanismEvidence.operatorHandlingEvidence.userConcentrationHints.slice(0, 3),
         cosmeticOnlySignals:
           input.mechanismEvidence.operatorHandlingEvidence.cosmeticOnlySignals,
         lowSeverityOnly: input.mechanismEvidence.operatorHandlingEvidence.lowSeverityOnly,
         fieldImpactPresent:
           input.mechanismEvidence.operatorHandlingEvidence.fieldImpactPresent,
         handlingPatternHints:
-          input.mechanismEvidence.operatorHandlingEvidence.handlingPatternHints.slice(0, 4),
+          input.mechanismEvidence.operatorHandlingEvidence.handlingPatternHints.slice(0, 3),
       },
       confounderEvidence: {
         falsePositiveMarkers:
-          input.mechanismEvidence.confounderEvidence.falsePositiveMarkers.slice(0, 4),
+          input.mechanismEvidence.confounderEvidence.falsePositiveMarkers.slice(0, 3),
         marginalOnlySignals:
           input.mechanismEvidence.confounderEvidence.marginalOnlySignals,
         detectionBiasRisk:
-          input.mechanismEvidence.confounderEvidence.detectionBiasRisk.slice(0, 4),
+          input.mechanismEvidence.confounderEvidence.detectionBiasRisk.slice(0, 3),
         lowVolumePeriodRisk:
-          input.mechanismEvidence.confounderEvidence.lowVolumePeriodRisk.slice(0, 4),
+          input.mechanismEvidence.confounderEvidence.lowVolumePeriodRisk.slice(0, 3),
         mixedServiceDocumentationSignals:
-          input.mechanismEvidence.confounderEvidence.mixedServiceDocumentationSignals.slice(0, 4),
+          input.mechanismEvidence.confounderEvidence.mixedServiceDocumentationSignals.slice(0, 3),
         nearLimitTestSignals:
-          input.mechanismEvidence.confounderEvidence.nearLimitTestSignals.slice(0, 4),
+          input.mechanismEvidence.confounderEvidence.nearLimitTestSignals.slice(0, 3),
       },
     },
     defects: recentDefects.map((item) => ({
@@ -3639,7 +4025,7 @@ function buildStage1PromptPayload(input: {
       occurrenceSectionName: item.occurrenceSectionName,
       detectedTestName: item.detectedTestName,
       detectedTestOverall: item.detectedTestOverall,
-      notes: item.notes,
+      notes: trimPreview(item.notes, 240),
     })),
     claims: recentClaims.map((item) => ({
       id: item.id,
@@ -3649,8 +4035,8 @@ function buildStage1PromptPayload(input: {
       mappedDefectSeverity: item.mappedDefectSeverity,
       daysFromBuild: item.daysFromBuild,
       reportedPartNumber: item.reportedPartNumber,
-      complaintText: item.complaintText,
-      notes: item.notes,
+      complaintText: trimPreview(item.complaintText, 240),
+      notes: trimPreview(item.notes, 220),
     })),
     tests: recentTests.map((item) => ({
       id: item.id,
@@ -3660,7 +4046,7 @@ function buildStage1PromptPayload(input: {
       testValue: item.testValue,
       unit: item.unit,
       sectionName: item.sectionName,
-      notes: item.notes,
+      notes: trimPreview(item.notes, 220),
     })),
     installedParts: installedPartSample.map((item) => ({
       findNumber: item.findNumber,
@@ -3675,7 +4061,7 @@ function buildStage1PromptPayload(input: {
       recordedAt: item.recordedAt,
       sectionId: item.sectionId,
       reportedPartNumber: item.reportedPartNumber,
-      actionText: item.actionText,
+      actionText: trimPreview(item.actionText, 220),
       userId: item.userId,
     })),
     actions: recentActions.map((item) => ({
@@ -3685,7 +4071,7 @@ function buildStage1PromptPayload(input: {
       status: item.status,
       sectionId: item.sectionId,
       defectId: item.defectId,
-      comments: item.comments,
+      comments: trimPreview(item.comments, 220),
     })),
   };
 }
@@ -3766,7 +4152,7 @@ function hydrateArticleDossier(dossier: ClusteredArticleDossier | null) {
       : dossier.productThreads.flatMap((thread) => thread.installedParts),
   );
 
-  return {
+  const hydrated = {
     ...dossier,
     productThreads: dossier.productThreads.map((thread) => {
       const mechanismEvidence = ensureMechanismEvidence(thread, articleScope);
@@ -3780,6 +4166,23 @@ function hydrateArticleDossier(dossier: ClusteredArticleDossier | null) {
         }),
       };
     }),
+  } satisfies ClusteredArticleDossier;
+  const mechanismContext = buildArticleMechanismContext(hydrated);
+  const productThreadsWithHypothesis = hydrated.productThreads.map((thread) => ({
+    ...thread,
+    hypothesisSignals: ensureThreadHypothesisSignals(thread, hydrated, mechanismContext),
+  }));
+  const dossierWithHypothesis = {
+    ...hydrated,
+    productThreads: productThreadsWithHypothesis,
+  } satisfies ClusteredArticleDossier;
+
+  return {
+    ...dossierWithHypothesis,
+    candidateFamilies:
+      dossier.candidateFamilies?.length
+        ? dossier.candidateFamilies
+        : buildStage2CandidateFamilies(dossierWithHypothesis, mechanismContext),
   } satisfies ClusteredArticleDossier;
 }
 
@@ -4381,7 +4784,7 @@ export async function buildArticleDossier(
     ),
   };
 
-  const dossier = {
+  const provisionalDossier = {
     contractVersion: ARTICLE_DOSSIER_SCHEMA_VERSION,
     generatedAt: new Date().toISOString(),
     article: {
@@ -4412,6 +4815,26 @@ export async function buildArticleDossier(
       rework: productThreads.flatMap((thread) => thread.rework),
       actions: productThreads.flatMap((thread) => thread.actions),
     },
+  } satisfies ClusteredArticleDossier;
+  const articleMechanismContext = buildArticleMechanismContext(provisionalDossier);
+  const productThreadsWithHypothesis = provisionalDossier.productThreads.map((thread) => ({
+    ...thread,
+    hypothesisSignals: buildThreadHypothesisSignals(
+      thread,
+      provisionalDossier,
+      articleMechanismContext,
+    ),
+  }));
+  const dossierWithHypothesis = {
+    ...provisionalDossier,
+    productThreads: productThreadsWithHypothesis,
+  } satisfies ClusteredArticleDossier;
+  const dossier = {
+    ...dossierWithHypothesis,
+    candidateFamilies: buildStage2CandidateFamilies(
+      dossierWithHypothesis,
+      articleMechanismContext,
+    ),
   } satisfies ClusteredArticleDossier;
 
   await upsertTeamArticleDossier({
@@ -4619,7 +5042,36 @@ function toCompactArticleLabelRows(
   }));
 }
 
+function toCompactCandidateFamilyRows(rows: Stage2CandidateFamily[], limit: number) {
+  return rows.slice(0, limit).map((row) => ({
+    candidateFamilyId: row.candidateFamilyId,
+    family: row.family,
+    title: row.title,
+    shouldReviewAs: row.shouldReviewAs,
+    dominantAnchor: row.dominantAnchor,
+    productCount: row.supportingProductIds.length,
+    signalTypesPresent: row.signalTypesPresent.slice(0, 3),
+    requiredEvidencePresent: row.requiredEvidencePresent.slice(0, 3),
+    requiredEvidenceMissing: row.requiredEvidenceMissing.slice(0, 2),
+    bestCompetingFamilies: row.bestCompetingFamilies.slice(0, 2),
+    statistics: {
+      affectedProductCount: row.statistics.affectedProductCount,
+      articleBackgroundCount: row.statistics.articleBackgroundCount,
+      lift: row.statistics.lift,
+      backgroundPrevalencePenalty: row.statistics.backgroundPrevalencePenalty,
+      weekConcentrationScore: row.statistics.weekConcentrationScore,
+      orderConcentrationScore: row.statistics.orderConcentrationScore,
+      reworkUserConcentrationScore: row.statistics.reworkUserConcentrationScore,
+      claimOnlyRatio: row.statistics.claimOnlyRatio,
+      preClaimFactoryDefectRatio: row.statistics.preClaimFactoryDefectRatio,
+      detectedVsOccurrenceMismatchRate: row.statistics.detectedVsOccurrenceMismatchRate,
+    },
+  }));
+}
+
 function toStage2ProductClusterCard(thread: ClusteredProductDossier) {
+  const hypothesisSignals = thread.hypothesisSignals;
+
   return {
     productId: thread.productId,
     buildWeek: formatBuildWeek(thread.buildTs),
@@ -4641,9 +5093,31 @@ function toStage2ProductClusterCard(thread: ClusteredProductDossier) {
         contradictions: thread.stage1Synthesis.evidenceFeatures.contradictions.slice(0, 2),
       },
       suspiciousPatterns: thread.stage1Synthesis.suspiciousPatterns.slice(0, 3),
-      possibleNoiseFlags: thread.stage1Synthesis.possibleNoiseFlags.slice(0, 3),
-      openQuestions: thread.stage1Synthesis.openQuestions.slice(0, 2),
+      possibleNoiseFlags: thread.stage1Synthesis.possibleNoiseFlags.slice(0, 2),
+      openQuestions: thread.stage1Synthesis.openQuestions.slice(0, 1),
     },
+    mechanismHypotheses: hypothesisSignals
+      ? {
+          candidateFamilyVotes: hypothesisSignals.candidateFamilyVotes.slice(0, 2).map((item) => ({
+            family: item.family,
+            score: item.score,
+            reasons: item.reasons.slice(0, 2),
+          })),
+          discriminativeAnchors: hypothesisSignals.discriminativeAnchors.slice(0, 3),
+          broadContextAnchors: hypothesisSignals.broadContextAnchors.slice(0, 2),
+          negativeEvidence: hypothesisSignals.negativeEvidence.slice(0, 2),
+          flags: {
+            claimOnlyThread: hypothesisSignals.claimOnlyThread,
+            sameBatchSamePartHint: hypothesisSignals.sameBatchSamePartHint,
+            sameOccurrenceWindowHint: hypothesisSignals.sameOccurrenceWindowHint,
+            sameOrderClusterHint: hypothesisSignals.sameOrderClusterHint,
+            sameReworkUserHint: hypothesisSignals.sameReworkUserHint,
+            detectorHotspotOnly: hypothesisSignals.detectorHotspotOnly,
+            falsePositiveFlag: hypothesisSignals.falsePositiveFlag,
+            occurrenceDetectedMismatch: hypothesisSignals.occurrenceDetectedMismatch,
+          },
+        }
+      : null,
     strongestMechanismAnchors: {
       signalTypesPresent: thread.summaryFeatures.signalTypesPresent.slice(0, 5),
       defectCodesPresent: thread.summaryFeatures.defectCodesPresent.slice(0, 5),
@@ -4673,7 +5147,7 @@ function toStage2ProductClusterCard(thread: ClusteredProductDossier) {
       ),
       productAnchorCandidates:
         thread.mechanismEvidence.traceabilityEvidence.productAnchorCandidates
-          .slice(0, 2)
+          .slice(0, 1)
           .map((item) => ({
             anchorType: item.anchorType,
             anchorValue: item.anchorValue,
@@ -4689,11 +5163,11 @@ function toStage2ProductClusterCard(thread: ClusteredProductDossier) {
         })),
       dominantTraceAnchors: thread.mechanismEvidence.traceabilityEvidence.dominantTraceAnchors.slice(
         0,
-        4,
+        3,
       ),
       neighborhoodHints:
         thread.mechanismEvidence.traceabilityEvidence.traceabilityNeighborhood
-          .slice(0, 2)
+          .slice(0, 1)
           .map(
             (item) =>
               `${item.productId} shares ${item.sharedAnchorTypes.join("/")} anchors ${item.sharedAnchorValues
@@ -4701,14 +5175,14 @@ function toStage2ProductClusterCard(thread: ClusteredProductDossier) {
                 .join(", ")}.`,
           ),
       anchorSpecificity: thread.mechanismEvidence.traceabilityEvidence.anchorSpecificity
-        .slice(0, 3)
+        .slice(0, 2)
         .map(
           (item) =>
             `${item.anchorType}:${item.anchorValue} is ${item.specificity} across ${item.relatedProductCount} products.`,
         ),
       cooccurringBundles:
         thread.mechanismEvidence.traceabilityEvidence.cooccurringAnchorBundles
-          .slice(0, 2)
+          .slice(0, 1)
           .map((item) => ({
             bundleKey: item.bundleKey,
             relatedProductCount: item.relatedProductCount,
@@ -4728,7 +5202,7 @@ function toStage2ProductClusterCard(thread: ClusteredProductDossier) {
           ),
       ],
       batchConcentrationHints: thread.mechanismEvidence.traceabilityEvidence.batchConcentrationHints
-        .slice(0, 2)
+        .slice(0, 1)
         .map((item) => ({
           batchRef: item.batchRef,
           productCount: item.productIds.length,
@@ -4737,7 +5211,7 @@ function toStage2ProductClusterCard(thread: ClusteredProductDossier) {
         })),
       traceabilityConcentrationHints: thread.mechanismEvidence.traceabilityEvidence.traceabilityConcentrationHints.slice(
         0,
-        3,
+        2,
       ),
     },
     temporalProcessAnchors: {
@@ -4768,7 +5242,7 @@ function toStage2ProductClusterCard(thread: ClusteredProductDossier) {
       hasPriorFactoryDefect: thread.mechanismEvidence.fieldLeakEvidence.hasPriorFactoryDefect,
       claimLagBucket: thread.mechanismEvidence.fieldLeakEvidence.claimLagBucket,
       buildToClaimDays:
-        thread.mechanismEvidence.fieldLeakEvidence.buildToClaimDays.slice(0, 4),
+        thread.mechanismEvidence.fieldLeakEvidence.buildToClaimDays.slice(0, 3),
       claimLagStats: thread.mechanismEvidence.fieldLeakEvidence.claimLagStats,
       dominantClaimReportedParts:
         thread.mechanismEvidence.fieldLeakEvidence.dominantClaimReportedParts.slice(0, 3),
@@ -4896,6 +5370,7 @@ function buildStage2ArticleContext(dossier: ClusteredArticleDossier) {
           productCount: item.productIds.length,
         })),
     },
+    candidateFamilies: toCompactCandidateFamilyRows(dossier.candidateFamilies ?? [], 10),
   };
 }
 
@@ -5150,6 +5625,36 @@ function derivePromotedCaseKind(input: {
     | "other";
 }
 
+function derivePromotedCaseFamily(input: {
+  caseKind: ProposalOutput["cases"][number]["caseKind"];
+  sharedAnchors: ReturnType<typeof collectComponentAnchorValues>;
+}) {
+  if (
+    input.caseKind === "supplier_batch" ||
+    (input.sharedAnchors.supplierBatches.length && input.sharedAnchors.reportedPartNumbers.length)
+  ) {
+    return "supplier_batch_material" as const;
+  }
+
+  if (input.caseKind === "design_weakness") {
+    return "latent_design_escape" as const;
+  }
+
+  if (input.caseKind === "cosmetic_issue" || input.sharedAnchors.orders.length > 0) {
+    return "operator_handling_order_cluster" as const;
+  }
+
+  if (input.caseKind === "false_positive") {
+    return "false_positive_noise" as const;
+  }
+
+  if (input.caseKind === "service_issue") {
+    return "detector_hotspot_noise" as const;
+  }
+
+  return "process_window_calibration" as const;
+}
+
 function buildPromotedCaseFromIncidentGroup(input: {
   incidents: ProposalIncident[];
   anchorCounts: IncidentAnchorCounts;
@@ -5226,9 +5731,14 @@ function buildPromotedCaseFromIncidentGroup(input: {
     incidents: input.incidents,
     sharedAnchors,
   });
+  const family = derivePromotedCaseFamily({
+    caseKind,
+    sharedAnchors,
+  });
 
   return {
     proposalTempId: `AUTOCASE-${input.index + 1}`,
+    family,
     title:
       productIds.length === 2
         ? `${primaryAnchorSummary || "Recurring anchor"} across 2 products`
@@ -6008,6 +6518,95 @@ async function generateGlobalReconciliationObject(input: {
   });
 }
 
+function prioritizeThreadsForStage2(dossier: ClusteredArticleDossier) {
+  const candidateRank = {
+    case: 3,
+    watchlist: 2,
+    incident: 1,
+    noise: 0,
+  } satisfies Record<CandidateFamilyDisposition, number>;
+  const productPriority = new Map<
+    string,
+    {
+      family: string;
+      anchor: string;
+      score: number;
+      productId: string;
+    }
+  >();
+
+  for (const candidate of dossier.candidateFamilies ?? []) {
+    const score =
+      candidateRank[candidate.shouldReviewAs] * 10 +
+      candidate.statistics.lift -
+      candidate.statistics.backgroundPrevalencePenalty;
+
+    for (const productId of candidate.supportingProductIds) {
+      const current = productPriority.get(productId);
+
+      if (!current || score > current.score) {
+        productPriority.set(productId, {
+          family: candidate.family,
+          anchor: candidate.dominantAnchor,
+          score,
+          productId,
+        });
+      }
+    }
+  }
+
+  return [...dossier.productThreads].sort((left, right) => {
+    const leftPriority = productPriority.get(left.productId);
+    const rightPriority = productPriority.get(right.productId);
+
+    if (leftPriority && rightPriority) {
+      const familyDelta = leftPriority.family.localeCompare(rightPriority.family);
+
+      if (familyDelta !== 0) {
+        return familyDelta;
+      }
+
+      const anchorDelta = leftPriority.anchor.localeCompare(rightPriority.anchor);
+
+      if (anchorDelta !== 0) {
+        return anchorDelta;
+      }
+
+      const scoreDelta = rightPriority.score - leftPriority.score;
+
+      if (scoreDelta !== 0) {
+        return scoreDelta;
+      }
+    } else if (leftPriority || rightPriority) {
+      return leftPriority ? -1 : 1;
+    }
+
+    const leftVote = left.hypothesisSignals?.candidateFamilyVotes[0];
+    const rightVote = right.hypothesisSignals?.candidateFamilyVotes[0];
+
+    if (leftVote && rightVote) {
+      const voteFamilyDelta = leftVote.family.localeCompare(rightVote.family);
+
+      if (voteFamilyDelta !== 0) {
+        return voteFamilyDelta;
+      }
+
+      const voteScoreDelta = rightVote.score - leftVote.score;
+
+      if (voteScoreDelta !== 0) {
+        return voteScoreDelta;
+      }
+    } else if (leftVote || rightVote) {
+      return leftVote ? -1 : 1;
+    }
+
+    return (
+      (formatBuildWeek(left.buildTs) ?? "").localeCompare(formatBuildWeek(right.buildTs) ?? "") ||
+      left.productId.localeCompare(right.productId)
+    );
+  });
+}
+
 function planStage2Chunks(dossier: ClusteredArticleDossier) {
   const chunks: ClusteredProductDossier[][] = [];
   let currentChunk: ClusteredProductDossier[] = [];
@@ -6019,7 +6618,7 @@ function planStage2Chunks(dossier: ClusteredArticleDossier) {
     }
   };
 
-  for (const thread of dossier.productThreads) {
+  for (const thread of prioritizeThreadsForStage2(dossier)) {
     const nextChunk = [...currentChunk, thread];
     const nextProductIds = new Set(nextChunk.map((item) => item.productId));
     const estimatedPromptChars = estimateStage2ProposalPromptChars({
@@ -6077,16 +6676,22 @@ async function runProposalPass(
     const reviewPayload = fitStage2ReviewPayloadToBudget(
       buildStage2ReviewPayload({ dossier, draft }),
     );
-    const rawReview = await generateProposalObject({
-      articleId: dossier.article.articleId,
-      stageName: "stage2_review",
-      system: buildPassBSystemPrompt(),
-      prompt: buildPassBUserPrompt(reviewPayload),
-      reasoningEffort: STAGE2_REVIEW_REASONING_EFFORT,
-      payload: reviewPayload,
-      selectedProductCount: reviewPayload.reviewProductCards.length,
-      maxOutputTokens: STAGE2_REVIEW_MAX_OUTPUT_TOKENS,
-      abortSignal: options?.abortSignal,
+    const rawReview = await withStageHeartbeat({
+      beat: async () => {
+        await onStageChange?.("stage2_review", "Reviewing and refining article-wide cases.");
+      },
+      run: () =>
+        generateProposalObject({
+          articleId: dossier.article.articleId,
+          stageName: "stage2_review",
+          system: buildPassBSystemPrompt(),
+          prompt: buildPassBUserPrompt(reviewPayload),
+          reasoningEffort: STAGE2_REVIEW_REASONING_EFFORT,
+          payload: reviewPayload,
+          selectedProductCount: reviewPayload.reviewProductCards.length,
+          maxOutputTokens: STAGE2_REVIEW_MAX_OUTPUT_TOKENS,
+          abortSignal: options?.abortSignal,
+        }),
     });
     const review = promoteRecurringIncidentsToCases({
       proposal: rawReview,
@@ -6160,16 +6765,22 @@ async function runProposalPass(
   const reviewPayload = fitStage2ReviewPayloadToBudget(
     buildStage2ReviewPayload({ dossier, draft }),
   );
-  const rawReview = await generateProposalObject({
-    articleId: dossier.article.articleId,
-    stageName: "stage2_review",
-    system: buildPassBSystemPrompt(),
-    prompt: buildPassBUserPrompt(reviewPayload),
-    reasoningEffort: STAGE2_REVIEW_REASONING_EFFORT,
-    payload: reviewPayload,
-    selectedProductCount: reviewPayload.reviewProductCards.length,
-    maxOutputTokens: STAGE2_REVIEW_MAX_OUTPUT_TOKENS,
-    abortSignal: options?.abortSignal,
+  const rawReview = await withStageHeartbeat({
+    beat: async () => {
+      await onStageChange?.("stage2_review", "Reviewing and consolidating chunked case drafts.");
+    },
+    run: () =>
+      generateProposalObject({
+        articleId: dossier.article.articleId,
+        stageName: "stage2_review",
+        system: buildPassBSystemPrompt(),
+        prompt: buildPassBUserPrompt(reviewPayload),
+        reasoningEffort: STAGE2_REVIEW_REASONING_EFFORT,
+        payload: reviewPayload,
+        selectedProductCount: reviewPayload.reviewProductCards.length,
+        maxOutputTokens: STAGE2_REVIEW_MAX_OUTPUT_TOKENS,
+        abortSignal: options?.abortSignal,
+      }),
   });
   const review = promoteRecurringIncidentsToCases({
     proposal: rawReview,
@@ -6943,13 +7554,22 @@ export async function runArticleCaseClustering(
       stageDetail: "Reconciling global watchlists, validated cases, and noise.",
     });
 
-    const globalReconciliation = await runGlobalReconciliation({
-      currentArticleId: dossier.article.articleId,
-      currentArticleName: dossier.article.articleName,
-      currentDossier: dossier,
-      currentStage2: proposalPass.review,
-      currentCandidates: persistedCandidates,
-      abortSignal: options?.abortSignal,
+    const globalReconciliation = await withStageHeartbeat({
+      beat: () =>
+        updateTeamCaseRunStage({
+          id: runId,
+          currentStage: "stage3_reconciliation",
+          stageDetail: "Reconciling global watchlists, validated cases, and noise.",
+        }),
+      run: () =>
+        runGlobalReconciliation({
+          currentArticleId: dossier.article.articleId,
+          currentArticleName: dossier.article.articleName,
+          currentDossier: dossier,
+          currentStage2: proposalPass.review,
+          currentCandidates: persistedCandidates,
+          abortSignal: options?.abortSignal,
+        }),
     });
 
     const reviewPayload: CasePipelineReviewPayload = {
@@ -7229,6 +7849,10 @@ export const getArticleCaseboard = memoizeWithTtl(
   (articleId: string) => articleId,
   async (articleId: string): Promise<ArticleCaseboardReadModel | null> => {
     if (!capabilities.hasPostgres) {
+      return null;
+    }
+
+    if (!articleId?.trim()) {
       return null;
     }
 

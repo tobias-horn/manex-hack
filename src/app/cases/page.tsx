@@ -56,7 +56,7 @@ export default async function CasesPage() {
               render={
                 <Link href="/">
                   <ArrowLeft className="size-4" />
-                  Back to inbox
+                  Back to home
                 </Link>
               }
             />

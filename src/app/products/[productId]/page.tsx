@@ -11,7 +11,6 @@ import {
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { ClusteringPipelineToggle } from "@/components/clustering-pipeline-toggle";
 import { ProductActionPanel } from "@/components/product-action-panel";
 import { QualitySignalImage } from "@/components/quality-signal-image";
 import { ScreenState } from "@/components/screen-state";
@@ -142,7 +141,7 @@ export default async function ProductDossierPage({
                 render={<Link href={productJump.href}>{productJump.label}</Link>}
               />
             ))}
-            <Button size="lg" render={<Link href="/">Back to inbox</Link>} />
+            <Button size="lg" render={<Link href="/">Back to home</Link>} />
           </>
         }
       />
@@ -154,41 +153,6 @@ export default async function ProductDossierPage({
   }
 
   const product = dossier.product;
-  const toggleItems = [
-    {
-      mode: "current" as const,
-      label: "Classic three-layer clustering",
-      description: "Original dossier, article-case, and global reconciliation flow.",
-      href: buildClusteringModeHref(`/products/${dossier.requestedProductId}`, "current"),
-    },
-    {
-      mode: "deterministic" as const,
-      label: "Deterministic issue grouping",
-      description: "Small per-product issue extraction with deterministic article grouping.",
-      href: buildClusteringModeHref(`/products/${dossier.requestedProductId}`, "deterministic"),
-    },
-    {
-      mode: "hypothesis" as const,
-      label: "Case hypothesis engine",
-      description:
-        "Mechanism-family analyzers rank supplier, process, design, handling, and noise investigations before AI writes the case narrative.",
-      href: buildClusteringModeHref(`/products/${dossier.requestedProductId}`, "hypothesis"),
-    },
-    {
-      mode: "investigate" as const,
-      label: "Statistical anomaly RCA",
-      description:
-        "Direct SQL sweeps plus OpenAI root-cause narration without the clustered case pipeline.",
-      href: buildClusteringModeHref(`/products/${dossier.requestedProductId}`, "investigate"),
-    },
-    {
-      mode: "dummy" as const,
-      label: "Seeded dummy run",
-      description:
-        "Read-only completed run populated with the four published challenge stories so UI work can continue immediately.",
-      href: buildClusteringModeHref(`/products/${dossier.requestedProductId}`, "dummy"),
-    },
-  ];
   const pipelineLabel =
     mode === "deterministic"
       ? "Deterministic issue-grouping pipeline"
@@ -242,7 +206,7 @@ export default async function ProductDossierPage({
                 render={
                   <Link href="/">
                     <ArrowLeft className="size-4" />
-                    Back to inbox
+                    Back to home
                   </Link>
                 }
               />
@@ -280,8 +244,6 @@ export default async function ProductDossierPage({
             </div>
           </div>
         </header>
-
-        <ClusteringPipelineToggle currentMode={mode} items={toggleItems} />
 
         <section className="grid gap-6 xl:grid-cols-[minmax(0,1.42fr)_390px]">
           <div className="space-y-6">

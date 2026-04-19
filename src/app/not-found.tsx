@@ -9,7 +9,7 @@ export default function NotFound() {
     <ScreenState
       eyebrow="Not found"
       title="That investigation target is not available"
-      description="The requested product or route did not return a usable read model. Try one of the seeded live demo products or jump back to the inbox."
+      description="The requested product or route did not return a usable read model. Try one of the seeded live demo products or jump back to the home workspace."
       tone="error"
       actions={
         <>
@@ -21,7 +21,7 @@ export default function NotFound() {
               render={<Link href={product.href}>{product.label}</Link>}
             />
           ))}
-          <Button size="lg" render={<Link href="/">Back to inbox</Link>} />
+          <Button size="lg" render={<Link href="/">Back to home</Link>} />
         </>
       }
     />

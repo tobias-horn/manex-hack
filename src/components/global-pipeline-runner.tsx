@@ -424,27 +424,27 @@ export function GlobalPipelineRunner({
   const progressCaption = useMemo(() => {
     if (batch.status === "running" || activeRuns.length > 0) {
       if (totalArticleCount) {
-        return `${finishedArticleCount} of ${totalArticleCount} articles have finished. The board keeps polling until the batch settles.`;
+        return `${finishedArticleCount} of ${totalArticleCount} articles have finished.`;
       }
 
-      return "The board is polling for live article-level stage updates.";
+      return "Polling live progress.";
     }
 
     if (batch.status === "completed") {
       return batch.completedAt
         ? `Last completed ${formatUiDateTime(batch.completedAt)}.`
-        : "The last batch completed successfully.";
+        : "Completed.";
     }
 
     if (batch.status === "failed") {
       if (batch.errorMessage === STOPPED_PIPELINE_MESSAGE) {
-        return "The most recent batch was stopped before it finished.";
+        return "Stopped before completion";
       }
 
-      return batch.errorMessage ?? "The most recent batch finished with one or more article failures.";
+      return batch.errorMessage ?? "Completed with failures.";
     }
 
-    return "Start a new run to refresh the shared global inventory from the latest article outputs.";
+    return "Ready to start.";
   }, [
     activeRuns.length,
     batch.completedAt,
@@ -458,7 +458,7 @@ export function GlobalPipelineRunner({
     <div className="surface-sheet ghost-border space-y-5 rounded-[32px] p-5 sm:p-6">
       <div className="rounded-[28px] border border-white/10 bg-[color:var(--surface-low)] p-5">
         <div className="flex flex-col gap-5">
-          <div className="flex justify-end">
+          <div className="flex">
             <div className="flex size-13 shrink-0 items-center justify-center rounded-[1.6rem] bg-[color:rgba(0,92,151,0.08)] text-[var(--primary)]">
               <Workflow className="size-5" />
             </div>
@@ -473,16 +473,13 @@ export function GlobalPipelineRunner({
             </p>
           </div>
         </div>
-
       </div>
 
       <div className="rounded-[28px] border border-white/10 bg-black/8 p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="space-y-1">
-            <div className="text-base font-semibold">Batch progress</div>
-            <p className="max-w-[30rem] text-sm leading-6 text-[var(--muted-foreground)]">
-              {progressCaption}
-            </p>
+            <div className="text-base font-semibold">Progress</div>
+            <p className="text-sm text-[var(--muted-foreground)]">{progressCaption}</p>
           </div>
           <div className="rounded-full bg-[color:rgba(0,92,151,0.08)] px-3 py-1 text-sm font-semibold text-[var(--primary)]">
             {progressValue}%
@@ -520,6 +517,7 @@ export function GlobalPipelineRunner({
             ))}
           </div>
         ) : null}
+
       </div>
 
       <div className="rounded-[28px] border border-white/10 bg-[color:var(--surface-low)] p-5">
@@ -529,16 +527,16 @@ export function GlobalPipelineRunner({
             <div className="text-base font-semibold">Read-only completed batch</div>
             <p className="text-sm leading-6 text-[var(--muted-foreground)]">
               {readOnlyMessage ??
-                "This engine is intentionally static. It replays a finished dummy batch so the dashboard can be reviewed without mutating any live pipeline state."}
+                "This engine shows a finished seeded batch."}
             </p>
           </div>
         ) : (
           <>
             <div className="space-y-1">
               <div className="eyebrow">Controls</div>
-              <div className="text-base font-semibold">Start, stop, or clear generated pipeline state</div>
+              <div className="text-base font-semibold">Controls</div>
               <p className="text-sm leading-6 text-[var(--muted-foreground)]">
-                Stop halts the active batch gracefully. Reset removes only persisted pipeline artifacts and leaves the source hackathon data untouched.
+                Start, stop, or clear generated pipeline state.
               </p>
             </div>
 
@@ -649,7 +647,7 @@ export function GlobalPipelineRunner({
                 ) : null}
                 <Badge variant="outline">{run.candidateCount} cases</Badge>
               </div>
-              <p className="mt-3 text-sm leading-6 text-[var(--muted-foreground)]">
+              <p className="mt-3 text-sm text-[var(--muted-foreground)]">
                 {run.stageDetail ?? "Pipeline is running."}
               </p>
               <p className="mt-2 text-xs uppercase tracking-[0.16em] text-[var(--muted-foreground)]">

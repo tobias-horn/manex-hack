@@ -67,7 +67,7 @@ const DET_REASONING_EFFORT =
     | undefined) ?? "low";
 const DET_ARTICLE_PIPELINE_CONCURRENCY = readPositiveInt(
   process.env.MANEX_DET_ARTICLE_PIPELINE_CONCURRENCY,
-  4,
+  5,
 );
 const DET_CASE_PAIR_THRESHOLD = readPositiveInt(
   process.env.MANEX_DET_CASE_PAIR_THRESHOLD,

@@ -241,6 +241,7 @@ export type ManexDefect = {
   detectedTestUnit: string | null;
   detectedTestLower: number | null;
   detectedTestUpper: number | null;
+  cost: number | null;
   imageUrl: string | null;
   notes: string;
   defectWeekStart: string;
@@ -264,6 +265,7 @@ export type ManexFieldClaim = {
   mappedDefectCode: string | null;
   mappedDefectSeverity: string | null;
   daysFromBuild: number | null;
+  cost: number | null;
   imageUrl: string | null;
   notes: string;
   claimWeekStart: string;
@@ -948,6 +950,7 @@ const mapDefect = (row: DefectRow): ManexDefect => ({
   detectedTestUnit: normalizeNullableText(row.detected_test_unit),
   detectedTestLower: normalizeNumber(row.detected_test_lower),
   detectedTestUpper: normalizeNumber(row.detected_test_upper),
+  cost: normalizeNumber(row.cost),
   imageUrl: resolveManexImageUrl(row.image_url),
   notes: normalizeText(row.notes),
   defectWeekStart: normalizeWeekStart(row.defect_ts),
@@ -971,6 +974,7 @@ const mapClaim = (row: ClaimRow): ManexFieldClaim => ({
   mappedDefectCode: normalizeNullableText(row.mapped_defect_code),
   mappedDefectSeverity: normalizeNullableText(row.mapped_defect_severity),
   daysFromBuild: normalizeInteger(row.days_from_build),
+  cost: normalizeNumber(row.cost),
   imageUrl: resolveManexImageUrl(row.image_url),
   notes: normalizeText(row.notes),
   claimWeekStart: normalizeWeekStart(row.claim_ts),

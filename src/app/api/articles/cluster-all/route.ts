@@ -50,6 +50,58 @@ let latestResetStatus: ResetStatus = {
 };
 const STOPPED_PIPELINE_MESSAGE = "Pipeline stopped by user.";
 
+function pickLatestTimestamp(...values: Array<string | null | undefined>) {
+  return values.filter((value): value is string => Boolean(value)).sort().at(-1) ?? null;
+}
+
+function buildRecoveredBatchStatus(activeRuns: Awaited<ReturnType<typeof listActiveTeamCaseRuns>>): BatchStatus {
+  return {
+    id: "recovered",
+    status: "running",
+    requestedArticleIds: activeRuns.map((run) => run.articleId),
+    totalArticleCount: activeRuns.length,
+    startedAt:
+      activeRuns
+        .map((run) => run.startedAt)
+        .sort()
+        .at(0) ?? null,
+    completedAt: null,
+    lastUpdatedAt: pickLatestTimestamp(
+      ...activeRuns.map((run) => run.stageUpdatedAt ?? run.startedAt),
+    ),
+    concurrency: null,
+    okCount: 0,
+    errorCount: 0,
+    errorMessage: null,
+    articleResults: [],
+  };
+}
+
+function mergeLiveBatchStatus(input: {
+  persistedBatchStatus: BatchStatus | null;
+  activeRuns: Awaited<ReturnType<typeof listActiveTeamCaseRuns>>;
+}) {
+  const { persistedBatchStatus, activeRuns } = input;
+
+  if (!persistedBatchStatus) {
+    return activeRuns.length ? buildRecoveredBatchStatus(activeRuns) : idleBatchStatus();
+  }
+
+  if (!activeRuns.length) {
+    return persistedBatchStatus;
+  }
+
+  return {
+    ...persistedBatchStatus,
+    status: "running" as const,
+    completedAt: null,
+    lastUpdatedAt: pickLatestTimestamp(
+      persistedBatchStatus.lastUpdatedAt,
+      ...activeRuns.map((run) => run.stageUpdatedAt ?? run.startedAt),
+    ),
+  };
+}
+
 function validateCapabilities() {
   if (!capabilities.hasPostgres) {
     return {
@@ -85,24 +137,10 @@ function validatePostgresCapability() {
 async function buildStatusPayload() {
   const activeRuns = await listActiveTeamCaseRuns();
   const persistedBatchStatus = await getLatestTeamCaseBatch();
-  const latestBatchStatus =
-    persistedBatchStatus ??
-    (activeRuns.length
-      ? {
-          id: "recovered",
-          status: "running" as const,
-          requestedArticleIds: activeRuns.map((run) => run.articleId),
-          totalArticleCount: activeRuns.length,
-          startedAt: activeRuns[activeRuns.length - 1]?.startedAt ?? null,
-          completedAt: null,
-          lastUpdatedAt: activeRuns[0]?.stageUpdatedAt ?? activeRuns[0]?.startedAt ?? null,
-          concurrency: null,
-          okCount: 0,
-          errorCount: 0,
-          errorMessage: null,
-          articleResults: [],
-        }
-      : idleBatchStatus());
+  const latestBatchStatus = mergeLiveBatchStatus({
+    persistedBatchStatus,
+    activeRuns,
+  });
 
   return {
     batch: latestBatchStatus,

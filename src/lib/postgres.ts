@@ -8,7 +8,8 @@ let poolUsesSsl: boolean | undefined;
 const createPool = (useSsl: boolean) =>
   new Pool({
     connectionString: env.DATABASE_URL,
-    ssl: useSsl ? { rejectUnauthorized: false } : undefined,
+    // Be explicit when SSL is off so local servers do not fall back to driver defaults.
+    ssl: useSsl ? { rejectUnauthorized: false } : false,
   });
 
 export function getPostgresPool() {
@@ -27,7 +28,9 @@ export function getPostgresPool() {
 
 const shouldRetryWithoutSsl = (error: unknown) =>
   error instanceof Error &&
-  /does not support SSL connections/i.test(error.message);
+  /(does not support SSL connections|server does not support SSL|no pg_hba\.conf entry .*ssl off)/i.test(
+    error.message,
+  );
 
 async function retryWithoutSslIfNeeded(error: unknown) {
   if (!poolUsesSsl || !shouldRetryWithoutSsl(error) || !pool) {

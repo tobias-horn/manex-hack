@@ -48,7 +48,7 @@ export function ScreenState({
           </p>
           <div className="mt-6 flex flex-wrap gap-3">
             {actions ?? (
-              <Button variant="outline" size="lg" render={<Link href="/">Back to inbox</Link>} />
+              <Button variant="outline" size="lg" render={<Link href="/">Back to home</Link>} />
             )}
           </div>
         </section>

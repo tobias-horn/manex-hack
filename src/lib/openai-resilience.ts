@@ -8,7 +8,7 @@ import {
   stringifyUnicodeSafe,
 } from "@/lib/json-unicode";
 
-const DEFAULT_OPENAI_REQUESTS_PER_MINUTE = 500;
+const DEFAULT_OPENAI_REQUESTS_PER_MINUTE = 5000;
 const DEFAULT_TEXT_REPAIR_ATTEMPTS = 2;
 const MAX_REPAIR_TEXT_CHARS = 40_000;
 
@@ -79,17 +79,79 @@ export function extractRetryDelayMs(message: string) {
   return /^ms$/i.test(match[2] ?? "") ? Math.ceil(value) : Math.ceil(value * 1000);
 }
 
+function isSchemaValidationError(error: unknown): error is z.ZodError {
+  return error instanceof z.ZodError;
+}
+
+function formatSchemaIssuePath(path: PropertyKey[]) {
+  if (path.length === 0) {
+    return "<root>";
+  }
+
+  return path
+    .map((segment) =>
+      typeof segment === "number"
+        ? `[${segment}]`
+        : /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(String(segment))
+          ? String(segment)
+          : `["${String(segment)}"]`,
+    )
+    .join(".")
+    .replace(/\.\[/g, "[");
+}
+
+function summarizeSchemaValidationError(error: z.ZodError, maxIssues = 8) {
+  const issues = error.issues.slice(0, maxIssues).map((issue) => {
+    const path = formatSchemaIssuePath(issue.path);
+    return `${path}: ${issue.message}`;
+  });
+
+  if (error.issues.length > maxIssues) {
+    issues.push(`...and ${error.issues.length - maxIssues} more schema issue(s)`);
+  }
+
+  return issues.join("; ");
+}
+
+function describeStructuredOutputError(error: unknown) {
+  if (isSchemaValidationError(error)) {
+    return `Schema validation failed (${summarizeSchemaValidationError(error)}).`;
+  }
+
+  return error instanceof Error ? error.message : String(error);
+}
+
+function toStructuredOutputError(error: unknown) {
+  if (isSchemaValidationError(error)) {
+    return new Error(
+      `Structured output matched JSON syntax but not the expected schema (${summarizeSchemaValidationError(
+        error,
+      )}).`,
+    );
+  }
+
+  return error instanceof Error ? error : new Error(String(error));
+}
+
 export function isStructuredParseError(error: unknown) {
+  if (isSchemaValidationError(error)) {
+    return true;
+  }
+
   const message = error instanceof Error ? error.message : String(error);
-  return /no object generated|could not parse the response|failed to parse|unsupported unicode escape sequence|bad control character|bad escaped character|invalid escape/i.test(
+  return /no object generated|could not parse the response|failed to parse|unsupported unicode escape sequence|bad control character|bad escaped character|invalid escape|invalid input|expected object|expected array|expected .* received/i.test(
     message,
   );
 }
 
 export function isRetryableOpenAiError(error: unknown) {
+  if (isSchemaValidationError(error)) {
+    return true;
+  }
+
   const message = error instanceof Error ? error.message : String(error);
 
-  return /rate limit|429|overloaded|temporarily unavailable|timeout|timed out|no object generated|could not parse the response|failed to parse|unsupported unicode escape sequence|bad control character|bad escaped character|invalid escape|recoverable json value|valid json/i.test(
+  return /rate limit|429|overloaded|temporarily unavailable|timeout|timed out|no object generated|could not parse the response|failed to parse|unsupported unicode escape sequence|bad control character|bad escaped character|invalid escape|invalid input|expected object|expected array|recoverable json value|valid json/i.test(
     message,
   );
 }
@@ -268,14 +330,18 @@ async function repairStructuredObjectViaText<TSchema extends z.ZodTypeAny>(
   const resolvedSchema = await asSchema(input.schema).jsonSchema;
   let invalidJsonText: string | null = null;
   let invalidJsonError: string | null = null;
+  let invalidSchemaError: string | null = null;
   let lastError: unknown = null;
 
   for (let repairAttempt = 1; repairAttempt <= TEXT_REPAIR_ATTEMPTS; repairAttempt += 1) {
     const repairPrompt: string = invalidJsonText
       ? [
-          "The previous repair attempt still returned invalid JSON.",
+          invalidSchemaError
+            ? "The previous repair attempt returned JSON that still failed schema validation."
+            : "The previous repair attempt still returned invalid JSON.",
+          invalidSchemaError ? `Schema validation error: ${invalidSchemaError}` : null,
           invalidJsonError ? `JSON parse error: ${invalidJsonError}` : null,
-          "Repair the following content into one valid JSON value that matches the schema.",
+          "Repair the following content into one valid JSON value that matches the schema exactly.",
           "Return exactly one valid JSON value and nothing else.",
           "",
           truncateRepairText(invalidJsonText),
@@ -317,6 +383,8 @@ async function repairStructuredObjectViaText<TSchema extends z.ZodTypeAny>(
 
       invalidJsonText = repairResult.text;
       const parsedJson = parseJsonFromModelText(repairResult.text);
+      invalidJsonError = null;
+      invalidSchemaError = null;
       return input.schema.parse(parsedJson) as z.infer<TSchema>;
     } catch (error) {
       lastError = error;
@@ -325,11 +393,18 @@ async function repairStructuredObjectViaText<TSchema extends z.ZodTypeAny>(
         throw error;
       }
 
+      if (isSchemaValidationError(error)) {
+        invalidSchemaError = summarizeSchemaValidationError(error);
+        invalidJsonError = null;
+        continue;
+      }
+
+      invalidSchemaError = null;
       invalidJsonError = error instanceof Error ? error.message : String(error);
     }
   }
 
-  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  throw toStructuredOutputError(lastError);
 }
 
 export async function generateStructuredObjectWithRepair<TSchema extends z.ZodTypeAny>(
@@ -385,10 +460,10 @@ export async function generateStructuredObjectWithRepair<TSchema extends z.ZodTy
       const shouldRetry = attemptedRepair || isRetryableOpenAiError(retryError);
 
       if (!shouldRetry || attempt >= input.maxAttempts) {
-        throw retryError instanceof Error ? retryError : new Error(String(retryError));
+        throw toStructuredOutputError(retryError);
       }
 
-      const message = retryError instanceof Error ? retryError.message : String(retryError);
+      const message = describeStructuredOutputError(retryError);
       const hintedDelayMs = extractRetryDelayMs(message);
       const fallbackDelayMs = Math.min(12_000, 1_250 * 2 ** (attempt - 1));
       const jitterMs = Math.floor(Math.random() * 600);
@@ -397,5 +472,5 @@ export async function generateStructuredObjectWithRepair<TSchema extends z.ZodTy
     }
   }
 
-  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  throw toStructuredOutputError(lastError);
 }

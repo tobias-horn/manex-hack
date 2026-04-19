@@ -69,7 +69,7 @@ const HYP_REASONING_EFFORT =
     | undefined) ?? "low";
 const HYP_ARTICLE_PIPELINE_CONCURRENCY = readPositiveInt(
   process.env.MANEX_HYP_ARTICLE_PIPELINE_CONCURRENCY,
-  4,
+  5,
 );
 const CASE_SCORE_THRESHOLD = readPositiveInt(process.env.MANEX_HYP_CASE_SCORE_THRESHOLD, 10);
 const WATCHLIST_SCORE_THRESHOLD = readPositiveInt(

@@ -99,6 +99,8 @@ export type ArticleHypothesisBoardViewModel = {
   };
   hypotheses: ArticleHypothesisCardViewModel[];
   defaultHypothesisId: string | null;
+  confirmedHypothesisId: string | null;
+  confirmedHypothesis: ArticleHypothesisCardViewModel | null;
   globalContext: {
     validatedCount: number;
     watchlistCount: number;
@@ -800,15 +802,20 @@ export function buildArticleHypothesisBoardViewModel(input: {
             supplement: syntheticSupplement,
             dossier: null,
             index: candidateCards.length,
-          })
+        })
         : null;
-  const displayedCards = chooseDisplayedCards(candidateCards, syntheticCard, input.initialSelectedId);
+  const confirmedHypothesis =
+    candidateCards.find((candidate) => candidate.currentStatus === "confirmed") ?? null;
+  const displayedCards = confirmedHypothesis
+    ? [confirmedHypothesis]
+    : chooseDisplayedCards(candidateCards, syntheticCard, input.initialSelectedId);
   const defaultHypothesisId =
+    confirmedHypothesis?.id ??
     (input.initialSelectedId &&
       displayedCards.find((candidate) => candidate.id === input.initialSelectedId)?.id) ??
     displayedCards[0]?.id ??
     null;
-  const leading = displayedCards[0] ?? null;
+  const leading = confirmedHypothesis ?? displayedCards[0] ?? null;
   const articleProductCount = dossier?.article.productCount ?? input.caseboard.dashboardCard?.productCount ?? 0;
   const totalSignals = dossier?.article.totalSignals ?? input.caseboard.dashboardCard?.totalSignals ?? 0;
   const benchmark =
@@ -841,6 +848,8 @@ export function buildArticleHypothesisBoardViewModel(input: {
     },
     hypotheses: displayedCards,
     defaultHypothesisId,
+    confirmedHypothesisId: confirmedHypothesis?.id ?? null,
+    confirmedHypothesis,
     globalContext: globalInventory
       ? {
           validatedCount: globalInventory.validatedCases.length,

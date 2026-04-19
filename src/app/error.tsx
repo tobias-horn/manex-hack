@@ -19,8 +19,8 @@ export default function ErrorPage({ error, reset }: ErrorPageProps) {
   return (
     <ScreenState
       eyebrow="Load error"
-      title="The product hit a temporary read problem"
-      description="The dataset connection or one of the composed read models failed unexpectedly. The app is still intact, and you can retry the route without losing any persisted workflow data."
+      title="Something went wrong"
+      description="A page request failed. Retry or go back home."
       tone="error"
       actions={
         <>
@@ -30,7 +30,7 @@ export default function ErrorPage({ error, reset }: ErrorPageProps) {
           <Button
             size="lg"
             variant="outline"
-            render={<Link href="/">Back to inbox</Link>}
+            render={<Link href="/">Home</Link>}
           />
         </>
       }

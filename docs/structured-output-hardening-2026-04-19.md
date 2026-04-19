@@ -62,7 +62,7 @@ Behavior:
 All OpenAI requests that go through the new helper now share one in-process
 request gate. The default is:
 
-- `MANEX_OPENAI_REQUESTS_PER_MINUTE=500`
+- `MANEX_OPENAI_REQUESTS_PER_MINUTE=5000`
 
 This does not reduce concurrency to one worker. It only spaces request starts so
 bursty article and product fan-out does not exceed the available account RPM in
@@ -78,7 +78,7 @@ Now:
 
 - all clustering pipelines share one repair implementation
 - malformed repair JSON no longer fails because of naive bracket slicing
-- bursts across concurrent runs are smoothed against the known 500 RPM budget
+- bursts across concurrent runs are smoothed against the shared 5000 RPM budget
 
 If a model response is truly unrecoverable, the error should now surface as a
 structured helper failure rather than a raw low-level JSON parse exception.

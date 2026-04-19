@@ -7,10 +7,11 @@ import {
   Layers3,
   LoaderCircle,
 } from "lucide-react";
-import Link from "next/link";
 import { startTransition, useState } from "react";
 
-import { QualitySignalImage } from "@/components/quality-signal-image";
+import { ConfirmedCaseReportLoadingState } from "@/components/confirmed-case-report-loading-state";
+import { ConfirmedCaseWorkspace } from "@/components/confirmed-case-workspace";
+import { useConfirmedCaseReportFlow } from "@/components/use-confirmed-case-report-flow";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,12 +26,14 @@ import type {
   ArticleHypothesisBoardViewModel,
   ArticleHypothesisCardViewModel,
 } from "@/lib/article-hypothesis-view";
-import { buildClusteringModeHref, type ClusteringMode } from "@/lib/manex-clustering-mode";
-import { formatUiDateTime, formatUiRelative } from "@/lib/ui-format";
+import type { EconomicBlastRadius } from "@/lib/manex-case-clustering";
+import { type ClusteringMode } from "@/lib/manex-clustering-mode";
+import { formatUiDateTime } from "@/lib/ui-format";
 
 type ArticleHypothesisBoardProps = {
   mode: ClusteringMode;
   viewModel: ArticleHypothesisBoardViewModel;
+  economicBlastRadiusByHypothesisId: Record<string, EconomicBlastRadius | null>;
   hasPostgres: boolean;
 };
 
@@ -38,6 +41,69 @@ type ReviewResponse = {
   ok?: boolean;
   error?: string;
 };
+
+function EvidenceTimeline({
+  items,
+  emptyText,
+}: {
+  items: Array<{
+    id: string;
+    timestamp: string | null;
+    productId?: string | null;
+    signalType?: string | null;
+    section?: string | null;
+    label: string;
+    detail: string;
+  }>;
+  emptyText: string;
+}) {
+  if (!items.length) {
+    return (
+      <div className="rounded-[22px] border border-dashed border-white/10 bg-[color:var(--surface-low)] px-4 py-5 text-sm leading-6 text-[var(--muted-foreground)]">
+        {emptyText}
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-[24px] bg-[color:var(--surface-low)] px-4 py-4 sm:px-5">
+      <div className="space-y-0">
+        {items.map((item, index) => {
+          const meta = [
+            item.timestamp ? formatUiDateTime(item.timestamp) : null,
+            item.productId ?? null,
+            item.section ?? item.signalType ?? null,
+          ].filter((value): value is string => Boolean(value));
+
+          return (
+            <article
+              key={item.id}
+              className={`grid grid-cols-[18px_minmax(0,1fr)] gap-4 ${
+                index === items.length - 1 ? "" : "pb-6"
+              }`}
+            >
+              <div className="relative flex justify-center pt-1">
+                <span className="relative z-10 mt-1 size-3 rounded-full border-2 border-[color:var(--surface-low)] bg-[var(--primary)]" />
+                {index < items.length - 1 ? (
+                  <span className="absolute top-5 bottom-[-1.5rem] left-1/2 w-px -translate-x-1/2 bg-[color:rgba(92,108,125,0.28)]" />
+                ) : null}
+              </div>
+              <div className="rounded-[20px] bg-[color:var(--surface-lowest)] px-4 py-4 shadow-[0_14px_28px_rgba(20,32,42,0.04)]">
+                {meta.length ? (
+                  <div className="text-[0.72rem] uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
+                    {meta.join(" · ")}
+                  </div>
+                ) : null}
+                <div className="mt-2 text-base font-semibold text-foreground">{item.label}</div>
+                <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">{item.detail}</p>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 const statusTone: Record<ArticleHypothesisBoardStatus, string> = {
   leading: "bg-[color:rgba(0,92,151,0.12)] text-[var(--primary)]",
@@ -58,6 +124,7 @@ const statusLabel: Record<ArticleHypothesisBoardStatus, string> = {
 export function ArticleHypothesisBoard({
   mode,
   viewModel,
+  economicBlastRadiusByHypothesisId,
   hasPostgres,
 }: ArticleHypothesisBoardProps) {
   const [selectedId, setSelectedId] = useState(viewModel.defaultHypothesisId);
@@ -67,13 +134,45 @@ export function ArticleHypothesisBoard({
     ),
   );
   const [pendingStatusId, setPendingStatusId] = useState<string | null>(null);
-
+  const [actionError, setActionError] = useState<string | null>(null);
   const hypotheses = viewModel.hypotheses.map((hypothesis) => ({
     ...hypothesis,
     currentStatus: statusById[hypothesis.id] ?? hypothesis.currentStatus,
   }));
+  const {
+    recordByHypothesisId,
+    revealedHypothesisId,
+    revealingHypothesisId,
+    revealError,
+    handleConfirmedStatus,
+  } = useConfirmedCaseReportFlow({
+    articleId: viewModel.articleId,
+    mode,
+    hypotheses,
+  });
+  const confirmedHypothesis =
+    hypotheses.find((hypothesis) => hypothesis.currentStatus === "confirmed") ?? null;
+  const reportHypothesis =
+    (revealedHypothesisId
+      ? hypotheses.find((hypothesis) => hypothesis.id === revealedHypothesisId) ?? null
+      : null) ??
+    null;
+  const pendingReportHypothesis =
+    (revealingHypothesisId
+      ? hypotheses.find((hypothesis) => hypothesis.id === revealingHypothesisId) ?? null
+      : null) ??
+    null;
   const selectedHypothesis =
-    hypotheses.find((hypothesis) => hypothesis.id === selectedId) ?? hypotheses[0] ?? null;
+    (confirmedHypothesis
+      ? [confirmedHypothesis]
+      : hypotheses
+    ).find((hypothesis) => hypothesis.id === selectedId) ??
+    confirmedHypothesis ??
+    hypotheses[0] ??
+    null;
+  const evidenceTimeline = selectedHypothesis?.timeline.length
+    ? selectedHypothesis.timeline
+    : selectedHypothesis?.evidenceSpine ?? [];
   const caseShellHighlights = [
     {
       label: "Issue type",
@@ -115,44 +214,79 @@ export function ArticleHypothesisBoard({
       return;
     }
 
-    const previousStatus = statusById[hypothesis.id] ?? hypothesis.currentStatus;
-    startTransition(() => {
-      setStatusById((current) => ({
-        ...current,
-        [hypothesis.id]: nextStatus,
-      }));
-      setPendingStatusId(hypothesis.id);
-    });
+    setActionError(null);
+
+    const persistStatus = async (status: ArticleHypothesisBoardStatus) => {
+      const previousStatus = statusById[hypothesis.id] ?? hypothesis.currentStatus;
+      startTransition(() => {
+        setStatusById((current) => ({
+          ...current,
+          [hypothesis.id]: status,
+        }));
+        if (status === "confirmed") {
+          setSelectedId(hypothesis.id);
+        }
+        setPendingStatusId(hypothesis.id);
+      });
+
+      try {
+        const response = await fetch(
+          `/api/articles/${viewModel.articleId}/hypotheses/${hypothesis.id}/review`,
+          {
+            method: "PATCH",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              pipelineMode: mode,
+              status,
+              candidateTitle: hypothesis.title,
+            }),
+          },
+        );
+
+        const payload = (await response.json()) as ReviewResponse;
+
+        if (!response.ok || !payload.ok) {
+          throw new Error(payload.error ?? "Could not update the hypothesis status.");
+        }
+      } catch {
+        setStatusById((current) => ({
+          ...current,
+          [hypothesis.id]: previousStatus,
+        }));
+        throw new Error("Could not update the hypothesis status.");
+      } finally {
+        setPendingStatusId(null);
+      }
+    };
 
     try {
-      const response = await fetch(
-        `/api/articles/${viewModel.articleId}/hypotheses/${hypothesis.id}/review`,
-        {
-          method: "PATCH",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            pipelineMode: mode,
-            status: nextStatus,
-            candidateTitle: hypothesis.title,
-          }),
-        },
+      await handleConfirmedStatus(hypothesis, nextStatus, persistStatus);
+    } catch (error) {
+      setActionError(
+        error instanceof Error ? error.message : "Could not update the hypothesis status.",
       );
-
-      const payload = (await response.json()) as ReviewResponse;
-
-      if (!response.ok || !payload.ok) {
-        throw new Error(payload.error ?? "Could not update the hypothesis status.");
-      }
-    } catch {
-      setStatusById((current) => ({
-        ...current,
-        [hypothesis.id]: previousStatus,
-      }));
-    } finally {
-      setPendingStatusId(null);
     }
+  }
+
+  if (pendingReportHypothesis) {
+    return <ConfirmedCaseReportLoadingState />;
+  }
+
+  if (reportHypothesis) {
+    return (
+      <ConfirmedCaseWorkspace
+        key={`${mode}:${reportHypothesis.id}`}
+        articleId={viewModel.articleId}
+        articleName={viewModel.articleName}
+        mode={mode}
+        hypothesis={reportHypothesis}
+        economicBlastRadius={economicBlastRadiusByHypothesisId[reportHypothesis.id] ?? null}
+        hasPostgres={hasPostgres}
+        initialRecord={recordByHypothesisId[reportHypothesis.id] ?? null}
+      />
+    );
   }
 
   return (
@@ -194,7 +328,7 @@ export function ArticleHypothesisBoard({
                 <FlaskConical className="size-3.5" />
                 Competing hypotheses
               </Badge>
-              <CardTitle className="section-title mt-3">Compact argument board</CardTitle>
+              <CardTitle className="section-title mt-3">Argument board</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4 px-5 pb-5">
               {hypotheses.length ? (
@@ -241,7 +375,7 @@ export function ArticleHypothesisBoard({
                         <div className="h-full rounded-[24px] border border-white/8 bg-[linear-gradient(180deg,rgba(0,92,151,0.06),rgba(0,92,151,0.02))] p-4">
                           <div className="eyebrow text-[var(--primary)]">Observed support</div>
                           <p className="mt-2 text-xs leading-5 text-[var(--muted-foreground)]">
-                            What the current record positively points toward.
+                            What the current record points toward.
                           </p>
                           <div className="mt-3 space-y-2 text-sm leading-6 text-foreground">
                             {hypothesis.whyItFits.map((item) => (
@@ -252,7 +386,7 @@ export function ArticleHypothesisBoard({
                         <div className="h-full rounded-[24px] border border-white/8 bg-[linear-gradient(180deg,rgba(20,32,42,0.06),rgba(20,32,42,0.02))] p-4">
                           <div className="eyebrow text-foreground">Assumptions required</div>
                           <p className="mt-2 text-xs leading-5 text-[var(--muted-foreground)]">
-                            Conditions that must hold for this explanation to stay coherent.
+                            What still has to hold for this explanation to work.
                           </p>
                           <div className="mt-3 space-y-2 text-sm leading-6 text-foreground">
                             {hypothesis.mustBeTrue.map((item) => (
@@ -263,7 +397,7 @@ export function ArticleHypothesisBoard({
                         <div className="h-full rounded-[24px] border border-white/8 bg-[linear-gradient(180deg,rgba(178,69,63,0.07),rgba(178,69,63,0.02))] p-4">
                           <div className="eyebrow text-[var(--destructive)]">Counterevidence</div>
                           <p className="mt-2 text-xs leading-5 text-[var(--muted-foreground)]">
-                            Friction in the record, missing proof, or rival explanations still alive.
+                            What still weakens it or keeps rivals alive.
                           </p>
                           <div className="mt-3 space-y-2 text-sm leading-6 text-foreground">
                             {hypothesis.weakensIt.map((item) => (
@@ -274,7 +408,7 @@ export function ArticleHypothesisBoard({
                         <div className="h-full rounded-[24px] border border-white/8 bg-[linear-gradient(180deg,rgba(45,123,98,0.07),rgba(45,123,98,0.02))] p-4">
                           <div className="eyebrow text-emerald-700">Decisive test</div>
                           <p className="mt-2 text-xs leading-5 text-[var(--muted-foreground)]">
-                            The shortest next move that should meaningfully strengthen or weaken it.
+                            The fastest next check.
                           </p>
                           <div className="mt-3 space-y-2 text-sm leading-6 text-foreground">
                             {hypothesis.nextChecks.map((item) => (
@@ -299,37 +433,67 @@ export function ArticleHypothesisBoard({
 
                       <div className="mt-4 flex flex-col gap-4 border-t border-white/8 pt-4">
                         {hypothesis.reviewable ? (
-                          <div className="flex flex-wrap gap-2">
-                            {(
-                              [
-                                "leading",
-                                "plausible",
-                                "weak",
-                                "ruled_out",
-                                "confirmed",
-                              ] as const
-                            ).map((status) => (
+                          <>
+                            <div className="flex flex-wrap gap-2">
                               <Button
-                                key={status}
                                 type="button"
                                 size="sm"
-                                variant={
-                                  hypothesis.currentStatus === status ? "default" : "outline"
+                                disabled={
+                                  !hasPostgres ||
+                                  pendingStatusId === hypothesis.id ||
+                                  revealingHypothesisId === hypothesis.id
                                 }
-                                disabled={!hasPostgres || pendingStatusId === hypothesis.id}
-                                onClick={() => void updateStatus(hypothesis, status)}
+                                onClick={() => void updateStatus(hypothesis, "confirmed")}
                               >
-                                {pendingStatusId === hypothesis.id &&
-                                hypothesis.currentStatus === status ? (
+                                {pendingStatusId === hypothesis.id ||
+                                revealingHypothesisId === hypothesis.id ? (
                                   <LoaderCircle className="size-4 animate-spin" />
                                 ) : null}
-                                {statusLabel[status]}
+                                Accept hypothesis and generate report
                               </Button>
-                            ))}
-                          </div>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                disabled={
+                                  !hasPostgres ||
+                                  pendingStatusId === hypothesis.id ||
+                                  revealingHypothesisId === hypothesis.id
+                                }
+                                onClick={() => void updateStatus(hypothesis, "ruled_out")}
+                              >
+                                Reject hypothesis
+                              </Button>
+                            </div>
+
+                            <div className="flex flex-wrap gap-2">
+                              {(["leading", "plausible", "weak"] as const).map((status) => (
+                                <Button
+                                  key={status}
+                                  type="button"
+                                  size="sm"
+                                  variant={
+                                    hypothesis.currentStatus === status ? "default" : "outline"
+                                  }
+                                  disabled={
+                                    !hasPostgres ||
+                                    pendingStatusId === hypothesis.id ||
+                                    revealingHypothesisId === hypothesis.id
+                                  }
+                                  onClick={() => void updateStatus(hypothesis, status)}
+                                >
+                                  {pendingStatusId === hypothesis.id &&
+                                  hypothesis.currentStatus === status ? (
+                                    <LoaderCircle className="size-4 animate-spin" />
+                                  ) : null}
+                                  {statusLabel[status]}
+                                </Button>
+                              ))}
+                            </div>
+                          </>
                         ) : (
                           <p className="text-sm leading-6 text-[var(--muted-foreground)]">
-                            This alternative stays visible as a reference lane, but only the surfaced hypotheses carry operator status.
+                            This alternative stays visible for reference, but only surfaced hypotheses carry operator status.
                           </p>
                         )}
                       </div>
@@ -341,6 +505,12 @@ export function ArticleHypothesisBoard({
                   No article-level hypotheses are available yet. Run the article analysis to seed the first argument board.
                 </div>
               )}
+
+              {actionError || revealError ? (
+                <div className="rounded-[24px] bg-[color:rgba(178,69,63,0.12)] px-4 py-4 text-sm leading-6 text-[var(--destructive)]">
+                  {actionError ?? revealError}
+                </div>
+              ) : null}
             </CardContent>
           </Card>
         </div>
@@ -353,152 +523,15 @@ export function ArticleHypothesisBoard({
                 Evidence drawer
               </Badge>
               <CardTitle className="section-title mt-3">
-                {selectedHypothesis?.title ?? "No hypothesis selected"}
+                Evidence timeline
               </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4 px-5 pb-5">
+            <CardContent className="px-5 pb-5">
               {selectedHypothesis ? (
-                <>
-                  <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                    <div className="eyebrow">Evidence spine</div>
-                    <div className="mt-3 space-y-3">
-                      {selectedHypothesis.evidenceSpine.length ? (
-                        selectedHypothesis.evidenceSpine.map((item) => (
-                          <article key={item.id} className="rounded-[18px] bg-[color:var(--surface-lowest)] px-3 py-3">
-                            <div className="flex flex-wrap items-center gap-2">
-                              {item.timestamp ? (
-                                <Badge variant="outline">{formatUiDateTime(item.timestamp)}</Badge>
-                              ) : null}
-                              {item.productId ? <Badge variant="outline">{item.productId}</Badge> : null}
-                              {item.signalType ? <Badge variant="outline">{item.signalType}</Badge> : null}
-                            </div>
-                            <div className="mt-3 text-sm font-medium text-foreground">{item.label}</div>
-                            <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                              {item.detail}
-                            </p>
-                          </article>
-                        ))
-                      ) : (
-                        <p className="text-sm leading-6 text-[var(--muted-foreground)]">
-                          No evidence spine is available for this selection yet.
-                        </p>
-                      )}
-                    </div>
-                  </div>
-
-                  <details className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                    <summary className="cursor-pointer list-none text-sm font-medium text-foreground">
-                      Full timeline
-                    </summary>
-                    <div className="mt-4 space-y-3">
-                      {selectedHypothesis.timeline.map((item) => (
-                        <article key={item.id} className="rounded-[18px] bg-[color:var(--surface-lowest)] px-3 py-3">
-                          <div className="flex flex-wrap items-center gap-2">
-                            {item.timestamp ? (
-                              <Badge variant="outline">{formatUiDateTime(item.timestamp)}</Badge>
-                            ) : null}
-                            {item.productId ? <Badge variant="outline">{item.productId}</Badge> : null}
-                            {item.section ? <Badge variant="outline">{item.section}</Badge> : null}
-                          </div>
-                          <div className="mt-3 text-sm font-medium text-foreground">{item.label}</div>
-                          <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                            {item.detail}
-                          </p>
-                        </article>
-                      ))}
-                    </div>
-                  </details>
-
-                  <details className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                    <summary className="cursor-pointer list-none text-sm font-medium text-foreground">
-                      Related products
-                    </summary>
-                    <div className="mt-4 space-y-3">
-                      {selectedHypothesis.relatedProducts.map((product) => (
-                        <article
-                          key={product.productId}
-                          className="rounded-[18px] bg-[color:var(--surface-lowest)] px-3 py-3"
-                        >
-                          <div className="flex flex-wrap items-center gap-2">
-                            <Badge>{product.productId}</Badge>
-                            {product.orderId ? <Badge variant="outline">{product.orderId}</Badge> : null}
-                            {product.buildTs ? (
-                              <Badge variant="outline">{formatUiRelative(product.buildTs)}</Badge>
-                            ) : null}
-                          </div>
-                          <p className="mt-3 text-sm leading-6 text-[var(--muted-foreground)]">
-                            {product.summary}
-                          </p>
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            {product.suspiciousPatterns.map((item) => (
-                              <Badge key={item} variant="secondary">
-                                {item}
-                              </Badge>
-                            ))}
-                          </div>
-                          <div className="mt-3">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              render={
-                                <Link
-                                  href={buildClusteringModeHref(
-                                    `/products/${product.productId}`,
-                                    mode,
-                                  )}
-                                >
-                                  Open product dossier
-                                </Link>
-                              }
-                            />
-                          </div>
-                        </article>
-                      ))}
-                    </div>
-                  </details>
-
-                  {selectedHypothesis.frames.length ? (
-                    <details className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                      <summary className="cursor-pointer list-none text-sm font-medium text-foreground">
-                        Images and provenance
-                      </summary>
-                      <div className="mt-4 grid gap-3">
-                        {selectedHypothesis.frames.map((frame) => (
-                          <article
-                            key={frame.id}
-                            className="rounded-[18px] bg-[color:var(--surface-lowest)] p-3"
-                          >
-                            <QualitySignalImage
-                              alt={`${frame.sourceType} ${frame.sourceId}`}
-                              src={frame.imageUrl}
-                            />
-                            <div className="mt-3 flex flex-wrap gap-2">
-                              <Badge variant="outline">{frame.sourceType}</Badge>
-                              <Badge variant="outline">{frame.sourceId}</Badge>
-                            </div>
-                            <div className="mt-3 text-sm font-medium text-foreground">{frame.title}</div>
-                            <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                              {frame.caption}
-                            </p>
-                          </article>
-                        ))}
-                      </div>
-                    </details>
-                  ) : null}
-
-                  {selectedHypothesis.memberNotes.length ? (
-                    <details className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
-                      <summary className="cursor-pointer list-none text-sm font-medium text-foreground">
-                        Exact provenance notes
-                      </summary>
-                      <div className="mt-4 space-y-2 text-sm leading-6 text-[var(--muted-foreground)]">
-                        {selectedHypothesis.memberNotes.map((item) => (
-                          <p key={item}>• {item}</p>
-                        ))}
-                      </div>
-                    </details>
-                  ) : null}
-                </>
+                <EvidenceTimeline
+                  items={evidenceTimeline}
+                  emptyText="No evidence timeline is available for this selection yet."
+                />
               ) : (
                 <p className="text-sm leading-6 text-[var(--muted-foreground)]">
                   Select a hypothesis to inspect its supporting evidence.
@@ -509,7 +542,7 @@ export function ArticleHypothesisBoard({
 
           {!hasPostgres ? (
             <div className="rounded-[24px] border border-dashed border-white/10 bg-black/8 px-4 py-4 text-sm leading-6 text-[var(--muted-foreground)]">
-              Operator status changes need `DATABASE_URL` because the review state is stored in app-owned Postgres tables.
+              Operator status changes need `DATABASE_URL` because review state is stored in Postgres.
             </div>
           ) : null}
         </div>

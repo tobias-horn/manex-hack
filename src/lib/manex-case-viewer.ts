@@ -1,12 +1,22 @@
 import { buildArticleHypothesisBoardViewModel, type ArticleHypothesisBoardCaseboard } from "@/lib/article-hypothesis-view";
 import { listArticleHypothesisReviews } from "@/lib/article-hypothesis-review-state";
+import {
+  buildEconomicBlastRadiusForCase,
+  getProposedCasesDashboard,
+} from "@/lib/manex-case-clustering";
 import { capabilities } from "@/lib/env";
 import { getArticleCaseboard } from "@/lib/manex-case-clustering";
-import { getDummyArticleCaseboard } from "@/lib/manex-dummy-clustering";
+import { getDummyArticleCaseboard, getDummyProposedCasesDashboard } from "@/lib/manex-dummy-clustering";
 import type { ClusteringMode } from "@/lib/manex-clustering-mode";
-import { getDeterministicArticleCaseboard } from "@/lib/manex-deterministic-case-clustering";
-import { getHypothesisArticleCaseboard } from "@/lib/manex-hypothesis-case-clustering";
-import { getInvestigateArticleCaseboard } from "@/lib/manex-investigate";
+import {
+  getDeterministicArticleCaseboard,
+  getDeterministicProposedCasesDashboard,
+} from "@/lib/manex-deterministic-case-clustering";
+import {
+  getHypothesisArticleCaseboard,
+  getHypothesisProposedCasesDashboard,
+} from "@/lib/manex-hypothesis-case-clustering";
+import { getInvestigateArticleCaseboard, getInvestigateDashboard } from "@/lib/manex-investigate";
 
 type CaseInventoryCandidate = {
   id: string;
@@ -122,20 +132,59 @@ export function buildCaseInventoryItems(
     });
 }
 
+async function getCandidateArticleIds(mode: ClusteringMode) {
+  if (mode === "dummy") {
+    const dashboard = await getDummyProposedCasesDashboard();
+    return dashboard.articleQueues.map((article) => article.articleId);
+  }
+
+  if (mode === "deterministic") {
+    const dashboard = await getDeterministicProposedCasesDashboard();
+    return dashboard.articleQueues.map((article) => article.articleId);
+  }
+
+  if (mode === "hypothesis") {
+    const dashboard = await getHypothesisProposedCasesDashboard();
+    return dashboard.articleQueues.map((article) => article.articleId);
+  }
+
+  if (mode === "investigate") {
+    const dashboard = await getInvestigateDashboard();
+    return dashboard.articleQueues.map((article) => article.articleId);
+  }
+
+  const dashboard = await getProposedCasesDashboard();
+  return dashboard.articleQueues.map((article) => article.articleId);
+}
+
 export async function loadCaseViewerData(input: {
-  articleId: string;
+  articleId?: string | null;
   caseId: string;
   mode: ClusteringMode;
 }) {
-  const caseboard = await loadArticleCaseboard(input.articleId, input.mode);
+  const articleIds = Array.from(
+    new Set([
+      input.articleId ?? null,
+      ...(await getCandidateArticleIds(input.mode)),
+    ].filter((value): value is string => Boolean(value))),
+  );
 
-  if (!caseboard) {
-    return null;
+  let caseboard: ArticleHypothesisBoardCaseboard | null = null;
+
+  for (const articleId of articleIds) {
+    const candidateBoard = await loadArticleCaseboard(articleId, input.mode);
+
+    if (!candidateBoard) {
+      continue;
+    }
+
+    if (candidateBoard.proposedCases.some((candidate) => candidate.id === input.caseId)) {
+      caseboard = candidateBoard;
+      break;
+    }
   }
 
-  const hasCandidate = caseboard.proposedCases.some((candidate) => candidate.id === input.caseId);
-
-  if (!hasCandidate) {
+  if (!caseboard) {
     return null;
   }
 
@@ -149,7 +198,10 @@ export async function loadCaseViewerData(input: {
     reviews,
   });
   const selectedCase =
-    viewModel.hypotheses.find((hypothesis) => hypothesis.id === input.caseId) ?? null;
+    viewModel.confirmedHypothesis ??
+    viewModel.hypotheses.find((hypothesis) => hypothesis.id === input.caseId) ??
+    viewModel.hypotheses[0] ??
+    null;
 
   if (!selectedCase) {
     return null;
@@ -159,6 +211,14 @@ export async function loadCaseViewerData(input: {
     caseboard,
     viewModel,
     selectedCase,
+    economicBlastRadius:
+      caseboard.dossier && selectedCase.productIds.length
+        ? await buildEconomicBlastRadiusForCase({
+            threads: caseboard.dossier.productThreads.filter((thread) =>
+              selectedCase.productIds.includes(thread.productId),
+            ),
+          })
+        : null,
     hasPostgres: capabilities.hasPostgres,
   };
 }

@@ -407,7 +407,9 @@ function BlastRadiusCard({
               </CardTitle>
               <CardDescription className="mt-2 max-w-2xl leading-6">
                 Follow one suspect component outward into the products it touches. This
-                is the blast-radius half of the same deterministic trace chain.
+                is the blast-radius half of the same deterministic trace chain. Supplier
+                batch drilldowns from the case viewer&apos;s economic blast-radius section
+                land here.
               </CardDescription>
             </div>
             <Badge variant="outline">{blastRadius.transport}</Badge>
@@ -592,7 +594,7 @@ export default async function TraceabilityPage({
                 render={<Link href={jump.href}>{jump.label}</Link>}
               />
             ))}
-            <Button size="lg" render={<Link href="/">Back to inbox</Link>} />
+            <Button size="lg" render={<Link href="/">Back to home</Link>} />
           </>
         }
       />
@@ -630,7 +632,7 @@ export default async function TraceabilityPage({
                   render={
                     <Link href="/">
                       <ArrowLeft className="size-4" />
-                      Back to inbox
+                      Back to home
                     </Link>
                   }
                 />

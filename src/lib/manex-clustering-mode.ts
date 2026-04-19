@@ -27,8 +27,7 @@ export function buildClusteringModeHref(path: string, mode: ClusteringMode) {
   return `${path}${path.includes("?") ? "&" : "?"}${buildClusteringModeQuery(mode)}`;
 }
 
-export function buildCaseViewerHref(caseId: string, articleId: string, mode: ClusteringMode) {
+export function buildCaseViewerHref(caseId: string, _articleId: string, mode: ClusteringMode) {
   const encodedCaseId = encodeURIComponent(caseId);
-  const encodedArticleId = encodeURIComponent(articleId);
-  return buildClusteringModeHref(`/cases/${encodedCaseId}?article=${encodedArticleId}`, mode);
+  return buildClusteringModeHref(`/cases/${encodedCaseId}`, mode);
 }

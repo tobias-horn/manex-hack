@@ -33,7 +33,7 @@ import { normalizeUiIdentifier } from "@/lib/ui-format";
 
 const INVESTIGATE_ARTICLE_PIPELINE_CONCURRENCY = (() => {
   const parsed = Number.parseInt(process.env.MANEX_INVESTIGATE_ARTICLE_PIPELINE_CONCURRENCY ?? "", 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 4;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 5;
 })();
 
 const investigateResponseSchema = z.object({

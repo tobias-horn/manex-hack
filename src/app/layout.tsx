@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
 import { Geist_Mono, Inter, Manrope } from "next/font/google";
 
+import { AskTheAgent } from "@/components/ask-the-agent";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { capabilities } from "@/lib/env";
 import { themeInitScript } from "@/lib/theme";
 
 import "./globals.css";
@@ -48,6 +50,9 @@ export default function RootLayout({
           </div>
         </div>
         {children}
+        {capabilities.hasAi && (capabilities.hasPostgres || capabilities.hasRest) ? (
+          <AskTheAgent />
+        ) : null}
       </body>
     </html>
   );

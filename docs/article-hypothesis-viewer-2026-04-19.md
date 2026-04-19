@@ -37,11 +37,8 @@ The article workspace now has four zones:
    - a small `Why not?` strip for the selected card
 3. Evidence drawer
    Proof is kept out of the main flow and opened on demand:
-   - evidence spine
-   - full timeline
-   - related products
-   - images
-   - member/provenance notes
+   - one cleaned-up timeline stream
+   - only the essential event metadata needed to follow the case arc
 4. Closed-loop lane
    Existing action writeback stays on the page, but is now fed from the selected
    hypothesis instead of a broader evidence wall.
@@ -57,6 +54,13 @@ The case-shell hero was tightened after the first UI pass:
 - the five metadata tiles were regrouped into a denser responsive layout so the
   long-form fields (`Strongest shared signal`, `Scope`) get wider cards and the
   short metrics stay compact
+
+The evidence drawer was also simplified later the same day:
+
+- the stacked sections for evidence spine, related products, images, and notes
+  were removed from the main drawer view
+- the drawer now renders as one cleaner vertical timeline so operators can scan
+  chronology without opening nested panels
 
 ## Normalization layer
 

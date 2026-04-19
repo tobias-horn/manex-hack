@@ -3,7 +3,6 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { ArticleHypothesisBoard } from "@/components/article-hypothesis-board";
-import { ClusteringPipelineToggle } from "@/components/clustering-pipeline-toggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -12,7 +11,11 @@ import {
 } from "@/lib/article-hypothesis-view";
 import { listArticleHypothesisReviews } from "@/lib/article-hypothesis-review-state";
 import { capabilities } from "@/lib/env";
-import { getArticleCaseboard } from "@/lib/manex-case-clustering";
+import {
+  buildEconomicBlastRadiusForCase,
+  getArticleCaseboard,
+  type EconomicBlastRadius,
+} from "@/lib/manex-case-clustering";
 import { getDummyArticleCaseboard } from "@/lib/manex-dummy-clustering";
 import {
   buildClusteringModeHref,
@@ -56,6 +59,34 @@ async function loadCaseboard(
   return getArticleCaseboard(articleId);
 }
 
+async function buildEconomicBlastRadiusByHypothesisId(input: {
+  caseboard: ArticleHypothesisBoardCaseboard;
+  viewModel: ReturnType<typeof buildArticleHypothesisBoardViewModel>;
+}) {
+  const { dossier } = input.caseboard;
+
+  if (!dossier) {
+    return Object.fromEntries(
+      input.viewModel.hypotheses.map((hypothesis) => [hypothesis.id, null]),
+    ) as Record<string, EconomicBlastRadius | null>;
+  }
+
+  const entries = await Promise.all(
+    input.viewModel.hypotheses.map(async (hypothesis) => [
+      hypothesis.id,
+      hypothesis.productIds.length
+        ? await buildEconomicBlastRadiusForCase({
+            threads: dossier.productThreads.filter((thread) =>
+              hypothesis.productIds.includes(thread.productId),
+            ),
+          })
+        : null,
+    ] as const),
+  );
+
+  return Object.fromEntries(entries) as Record<string, EconomicBlastRadius | null>;
+}
+
 export default async function ArticleCaseboardPage({
   params,
   searchParams,
@@ -79,43 +110,11 @@ export default async function ArticleCaseboardPage({
     initialSelectedId: selectedCaseId,
     reviews,
   });
-
-  const toggleItems = [
-    {
-      mode: "current" as const,
-      label: "Classic three-layer clustering",
-      description: "Original dossier, article-case, and global reconciliation flow.",
-      href: buildClusteringModeHref(`/articles/${caseboard.articleId}`, "current"),
-    },
-    {
-      mode: "deterministic" as const,
-      label: "Deterministic issue grouping",
-      description: "Small per-product issue extraction with deterministic article grouping.",
-      href: buildClusteringModeHref(`/articles/${caseboard.articleId}`, "deterministic"),
-    },
-    {
-      mode: "hypothesis" as const,
-      label: "Case hypothesis engine",
-      description:
-        "Mechanism-family analyzers rank supplier, process, design, handling, and noise investigations before AI writes the case narrative.",
-      href: buildClusteringModeHref(`/articles/${caseboard.articleId}`, "hypothesis"),
-    },
-    {
-      mode: "investigate" as const,
-      label: "Statistical anomaly RCA",
-      description:
-        "Direct SQL sweeps plus OpenAI root-cause narration without the clustered case pipeline.",
-      href: buildClusteringModeHref(`/articles/${caseboard.articleId}`, "investigate"),
-    },
-    {
-      mode: "dummy" as const,
-      label: "Seeded dummy run",
-      description:
-        "Read-only completed run populated with the four published challenge stories so UI work can continue immediately.",
-      href: buildClusteringModeHref(`/articles/${caseboard.articleId}`, "dummy"),
-    },
-  ];
-
+  const economicBlastRadiusByHypothesisId =
+    await buildEconomicBlastRadiusByHypothesisId({
+      caseboard,
+      viewModel,
+    });
   const pipelineLabel =
     mode === "deterministic"
       ? "Deterministic issue-grouping pipeline"
@@ -141,7 +140,7 @@ export default async function ArticleCaseboardPage({
                 {caseboard.articleId}
               </h1>
               <p className="max-w-3xl text-sm leading-6 text-[var(--muted-foreground)] sm:text-base">
-                Open one article, compare the top competing hypotheses, then dive into proof only when you need it.
+                Compare the top hypotheses for one article, then open proof when needed.
               </p>
               <div className="flex flex-wrap gap-2">
                 {caseboard.articleName ? <Badge variant="outline">{caseboard.articleName}</Badge> : null}
@@ -164,20 +163,19 @@ export default async function ArticleCaseboardPage({
                 render={
                   <Link href={buildClusteringModeHref("/articles", mode)}>
                     <ArrowLeft className="size-4" />
-                    Back to proposed cases
+                    Back to cases
                   </Link>
                 }
               />
-              <Button size="lg" variant="outline" render={<Link href="/">Back to inbox</Link>} />
+              <Button size="lg" variant="outline" render={<Link href="/">Back to home</Link>} />
             </div>
           </div>
         </header>
 
-        <ClusteringPipelineToggle currentMode={mode} items={toggleItems} />
-
         <ArticleHypothesisBoard
           mode={mode}
           viewModel={viewModel}
+          economicBlastRadiusByHypothesisId={economicBlastRadiusByHypothesisId}
           hasPostgres={capabilities.hasPostgres}
         />
       </div>
