@@ -457,18 +457,20 @@ export function GlobalPipelineRunner({
   return (
     <div className="surface-sheet ghost-border space-y-5 rounded-[32px] p-5 sm:p-6">
       <div className="rounded-[28px] border border-white/10 bg-[color:var(--surface-low)] p-5">
-        <div className="flex items-start justify-between gap-4">
+        <div className="flex flex-col gap-5">
+          <div className="flex justify-end">
+            <div className="flex size-13 shrink-0 items-center justify-center rounded-[1.6rem] bg-[color:rgba(0,92,151,0.08)] text-[var(--primary)]">
+              <Workflow className="size-5" />
+            </div>
+          </div>
           <div className="space-y-3">
             <div className="eyebrow">{pipelineLabel}</div>
-            <div className="font-heading text-[1.9rem] leading-[1.05] font-semibold tracking-[-0.03em] text-balance">
+            <div className="font-heading text-[1.9rem] leading-[1.05] font-semibold tracking-[-0.03em]">
               Run every article end to end
             </div>
-            <p className="max-w-[32rem] text-sm leading-6 text-[var(--muted-foreground)]">
+            <p className="text-sm leading-6 text-[var(--muted-foreground)]">
               {pipelineDescription}
             </p>
-          </div>
-          <div className="flex size-13 shrink-0 items-center justify-center rounded-[1.6rem] bg-[color:rgba(0,92,151,0.08)] text-[var(--primary)]">
-            <Workflow className="size-5" />
           </div>
         </div>
 

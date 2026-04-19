@@ -20,9 +20,13 @@ each other, especially for the longer deterministic labels.
   - allowed button labels to wrap instead of forcing single-line overflow
   - restructured progress stats into auto-fit cards
   - added clearer section hierarchy for progress, controls, live runs, and outcomes
+  - moved the workflow icon into its own top row so the title and description can use the full card width
 
 ## Important implementation detail
 
 When a component can appear inside a narrow rail, prefer auto-fit/minmax layout or
 stacked controls over viewport breakpoints. The screen width can be large while the
 component width is still constrained.
+
+The same principle applies to hero cards: avoid sharing the heading row with a
+decorative icon when that icon steals the text measure inside a constrained column.
