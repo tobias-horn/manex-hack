@@ -34,6 +34,10 @@ import {
   getDeterministicProposedCasesDashboard,
   type DeterministicGlobalInventoryItem,
 } from "@/lib/manex-deterministic-case-clustering";
+import {
+  getHypothesisProposedCasesDashboard,
+  type HypothesisGlobalInventoryItem,
+} from "@/lib/manex-hypothesis-case-clustering";
 import { formatUiDateTime } from "@/lib/ui-format";
 
 export const dynamic = "force-dynamic";
@@ -64,7 +68,10 @@ const toneStyles: Record<string, string> = {
 };
 
 function inventoryHref(
-  item: GlobalInventoryItem | DeterministicGlobalInventoryItem,
+  item:
+    | GlobalInventoryItem
+    | DeterministicGlobalInventoryItem
+    | HypothesisGlobalInventoryItem,
   mode: ClusteringMode,
 ) {
   const articleId = item.articleIds[0];
@@ -88,7 +95,9 @@ function GlobalPatternSection({
 }: {
   title: string;
   description: string;
-  items: Array<GlobalInventoryItem | DeterministicGlobalInventoryItem>;
+  items: Array<
+    GlobalInventoryItem | DeterministicGlobalInventoryItem | HypothesisGlobalInventoryItem
+  >;
   mode: ClusteringMode;
   emptyText: string;
 }) {
@@ -180,7 +189,9 @@ export default async function ArticlesPage({ searchParams }: ArticlesPageProps) 
   const dashboard =
     mode === "deterministic"
       ? await getDeterministicProposedCasesDashboard()
-      : await getProposedCasesDashboard();
+      : mode === "hypothesis"
+        ? await getHypothesisProposedCasesDashboard()
+        : await getProposedCasesDashboard();
   const crossArticleCases =
     dashboard.globalInventory?.validatedCases.filter((item) => item.articleIds.length > 1) ?? [];
   const watchlists = dashboard.globalInventory?.watchlists ?? [];
@@ -202,18 +213,31 @@ export default async function ArticlesPage({ searchParams }: ArticlesPageProps) 
       description: "Per-product issue extraction with deterministic article and global grouping.",
       href: buildClusteringModeHref("/articles", "deterministic"),
     },
+    {
+      mode: "hypothesis" as const,
+      label: "Case hypothesis engine",
+      description:
+        "Mechanism-family analyzers rank supplier, process, design, handling, and noise investigations before AI writes the narrative.",
+      href: buildClusteringModeHref("/articles", "hypothesis"),
+    },
   ];
   const pipelineLabel =
     mode === "deterministic"
       ? "Deterministic issue-grouping pipeline"
+      : mode === "hypothesis"
+        ? "Case hypothesis engine"
       : "Classic three-layer pipeline";
   const pipelineDescription =
     mode === "deterministic"
       ? "Run the bounded deterministic batch. Each article keeps its own issue extraction, then the batch reconciles the latest article-local outputs into a separate deterministic global view."
+      : mode === "hypothesis"
+        ? "Run the hypothesis engine batch. It reuses the shared product dossier, generates supplier/process/design/handling/noise candidates deterministically, scores overlap, then adds bounded AI narratives after the cases are already formed."
       : "Launch the original full dataset pipeline from Global Intelligence. This reports queue depth, live stage distribution, and article-by-article outcomes while the batch is still running.";
   const batchRoute =
     mode === "deterministic"
       ? "/api/articles/cluster-all-deterministic"
+      : mode === "hypothesis"
+        ? "/api/articles/cluster-all-hypothesis"
       : "/api/articles/cluster-all";
 
   return (
@@ -336,9 +360,12 @@ export default async function ArticlesPage({ searchParams }: ArticlesPageProps) 
               startButtonLabel={
                 mode === "deterministic"
                   ? "Run deterministic batch"
+                  : mode === "hypothesis"
+                    ? "Run hypothesis batch"
                   : "Run complete pipeline"
               }
               supportsStop
+              derivedCountLabel={mode === "hypothesis" ? "ranked hypotheses" : "issues"}
             />
 
             <Card className="surface-panel rounded-[30px] px-0 py-0">

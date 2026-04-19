@@ -29,6 +29,7 @@ import {
   parseClusteringMode,
 } from "@/lib/manex-clustering-mode";
 import { getDeterministicArticleCaseboard } from "@/lib/manex-deterministic-case-clustering";
+import { getHypothesisArticleCaseboard } from "@/lib/manex-hypothesis-case-clustering";
 import type { Initiative } from "@/lib/quality-workspace";
 import { formatUiDateTime } from "@/lib/ui-format";
 
@@ -128,6 +129,8 @@ export default async function ArticleCaseboardPage({
   const caseboard =
     mode === "deterministic"
       ? await getDeterministicArticleCaseboard(articleId)
+      : mode === "hypothesis"
+        ? await getHypothesisArticleCaseboard(articleId)
       : await getArticleCaseboard(articleId);
 
   if (!caseboard) {
@@ -211,20 +214,35 @@ export default async function ArticleCaseboardPage({
       description: "Small per-product issue extraction with deterministic article grouping.",
       href: buildClusteringModeHref(`/articles/${caseboard.articleId}`, "deterministic"),
     },
+    {
+      mode: "hypothesis" as const,
+      label: "Case hypothesis engine",
+      description:
+        "Mechanism-family analyzers rank supplier, process, design, handling, and noise investigations before AI writes the case narrative.",
+      href: buildClusteringModeHref(`/articles/${caseboard.articleId}`, "hypothesis"),
+    },
   ];
   const pipelineLabel =
     mode === "deterministic"
       ? "Deterministic issue-grouping pipeline"
+      : mode === "hypothesis"
+        ? "Case hypothesis engine"
       : "Classic three-layer pipeline";
   const runnerDescription =
     mode === "deterministic"
       ? "Stage 1 reuses the shared article dossier, extracts a few bounded issue cards per product, then groups them deterministically before reconciling the latest article output into the deterministic global view."
+      : mode === "hypothesis"
+        ? "Stage 1 reuses the shared dossier, mechanism-family analyzers generate supplier, process, latent-design, handling, and noise candidates, overlap is resolved deterministically, and only the surviving ranked investigations get a bounded AI narrative."
       : "Stage 1 builds deterministic product and article dossiers, Stage 2 drafts and reviews article-local cases, and Stage 3 reconciles the article against the latest global inventory. The output stays investigative and proposed.";
   const outsideCaseSecondaryText =
     mode === "deterministic"
       ? caseboard.incidents.length || caseboard.noise.length
         ? `${caseboard.incidents.length} single-product incidents and ${caseboard.noise.length} noise items stayed outside shared cases.`
         : "No incidents or explicit noise items were emitted in the latest deterministic run."
+      : mode === "hypothesis"
+        ? caseboard.incidents.length || caseboard.noise.length
+          ? `${caseboard.incidents.length} single-product investigations and ${caseboard.noise.length} suppressed noise patterns stayed outside ranked shared cases.`
+          : "No standalone incidents or suppressed noise items were emitted in the latest hypothesis run."
       : standaloneSignals.length
         ? `${standaloneSignals.length} faults stayed real but non-clustered.`
         : "No standalone faults were emitted in the latest run.";
@@ -293,13 +311,20 @@ export default async function ArticleCaseboardPage({
               routePath={
                 mode === "deterministic"
                   ? `/api/articles/${caseboard.articleId}/cluster-deterministic`
+                  : mode === "hypothesis"
+                    ? `/api/articles/${caseboard.articleId}/cluster-hypothesis`
                   : `/api/articles/${caseboard.articleId}/cluster`
               }
               pipelineLabel={pipelineLabel}
               pipelineDescription={runnerDescription}
               actionLabel={
-                mode === "deterministic" ? "deterministic clustering" : "article clustering"
+                mode === "deterministic"
+                  ? "deterministic clustering"
+                  : mode === "hypothesis"
+                    ? "hypothesis analysis"
+                    : "article clustering"
               }
+              derivedCountLabel={mode === "hypothesis" ? "ranked hypotheses" : "extracted issues"}
             />
 
             <Card className="surface-sheet rounded-[30px] px-0 py-0">
@@ -383,13 +408,17 @@ export default async function ArticleCaseboardPage({
                     {outsideCaseSecondaryText}
                   </p>
                 </div>
-                {mode === "deterministic" ? (
+                {mode === "deterministic" || mode === "hypothesis" ? (
                   <div className="rounded-[22px] bg-[color:var(--surface-low)] p-4">
                     <div className="eyebrow">Watchlists</div>
                     <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">
                       {caseboard.watchlists.length
-                        ? `${caseboard.watchlists.length} deterministic watchlists were kept visible without becoming article cases.`
-                        : "No deterministic watchlists were emitted in the latest run."}
+                        ? mode === "hypothesis"
+                          ? `${caseboard.watchlists.length} weaker mechanism patterns stayed visible without becoming ranked investigations.`
+                          : `${caseboard.watchlists.length} deterministic watchlists were kept visible without becoming article cases.`
+                        : mode === "hypothesis"
+                          ? "No hypothesis watchlists were emitted in the latest run."
+                          : "No deterministic watchlists were emitted in the latest run."}
                     </p>
                   </div>
                 ) : null}

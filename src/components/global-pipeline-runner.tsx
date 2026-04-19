@@ -96,6 +96,7 @@ type GlobalPipelineRunnerProps = {
   pipelineDescription: string;
   startButtonLabel: string;
   supportsStop?: boolean;
+  derivedCountLabel?: string;
 };
 
 const stageLabels: Record<string, string> = {
@@ -106,6 +107,7 @@ const stageLabels: Record<string, string> = {
   stage2_draft: "Stage 2: draft clustering",
   stage2_review: "Stage 2: review",
   stage2_grouping: "Stage 2: grouping",
+  stage2_final_judge: "Stage 2: narrative",
   stage2_persisting: "Stage 2: persisting",
   stage3_reconciliation: "Stage 3: reconciliation",
   completed: "Completed",
@@ -147,6 +149,7 @@ export function GlobalPipelineRunner({
   pipelineDescription,
   startButtonLabel,
   supportsStop = false,
+  derivedCountLabel = "issues",
 }: GlobalPipelineRunnerProps) {
   const router = useRouter();
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -636,7 +639,7 @@ export function GlobalPipelineRunner({
                 <Badge>{run.articleId}</Badge>
                 <Badge variant="outline">{formatStage(run.currentStage)}</Badge>
                 {run.issueCount ? (
-                  <Badge variant="outline">{run.issueCount} issues</Badge>
+                  <Badge variant="outline">{run.issueCount} {derivedCountLabel}</Badge>
                 ) : null}
                 <Badge variant="outline">{run.candidateCount} cases</Badge>
               </div>
@@ -668,7 +671,7 @@ export function GlobalPipelineRunner({
                   {result.ok ? "Completed" : "Failed"}
                 </Badge>
                 {result.issueCount ? (
-                  <Badge variant="outline">{result.issueCount} issues</Badge>
+                  <Badge variant="outline">{result.issueCount} {derivedCountLabel}</Badge>
                 ) : null}
                 <Badge variant="outline">{result.caseCount} cases</Badge>
               </div>

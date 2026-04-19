@@ -20,14 +20,14 @@ export function ClusteringPipelineToggle({
   return (
     <div className="rounded-[28px] border border-white/10 bg-[color:var(--surface-low)] p-3">
       <div className="flex flex-wrap items-center gap-2">
-        <Badge variant="outline">Clustering pipeline</Badge>
+        <Badge variant="outline">Investigation engine</Badge>
         <div className="text-sm leading-6 text-[var(--muted-foreground)]">
-          Switch the app surface between the existing article-wide clustering flow
-          and the new deterministic issue-grouping flow.
+          Switch the app surface between the three investigation engines without
+          leaving the current workspace.
         </div>
       </div>
 
-      <div className="mt-3 grid gap-3 md:grid-cols-2">
+      <div className="mt-3 grid gap-3 md:grid-cols-3">
         {items.map((item) => {
           const isActive = item.mode === currentMode;
 

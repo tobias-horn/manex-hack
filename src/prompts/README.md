@@ -18,6 +18,9 @@ app and non-runtime prompts that document repeatable repository workflows.
 - `manex-deterministic-case-clustering.ts`
   Runtime prompts for the bounded deterministic clustering pipeline that uses
   small per-product issue extraction instead of article-wide clustering prompts.
+- `manex-hypothesis-case-clustering.ts`
+  Runtime prompts for the mechanism-family hypothesis engine that only uses the
+  LLM after deterministic candidate formation.
 - `manex-copilot.ts`
   Runtime copilot system prompt and user prompt wrapper.
 - `manex-implementation-refactor.ts`

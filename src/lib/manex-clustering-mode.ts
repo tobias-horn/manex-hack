@@ -1,8 +1,12 @@
-export type ClusteringMode = "current" | "deterministic";
+export type ClusteringMode = "current" | "deterministic" | "hypothesis";
 
 export function parseClusteringMode(value: string | string[] | undefined): ClusteringMode {
   const normalized = Array.isArray(value) ? value[0] : value;
-  return normalized === "deterministic" ? "deterministic" : "current";
+  if (normalized === "deterministic" || normalized === "hypothesis") {
+    return normalized;
+  }
+
+  return "current";
 }
 
 export function buildClusteringModeQuery(mode: ClusteringMode) {

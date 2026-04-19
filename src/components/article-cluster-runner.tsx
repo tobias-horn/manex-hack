@@ -36,6 +36,7 @@ type ArticleClusterRunnerProps = {
   pipelineLabel: string;
   pipelineDescription: string;
   actionLabel: string;
+  derivedCountLabel?: string;
 };
 
 type FeedbackState = {
@@ -68,6 +69,7 @@ const stageLabels: Record<string, string> = {
   stage2_draft: "Stage 2: draft clustering",
   stage2_review: "Stage 2: review",
   stage2_grouping: "Stage 2: grouping",
+  stage2_final_judge: "Stage 2: narrative",
   stage2_persisting: "Stage 2: persisting",
   stage3_reconciliation: "Stage 3: reconciliation",
   completed: "Completed",
@@ -82,6 +84,7 @@ const stageProgress: Record<string, number> = {
   stage2_draft: 58,
   stage2_review: 74,
   stage2_grouping: 76,
+  stage2_final_judge: 84,
   stage2_persisting: 88,
   stage3_reconciliation: 96,
   completed: 100,
@@ -178,6 +181,7 @@ export function ArticleClusterRunner({
   pipelineLabel,
   pipelineDescription,
   actionLabel,
+  derivedCountLabel = "extracted issues",
 }: ArticleClusterRunnerProps) {
   const router = useRouter();
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -209,7 +213,7 @@ export function ArticleClusterRunner({
       if (nextStatus.latestRun?.status === "completed") {
         const issueSuffix =
           nextStatus.issueCount && nextStatus.issueCount > 0
-            ? `, ${nextStatus.issueCount} extracted issues`
+            ? `, ${nextStatus.issueCount} ${derivedCountLabel}`
             : "";
         setFeedback({
           tone: "success",
@@ -316,7 +320,7 @@ export function ArticleClusterRunner({
         {run ? <Badge variant="outline">{run.model}</Badge> : null}
         {run?.strategy ? <Badge variant="outline">{run.strategy}</Badge> : null}
         {status.issueCount ? (
-          <Badge variant="outline">{status.issueCount} extracted issues</Badge>
+          <Badge variant="outline">{status.issueCount} {derivedCountLabel}</Badge>
         ) : null}
         <Badge variant="outline">{status.caseCount || proposedCaseCount} proposed cases</Badge>
       </div>

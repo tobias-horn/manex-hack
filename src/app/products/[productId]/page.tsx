@@ -31,6 +31,7 @@ import {
   parseClusteringMode,
 } from "@/lib/manex-clustering-mode";
 import { getDeterministicProposedCasesForProduct } from "@/lib/manex-deterministic-case-clustering";
+import { getHypothesisProposedCasesForProduct } from "@/lib/manex-hypothesis-case-clustering";
 import {
   getProductDossier,
   type ProductDossierEvidenceFrame,
@@ -110,6 +111,8 @@ export default async function ProductDossierPage({
       getProductDossier(productId),
       mode === "deterministic"
         ? getDeterministicProposedCasesForProduct(productId)
+        : mode === "hypothesis"
+          ? getHypothesisProposedCasesForProduct(productId)
         : getProposedCasesForProduct(productId),
     ]);
   } catch {
@@ -154,10 +157,19 @@ export default async function ProductDossierPage({
       description: "Small per-product issue extraction with deterministic article grouping.",
       href: buildClusteringModeHref(`/products/${dossier.requestedProductId}`, "deterministic"),
     },
+    {
+      mode: "hypothesis" as const,
+      label: "Case hypothesis engine",
+      description:
+        "Mechanism-family analyzers rank supplier, process, design, handling, and noise investigations before AI writes the case narrative.",
+      href: buildClusteringModeHref(`/products/${dossier.requestedProductId}`, "hypothesis"),
+    },
   ];
   const pipelineLabel =
     mode === "deterministic"
       ? "Deterministic issue-grouping pipeline"
+      : mode === "hypothesis"
+        ? "Case hypothesis engine"
       : "Classic three-layer pipeline";
 
   return (
